@@ -1,3 +1,4 @@
+use std::time::Duration;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -10,6 +11,32 @@ pub fn run() {
             let meta_path = config_dir.join("meta.db");
             let meta_db = storage::MetaDb::open(&meta_path).map_err(|e| e.to_string())?;
             app.manage(meta_db);
+            let batcher = storage::WriteBatcher::new(config_dir.clone());
+            app.manage(batcher);
+            app.manage(coalescing::CoalescingBus::new());
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(100));
+                loop {
+                    interval.tick().await;
+                    if let (Some(batcher), Some(meta_db)) = (
+                        handle.try_state::<storage::WriteBatcher>(),
+                        handle.try_state::<storage::MetaDb>(),
+                    ) {
+                        let _ = batcher.flush(&meta_db);
+                    }
+                }
+            });
+            let handle_bus = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(16));
+                loop {
+                    interval.tick().await;
+                    if let Some(bus) = handle_bus.try_state::<coalescing::CoalescingBus>() {
+                        let _ = bus.tick();
+                    }
+                }
+            });
             #[cfg(debug_assertions)]
             {
                 if let Some(window) = app.get_webview_window("main") {
@@ -26,5 +53,6 @@ pub fn run() {
         .expect("error while running Monkeyland");
 }
 
+mod coalescing;
 mod commands;
 mod storage;

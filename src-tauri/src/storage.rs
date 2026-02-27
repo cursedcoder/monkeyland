@@ -3,7 +3,8 @@
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub struct MetaDb {
@@ -126,6 +127,53 @@ impl MetaDb {
         }
         Ok(out)
     }
+
+    /// Ensures sessions dir exists and inserts session into index if not present.
+    /// Session DB path convention: `{config_dir}/sessions/{id}.db`.
+    pub fn create_session_if_missing(
+        &self,
+        config_dir: &Path,
+        id: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        let sessions_dir = config_dir.join("sessions");
+        std::fs::create_dir_all(&sessions_dir).map_err(|e| e.to_string())?;
+        let file_path = format!("sessions/{}.db", id);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_micros() as i64;
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, name, created_ts_us, status, file_path) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, name, now_us, "active", file_path],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn list_sessions(&self) -> Result<Vec<SessionMeta>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, created_ts_us, status, file_path FROM sessions ORDER BY created_ts_us DESC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SessionMeta {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    created_ts_us: row.get(2)?,
+                    status: row.get(3)?,
+                    file_path: row.get(4)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
 }
 
 /// Per-session SQLite DB: events table + snapshots table.
@@ -233,6 +281,16 @@ impl SessionDb {
         Ok(count)
     }
 
+    /// Max seq in events (0 if empty). Used for snapshot seq_at.
+    pub fn max_seq(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let max: Option<i64> = conn
+            .query_row("SELECT MAX(seq) FROM events", [], |row| row.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(max.unwrap_or(0))
+    }
+
     /// Nearest snapshot at or before seq_at.
     pub fn get_snapshot_at(&self, seq_at: i64) -> Result<Option<SnapshotRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -301,6 +359,109 @@ impl SessionDb {
             tx.commit().map_err(|e| e.to_string())?;
             conn.execute("VACUUM", []).map_err(|e| e.to_string())?;
         }
+        Ok(())
+    }
+}
+
+/// Write batcher: accumulate events per session, flush every 100 ms as single transaction.
+/// Snapshot manager: every 30 s or 500 events (whichever first) per session.
+pub struct WriteBatcher {
+    config_dir: PathBuf,
+    buffers: Mutex<HashMap<String, Vec<EventRow>>>,
+    session_dbs: Mutex<HashMap<String, SessionDb>>,
+    /// Per session: (last_snapshot_seq, last_snapshot_ts_us)
+    snapshot_state: Mutex<HashMap<String, (i64, i64)>>,
+}
+
+const FLUSH_INTERVAL_EVENTS: i64 = 500;
+const SNAPSHOT_INTERVAL_US: i64 = 30_000_000; // 30 s
+
+impl WriteBatcher {
+    pub fn new(config_dir: PathBuf) -> Self {
+        Self {
+            config_dir,
+            buffers: Mutex::new(HashMap::new()),
+            session_dbs: Mutex::new(HashMap::new()),
+            snapshot_state: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Queue an event for the given session. Session is created in meta if missing on first flush.
+    pub fn push(&self, session_id: &str, event: EventRow) -> Result<(), String> {
+        let mut buffers = self.buffers.lock().map_err(|e| e.to_string())?;
+        buffers
+            .entry(session_id.to_string())
+            .or_default()
+            .push(event);
+        Ok(())
+    }
+
+    /// Flush all buffered events (one transaction per session) and run snapshot manager.
+    pub fn flush(&self, meta_db: &MetaDb) -> Result<(), String> {
+        let now_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_micros() as i64;
+        let mut buffers = self.buffers.lock().map_err(|e| e.to_string())?;
+        let mut session_dbs = self.session_dbs.lock().map_err(|e| e.to_string())?;
+        let session_ids: Vec<String> = buffers.keys().cloned().collect();
+        for session_id in session_ids {
+            let batch = match buffers.get_mut(&session_id) {
+                Some(b) if !b.is_empty() => std::mem::take(b),
+                _ => continue,
+            };
+            let db = match session_dbs.get_mut(&session_id) {
+                Some(d) => d,
+                None => {
+                    meta_db.create_session_if_missing(&self.config_dir, &session_id, &session_id)?;
+                    let path = self.config_dir.join("sessions").join(format!("{}.db", session_id));
+                    let db = SessionDb::open(&path)?;
+                    session_dbs.insert(session_id.clone(), db);
+                    session_dbs.get_mut(&session_id).unwrap()
+                }
+            };
+            db.insert_events(&batch).map_err(|e| e.to_string())?;
+        }
+        drop(buffers);
+        drop(session_dbs);
+
+        // Snapshot manager: every 30 s or 500 events (whichever first)
+        let mut session_dbs = self.session_dbs.lock().map_err(|e| e.to_string())?;
+        let mut snapshot_state = self.snapshot_state.lock().map_err(|e| e.to_string())?;
+        for (session_id, db) in session_dbs.iter_mut() {
+            let max_seq = db.max_seq()?;
+            let (last_seq, last_ts) = snapshot_state
+                .entry(session_id.clone())
+                .or_insert((0, 0));
+            let need = (max_seq - *last_seq) >= FLUSH_INTERVAL_EVENTS
+                || (now_us - *last_ts) >= SNAPSHOT_INTERVAL_US;
+            if need && max_seq > 0 {
+                let row = SnapshotRow {
+                    seq_at: max_seq,
+                    ts_us: now_us,
+                    terminal_buffer: String::new(),
+                    browser_url: String::new(),
+                    browser_screenshot_path: String::new(),
+                    agent_phase: "idle".to_string(),
+                };
+                db.insert_snapshot(&row)?;
+                *last_seq = max_seq;
+                *last_ts = now_us;
+            }
+        }
+        Ok(())
+    }
+
+    /// Close session: compact and remove from cache.
+    pub fn close_session(&self, session_id: &str) -> Result<(), String> {
+        let mut buffers = self.buffers.lock().map_err(|e| e.to_string())?;
+        buffers.remove(session_id);
+        let mut session_dbs = self.session_dbs.lock().map_err(|e| e.to_string())?;
+        if let Some(db) = session_dbs.remove(session_id) {
+            db.compact()?;
+        }
+        let mut snapshot_state = self.snapshot_state.lock().map_err(|e| e.to_string())?;
+        snapshot_state.remove(session_id);
         Ok(())
     }
 }
