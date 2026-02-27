@@ -50,29 +50,44 @@ export function BrowserCard({
   useEffect(() => {
     if (!browserPort || layout.collapsed) return;
 
-    const url = `http://127.0.0.1:${browserPort}/session/${layout.session_id}/screencast`;
-    const es = new EventSource(url);
-    eventSourceRef.current = es;
+    let es: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
 
-    es.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data) as { data?: string; url?: string };
-        if (msg.data) {
-          setFrameSrc(`data:image/jpeg;base64,${msg.data}`);
-        }
-        if (msg.url) {
-          setFrameUrl(msg.url);
-        }
-      } catch { /* ignore */ }
-    };
+    function connect() {
+      if (cancelled) return;
+      const url = `http://127.0.0.1:${browserPort}/session/${layout.session_id}/screencast`;
+      es = new EventSource(url);
+      eventSourceRef.current = es;
 
-    es.onerror = () => {
-      // Retry is automatic with EventSource
-    };
+      es.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data) as { data?: string; url?: string };
+          if (msg.data) {
+            setFrameSrc(`data:image/jpeg;base64,${msg.data}`);
+          }
+          if (msg.url) {
+            setFrameUrl(msg.url);
+          }
+        } catch { /* ignore */ }
+      };
+
+      es.onerror = () => {
+        es?.close();
+        eventSourceRef.current = null;
+        if (!cancelled) {
+          retryTimer = setTimeout(connect, 1000);
+        }
+      };
+    }
+
+    connect();
 
     return () => {
-      es.close();
+      cancelled = true;
+      es?.close();
       eventSourceRef.current = null;
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [browserPort, layout.session_id, layout.collapsed]);
 

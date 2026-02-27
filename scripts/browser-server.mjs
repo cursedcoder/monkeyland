@@ -5,6 +5,7 @@ import { URL } from 'url';
 let browser = null;
 const sessions = new Map();
 const screencastClients = new Map();
+const lastFrames = new Map();
 
 async function ensureBrowser() {
   if (!browser) {
@@ -46,15 +47,16 @@ async function createSession(sessionId) {
       quality: 50,
       maxWidth: 1280,
       maxHeight: 720,
-      everyNthFrame: 3,
+      everyNthFrame: 1,
     });
     cdpSession.on('Page.screencastFrame', (frame) => {
       cdpSession.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
+      const eventData = JSON.stringify({ data: frame.data, url: currentUrl });
+      lastFrames.set(sessionId, eventData);
       const clients = screencastClients.get(sessionId);
       if (clients && clients.size > 0) {
-        const data = JSON.stringify({ data: frame.data, url: currentUrl });
         for (const res of clients) {
-          try { res.write(`data: ${data}\n\n`); } catch { /* client gone */ }
+          try { res.write(`data: ${eventData}\n\n`); } catch { /* client gone */ }
         }
       }
     });
@@ -65,6 +67,18 @@ async function createSession(sessionId) {
   const session = { context, page, cdpSession, currentUrl: () => currentUrl };
   sessions.set(sessionId, session);
   return sessionId;
+}
+
+async function pushScreenshotFrame(sessionId, session) {
+  const buffer = await session.page.screenshot({ type: 'jpeg', quality: 50 });
+  const eventData = JSON.stringify({ data: buffer.toString('base64'), url: session.currentUrl() });
+  lastFrames.set(sessionId, eventData);
+  const clients = screencastClients.get(sessionId);
+  if (clients && clients.size > 0) {
+    for (const r of clients) {
+      try { r.write(`data: ${eventData}\n\n`); } catch { /* client gone */ }
+    }
+  }
 }
 
 function readBody(req) {
@@ -114,7 +128,6 @@ async function handleRequest(req, res) {
 
     if (req.method === 'GET' && parts[0] === 'session' && parts[2] === 'screencast') {
       const sessionId = parts[1];
-      if (!sessions.has(sessionId)) { sendJson(res, { error: 'Session not found' }, 404); return; }
 
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -123,6 +136,12 @@ async function handleRequest(req, res) {
         'Access-Control-Allow-Origin': '*',
       });
       res.write(':\n\n');
+
+      // Send last known frame immediately so late-connecting clients see something
+      const cached = lastFrames.get(sessionId);
+      if (cached) {
+        res.write(`data: ${cached}\n\n`);
+      }
 
       if (!screencastClients.has(sessionId)) screencastClients.set(sessionId, new Set());
       screencastClients.get(sessionId).add(res);
@@ -149,6 +168,8 @@ async function handleRequest(req, res) {
           const content = await page.evaluate(() =>
             document.body?.innerText?.slice(0, 8000) || ''
           );
+          // Force a screenshot so screencast has at least one frame
+          pushScreenshotFrame(sessionId, session).catch(() => {});
           sendJson(res, { title, url: page.url(), content });
           break;
         }
