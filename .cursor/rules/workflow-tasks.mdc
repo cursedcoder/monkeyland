@@ -21,12 +21,20 @@ Scope is defined in **monkeyland.md** Section 7 (Development Stages). Work is tr
 ## 3. When the task is done
 
 - Set **Status** to `Done` and **move** the task file from `docs/tasks/in-progress/` to `docs/tasks/done/`.
-- **Create the next task:** Read monkeyland.md §7 and `docs/tasks/done/` (use **Source** lines). The next task is the next Stage or next deliverable(s) not yet covered. Create a new task file with **Source** set; put it in `docs/tasks/in-progress/` (or create in backlog and move to in-progress). Optionally **continue** in the same run by working on this new task.
-- **Commit:** Commit all changes (code + task file moves + new task file). Use message format `id-N: Short task title` (e.g. `id-1: Canvas prompt element`). This gives the next run a clear checkpoint. See docs/CONTEXT.md §7 for details.
+- **Create the next task:** Read monkeyland.md §7 and `docs/tasks/done/` (use **Source** lines). The next task is the next Stage or next deliverable(s) not yet covered. Create a new task file with **Source** set; put it in `docs/tasks/in-progress/` (or create in backlog and move to in-progress). The operator starts the next run after testing; do not assume continuation in the same run.
+- **Commit (required):** Before ending your run, you **must** run `git add` and `git commit`. Commit all changes (code + task file moves + new task file). Message format: `id-N: Short task title` (e.g. `id-1: Canvas prompt element`). A completed task without a commit is incomplete. See docs/CONTEXT.md §7.
 
 ## 4. Task file requirements
 
 - Every task must have a **Source** line (e.g. `Source: monkeyland.md §7 Stage 2`) so the next agent can derive the following task. Use `docs/tasks/_template.md` and `docs/tasks/README.md` for format and derivation rules.
+
+## 5. Completion checklist (before ending run)
+
+Before you finish, confirm:
+
+- [ ] Task file status set to Done and file moved to `docs/tasks/done/`.
+- [ ] Next task created in `docs/tasks/in-progress/` (if applicable).
+- [ ] **`git add` and `git commit` executed** with message `id-N: Short title`. If you did not commit, the run is incomplete.
 
 ## Reference
 
