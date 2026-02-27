@@ -39,6 +39,7 @@ export function SessionCard({
     (e: React.PointerEvent) => {
       if (e.button !== 0 || (e.target as HTMLElement).closest("[data-resize-handle]"))
         return;
+      e.stopPropagation(); // so canvas pan does not start
       e.currentTarget.setPointerCapture(e.pointerId);
       setIsDragging(true);
       dragStart.current = {
@@ -128,11 +129,15 @@ export function SessionCard({
         top: layout.y,
         width: layout.w,
         height: layout.collapsed ? 48 : layout.h,
-        cursor: isDragging ? "grabbing" : "grab",
+        cursor: "default",
+        userSelect: isDragging ? "none" : "auto",
       }}
-      onPointerDown={handlePointerDownDrag}
     >
-      <div className="session-card-header">
+      <div
+        className="session-card-header"
+        style={{ cursor: isDragging ? "grabbing" : "grab" }}
+        onPointerDown={handlePointerDownDrag}
+      >
         <span className="session-card-title">Agent {index + 1}</span>
         <button
           type="button"

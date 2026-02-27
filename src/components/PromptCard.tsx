@@ -42,6 +42,7 @@ export function PromptCard({
   const handlePointerDownDrag = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0 || (e.target as HTMLElement).closest("[data-resize-handle]")) return;
+      e.stopPropagation(); // so canvas pan does not start
       e.currentTarget.setPointerCapture(e.pointerId);
       setIsDragging(true);
       dragStart.current = {
@@ -126,11 +127,15 @@ export function PromptCard({
         top: layout.y,
         width: layout.w,
         height: layout.h,
-        cursor: isDragging ? "grabbing" : "grab",
+        cursor: isDragging ? "grabbing" : "default",
+        userSelect: isDragging ? "none" : "auto",
       }}
-      onPointerDown={handlePointerDownDrag}
     >
-      <div className="prompt-card-header">
+      <div
+        className="prompt-card-header"
+        style={{ cursor: isDragging ? "grabbing" : "grab" }}
+        onPointerDown={handlePointerDownDrag}
+      >
         <span className="prompt-card-title">Prompt</span>
       </div>
       <div className="prompt-card-body">

@@ -18,20 +18,66 @@ export default function App() {
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const promptSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const persistLayoutsRef = useRef<(next: SessionLayout[]) => void>(() => {});
+  persistLayoutsRef.current = persistLayouts;
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const payload = await invoke<CanvasLayoutPayload>("load_canvas_layout");
         if (cancelled) return;
-        if (payload.layouts.length > 0) {
-          setLayouts(
-            payload.layouts.map((l) => ({
-              ...l,
-              node_type: (l.node_type ?? "agent") as "prompt" | "agent",
-              payload: l.payload ?? "{}",
-            }))
-          );
+        const raw = (payload.layouts || []).map((l) => ({
+          ...l,
+          node_type: (l.node_type ?? "agent") as "prompt" | "agent",
+          payload: l.payload ?? "{}",
+        }));
+
+        // Legacy: 20 placeholder agents → empty canvas, persist so next load is clean
+        const allAgents =
+          raw.length === 20 && raw.every((l) => (l.node_type ?? "agent") === "agent");
+        if (allAgents) {
+          setLayouts([]);
+          loaded.current = true;
+          try {
+            await invoke("save_canvas_layout", { payload: { layouts: [] } });
+          } catch (_) {
+            /* ignore */
+          }
+          return;
+        }
+
+        // Cap empty prompts: keep all prompts with content + at most 1 empty
+        const withPromptText = raw.map((l) => {
+          let promptText = "";
+          if (l.node_type === "prompt" && l.payload) {
+            try {
+              const o = JSON.parse(l.payload) as { promptText?: string };
+              promptText = o.promptText ?? "";
+            } catch (_) {
+              /* ignore */
+            }
+          }
+          return { layout: l, promptText } as const;
+        });
+        const withContent = withPromptText.filter(
+          (x) => x.layout.node_type === "prompt" && x.promptText.trim() !== ""
+        );
+        const emptyPrompts = withPromptText.filter(
+          (x) => x.layout.node_type === "prompt" && x.promptText.trim() === ""
+        );
+        const keptEmpty = emptyPrompts.slice(0, 1).map((x) => x.layout);
+        const agents = withPromptText.filter((x) => x.layout.node_type === "agent").map((x) => x.layout);
+        const filtered: SessionLayout[] = [
+          ...withContent.map((x) => x.layout),
+          ...keptEmpty,
+          ...agents,
+        ];
+        if (filtered.length > 0) {
+          setLayouts(filtered);
+          if (filtered.length < raw.length && !cancelled) {
+            persistLayoutsRef.current(filtered);
+          }
         }
       } catch (_) {
         // First run or no saved layout
