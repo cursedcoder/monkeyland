@@ -1,6 +1,7 @@
 # id-1: Canvas prompt element (Cursor-like)
 
 **Status:** In progress  
+**Source:** monkeyland.md §7 Stage 1 (refinement — prompt element)
 **Created:** 2025-02-27
 
 ## Goal

@@ -1,0 +1,30 @@
+---
+description: Architecture context — use monkeyland.md for constraints; do not implement out-of-scope stages
+alwaysApply: true
+---
+
+# Architecture context (Monkeyland / Agent Canvas)
+
+This project has a **large spec** in `monkeyland.md` (Tauri, Rust core, 20 agents, PTY pool, browser pool, etc.). To avoid confusion and scope creep:
+
+## Use monkeyland.md for constraints, not as a todo list
+
+- **Do** use it to respect architectural rules (e.g. DOM canvas only, no WebGL; per-session SQLite; PTYs in Rust when that stage is active).
+- **Do not** implement stages or features that are not required by the **current task** in `docs/tasks/in-progress/`. If the task is “canvas prompt element,” do not add PTY, browser, or replay — that is out of scope.
+
+## Critical rules (summary)
+
+When your code touches these areas, comply with the spec:
+
+| Area | Rule |
+|------|------|
+| Canvas | DOM + CSS transforms only. No WebGL, PixiJS, or Canvas 2D for the main canvas. |
+| Terminals | PTYs in Rust (portable-pty), not Node. (Relevant when Stage 3 is in scope.) |
+| Browser | One Chromium instance; browser context pool. (Relevant when Stage 4 is in scope.) |
+| Storage | Per-session SQLite files; no single shared DB. (Relevant when Stage 2+ is in scope.) |
+| Agents | Lightweight; JSON-RPC to core; they do not own PTYs or browsers. |
+
+## Entry point
+
+- **Scope** is defined in **monkeyland.md** §7 (Stages 1–6). Agents derive the next task from that section and the **Source** lines in `docs/tasks/done/`; no human is required to pick the next task.
+- For “what to do right now,” use **docs/CONTEXT.md** and **docs/tasks/in-progress/*.md**; implement only that task.

@@ -1,0 +1,34 @@
+---
+description: Task loop — execute in-progress task; if empty derive next from monkeyland.md §7; on done create next task and continue
+alwaysApply: true
+---
+
+# Task-driven workflow (agent loop)
+
+Scope is defined in **monkeyland.md** Section 7 (Development Stages). Work is tracked in **docs/tasks/** markdown files. Agents run in a loop: execute current task → when done, derive and create next task from the spec → continue.
+
+## 1. Resolve current task
+
+- **Read** `docs/CONTEXT.md` first.
+- **If** `docs/tasks/in-progress/` contains a task file: that is the current task. Open it and implement it (Goal, Requirements, Done criteria; respect Out of scope).
+- **If** `docs/tasks/in-progress/` is **empty**: derive the next task from **monkeyland.md §7** (Stages 1–6, deliverables). See docs/tasks/README.md “Deriving the next task.” Create a new task file (from `docs/tasks/_template.md`), set **Source** (e.g. `Source: monkeyland.md §7 Stage N`), put it in `in-progress/`, then implement it.
+
+## 2. While implementing
+
+- Implement only what the current task specifies. Do not add scope from other stages.
+- **Update the task file** as you go: check off requirement/done-criterion checkboxes; add a short dated line under **Progress / Notes**.
+
+## 3. When the task is done
+
+- Set **Status** to `Done` and **move** the task file from `docs/tasks/in-progress/` to `docs/tasks/done/`.
+- **Create the next task:** Read monkeyland.md §7 and `docs/tasks/done/` (use **Source** lines). The next task is the next Stage or next deliverable(s) not yet covered. Create a new task file with **Source** set; put it in `docs/tasks/in-progress/` (or create in backlog and move to in-progress). Optionally **continue** in the same run by working on this new task.
+
+## 4. Task file requirements
+
+- Every task must have a **Source** line (e.g. `Source: monkeyland.md §7 Stage 2`) so the next agent can derive the following task. Use `docs/tasks/_template.md` and `docs/tasks/README.md` for format and derivation rules.
+
+## Reference
+
+- Context and loop: `docs/CONTEXT.md`
+- Derivation and format: `docs/tasks/README.md`
+- Spec (scope): `monkeyland.md` §7
