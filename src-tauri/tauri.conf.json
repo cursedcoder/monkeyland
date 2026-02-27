@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Monkeyland",
+  "version": "0.1.0",
+  "identifier": "app.monkeyland.agent-canvas",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "Monkeyland — Agent Canvas",
+        "width": 1400,
+        "height": 900,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost ws://localhost:*"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "shortDescription": "Agent Canvas for 20 concurrent agents",
+    "longDescription": "Desktop app for managing 20 AI agents with terminals and browsers. PTY pool in Rust, shared Chromium, per-session SQLite.",
+    "category": "DeveloperTool"
+  }
+}
