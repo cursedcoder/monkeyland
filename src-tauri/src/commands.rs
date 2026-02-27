@@ -66,3 +66,30 @@ pub async fn load_canvas_layout(meta_db: State<'_, MetaDb>) -> Result<CanvasLayo
             .collect(),
     })
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmSettingsPayload {
+    pub provider: String,
+    pub model: String,
+}
+
+#[tauri::command]
+pub async fn load_llm_settings(meta_db: State<'_, MetaDb>) -> Result<LlmSettingsPayload, String> {
+    let provider = meta_db
+        .get_setting("llm_provider")?
+        .unwrap_or_else(|| "anthropic".to_string());
+    let model = meta_db
+        .get_setting("llm_model")?
+        .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+    Ok(LlmSettingsPayload { provider, model })
+}
+
+#[tauri::command]
+pub async fn save_llm_settings(
+    meta_db: State<'_, MetaDb>,
+    payload: LlmSettingsPayload,
+) -> Result<(), String> {
+    meta_db.set_setting("llm_provider", &payload.provider)?;
+    meta_db.set_setting("llm_model", &payload.model)?;
+    Ok(())
+}

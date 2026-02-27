@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Canvas } from "./components/Canvas";
+import { LlmSettings } from "./components/LlmSettings";
 import "./App.css";
 import type { SessionLayout, CanvasLayoutPayload } from "./types";
 import { PROMPT_CARD_DEFAULT_W, PROMPT_CARD_DEFAULT_H, GRID_STEP } from "./types";
@@ -186,6 +187,7 @@ export default function App() {
       <header className="app-header">
         <h1>Monkeyland</h1>
         <span className="app-subtitle">Agent Canvas</span>
+        <LlmSettings />
         <button
           type="button"
           className="app-add-prompt"

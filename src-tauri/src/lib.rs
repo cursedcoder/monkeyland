@@ -48,6 +48,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             crate::commands::save_canvas_layout,
             crate::commands::load_canvas_layout,
+            crate::commands::load_llm_settings,
+            crate::commands::save_llm_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Monkeyland");

@@ -58,6 +58,10 @@ impl MetaDb {
                 node_type TEXT DEFAULT 'agent',
                 payload TEXT DEFAULT '{}'
             );
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             ",
         )
         .map_err(|e| e.to_string())?;
@@ -173,6 +177,31 @@ impl MetaDb {
             out.push(row.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    }
+
+    /// Get a value from app_settings. Returns None if key is missing.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(value)
+    }
+
+    /// Set a value in app_settings (insert or replace).
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+            [key, value],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
 
