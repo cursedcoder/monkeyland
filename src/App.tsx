@@ -4,7 +4,13 @@ import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
 import "./App.css";
 import type { SessionLayout, CanvasLayoutPayload } from "./types";
-import { PROMPT_CARD_DEFAULT_W, PROMPT_CARD_DEFAULT_H, GRID_STEP } from "./types";
+import {
+  PROMPT_CARD_DEFAULT_W,
+  PROMPT_CARD_DEFAULT_H,
+  GRID_STEP,
+  SESSION_CARD_DEFAULT_W,
+  SESSION_CARD_DEFAULT_H,
+} from "./types";
 
 function generateNodeId(): string {
   return `node-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -149,11 +155,31 @@ export default function App() {
     });
   }, [persistLayouts]);
 
-  const handleLaunch = useCallback((_nodeId: string) => {
-    // MVP: no LLM call yet. id-2 will add Anthropic.
-    // eslint-disable-next-line no-console
-    console.log("Launch (Anthropic integration in id-2)");
-  }, []);
+  const handleLaunch = useCallback(
+    (nodeId: string) => {
+      setLayouts((prev) => {
+        const promptLayout = prev.find(
+          (l) => l.session_id === nodeId && (l.node_type ?? "agent") === "prompt"
+        );
+        if (!promptLayout) return prev;
+
+        const newAgentLayout: SessionLayout = {
+          session_id: generateNodeId(),
+          x: promptLayout.x,
+          y: promptLayout.y + promptLayout.h + GRID_STEP,
+          w: SESSION_CARD_DEFAULT_W,
+          h: SESSION_CARD_DEFAULT_H,
+          collapsed: false,
+          node_type: "agent",
+          payload: JSON.stringify({ sourcePromptId: nodeId }),
+        };
+        const next = [...prev, newAgentLayout];
+        if (loaded.current) persistLayouts(next);
+        return next;
+      });
+    },
+    [persistLayouts]
+  );
 
   const handleAddPrompt = useCallback(() => {
     const newLayout: SessionLayout = {
