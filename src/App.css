@@ -32,6 +32,22 @@
   background: #89b4fa;
 }
 
+.app-clear-canvas {
+  margin-left: 8px;
+  padding: 8px 14px;
+  background: transparent;
+  color: #a9b1d6;
+  border: 1px solid #565f89;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.app-clear-canvas:hover {
+  background: #363b54;
+  color: #c0caf5;
+}
+
 .app-header h1 {
   margin: 0;
   font-size: 18px;

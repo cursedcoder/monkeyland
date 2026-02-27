@@ -16,22 +16,19 @@ Agents must not implement outside the current task. When a task is done, the **n
 ## 2. Agent loop
 
 1. **Resolve current task**
-   - If `docs/tasks/in-progress/` has a task: that is the current task. Read it and implement it.
-   - If `docs/tasks/in-progress/` is **empty**: derive the next task from `monkeyland.md` §7 (see §3 below), create a new task file, put it in `in-progress/`, then implement it.
-
+  - If `docs/tasks/in-progress/` has a task: that is the current task. Read it and implement it.
+  - If `docs/tasks/in-progress/` is **empty**: derive the next task from `monkeyland.md` §7 (see §3 below), create a new task file, put it in `in-progress/`, then implement it.
 2. **Execute**
-   - Implement only what the current task’s Goal, Requirements, and Done criteria specify. Respect Out of scope.
-   - While working: check off requirements/done criteria and add a short Progress/Notes line with date.
-
+  - Implement only what the current task’s Goal, Requirements, and Done criteria specify. Respect Out of scope.
+  - While working: check off requirements/done criteria and add a short Progress/Notes line with date.
 3. **On completion**
-   - Set Status to `Done`, move the task file to `docs/tasks/done/`.
-   - **Create next task:** Derive from `monkeyland.md` §7 (next unchecked deliverable or stage), or take from `backlog/` if a suitable task exists. Create the new task file with a **Source** line pointing to the spec (e.g. `Source: monkeyland.md §7 Stage 2`). Put it in `in-progress/` (or in `backlog/` and move to `in-progress/`).
-   - **Sequential runs:** One task per run is the default. The **next** task is started by the operator after they have tested; do not assume the next run will begin immediately.
-
+  - Set Status to `Done`, move the task file to `docs/tasks/done/`.
+  - **Create next task:** Derive from `monkeyland.md` §7 (next unchecked deliverable or stage), or take from `backlog/` if a suitable task exists. Create the new task file with a **Source** line pointing to the spec (e.g. `Source: monkeyland.md §7 Stage 2`). Put it in `in-progress/` (or in `backlog/` and move to `in-progress/`).
+  - **Sequential runs:** One task per run is the default. The **next** task is started by the operator after they have tested; do not assume the next run will begin immediately.
 4. **Before you finish — commit (required)**
-   - You must run `git add` and `git commit` before ending your run. A completed task without a commit is incomplete.
-   - Commit all changes: implementation, task file moved to `done/`, new task file in `in-progress/` (if created). Message format: `id-N: Short task title` (e.g. `id-1: Canvas prompt element`).
-   - If you did not complete the task but made progress, you may commit with `WIP: id-N: Short title` so the next run has a checkpoint.
+  - You must run `git add` and `git commit` before ending your run. A completed task without a commit is incomplete.
+  - Commit all changes: implementation, task file moved to `done/`, new task file in `in-progress/` (if created). Message format: `id-N: Short task title` (e.g. `id-1: Canvas prompt element`).
+  - If you did not complete the task but made progress, you may commit with `WIP: id-N: Short title` so the next run has a checkpoint.
 
 ---
 
@@ -46,14 +43,16 @@ Agents must not implement outside the current task. When a task is done, the **n
 
 ## 4. Where things live
 
-| What | Where |
-|------|--------|
-| **Scope and stages** | `monkeyland.md` (Section 7 = deliverables) |
-| **Current task** | `docs/tasks/in-progress/*.md` |
-| **Task system and derivation** | `docs/tasks/README.md` |
-| **This context** | `docs/CONTEXT.md` |
-| **Done tasks** | `docs/tasks/done/` |
-| **Future / refinements** | `docs/tasks/backlog/` |
+
+| What                           | Where                                      |
+| ------------------------------ | ------------------------------------------ |
+| **Scope and stages**           | `monkeyland.md` (Section 7 = deliverables) |
+| **Current task**               | `docs/tasks/in-progress/*.md`              |
+| **Task system and derivation** | `docs/tasks/README.md`                     |
+| **This context**               | `docs/CONTEXT.md`                          |
+| **Done tasks**                 | `docs/tasks/done/`                         |
+| **Future / refinements**       | `docs/tasks/backlog/`                      |
+
 
 ---
 
@@ -78,3 +77,4 @@ Agents can run in a loop: complete task → move to done → derive and create n
 - **When to commit:** After completing a task: commit all changes (code, task file moved to `done/`, new task file in `in-progress/`) in one commit. If you made progress but did not complete the task, you may commit with message `WIP: id-N: Short title` so the next run has a checkpoint.
 - **Message format:** `id-N: Short task title` (e.g. `id-1: Canvas prompt element`). Keeps history aligned with tasks and makes it easy to see what each run did.
 - **Why:** The operator tests after each run. The next task is started only after they invoke the next run. Each run must leave the repo in a clean, committed state so the next agent (or human) sees a consistent repo and correct `in-progress/` state.
+

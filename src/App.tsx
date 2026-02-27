@@ -18,6 +18,26 @@ export default function App() {
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const promptSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const persistLayouts = useCallback((next: SessionLayout[]) => {
+    if (saveTimeout.current) clearTimeout(saveTimeout.current);
+    saveTimeout.current = setTimeout(async () => {
+      saveTimeout.current = null;
+      try {
+        await invoke("save_canvas_layout", {
+          payload: {
+            layouts: next.map((l) => ({
+              ...l,
+              node_type: l.node_type ?? "agent",
+              payload: l.payload ?? "{}",
+            })),
+          },
+        });
+      } catch (e) {
+        console.warn("Failed to save canvas layout", e);
+      }
+    }, LAYOUT_DEBOUNCE_MS);
+  }, []);
+
   const persistLayoutsRef = useRef<(next: SessionLayout[]) => void>(() => {});
   persistLayoutsRef.current = persistLayouts;
 
@@ -34,8 +54,12 @@ export default function App() {
         }));
 
         // Legacy: 20 placeholder agents → empty canvas, persist so next load is clean
+        const nodeType = (l: (typeof raw)[0]) =>
+          String(l.node_type ?? "agent").toLowerCase();
         const allAgents =
-          raw.length === 20 && raw.every((l) => (l.node_type ?? "agent") === "agent");
+          raw.length >= 19 &&
+          raw.length <= 21 &&
+          raw.every((l) => nodeType(l) === "agent");
         if (allAgents) {
           setLayouts([]);
           loaded.current = true;
@@ -87,26 +111,6 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const persistLayouts = useCallback((next: SessionLayout[]) => {
-    if (saveTimeout.current) clearTimeout(saveTimeout.current);
-    saveTimeout.current = setTimeout(async () => {
-      saveTimeout.current = null;
-      try {
-        await invoke("save_canvas_layout", {
-          payload: {
-            layouts: next.map((l) => ({
-              ...l,
-              node_type: l.node_type ?? "agent",
-              payload: l.payload ?? "{}",
-            })),
-          },
-        });
-      } catch (e) {
-        console.warn("Failed to save canvas layout", e);
-      }
-    }, LAYOUT_DEBOUNCE_MS);
   }, []);
 
   const handleLayoutChange = useCallback((nodeId: string, layout: SessionLayout) => {
@@ -168,6 +172,15 @@ export default function App() {
     });
   }, [layouts.length, persistLayouts]);
 
+  const handleClearCanvas = useCallback(async () => {
+    setLayouts([]);
+    try {
+      await invoke("save_canvas_layout", { payload: { layouts: [] } });
+    } catch (e) {
+      console.warn("Failed to clear canvas layout", e);
+    }
+  }, []);
+
   return (
     <div className="app">
       <header className="app-header">
@@ -179,6 +192,14 @@ export default function App() {
           onClick={handleAddPrompt}
         >
           Add prompt
+        </button>
+        <button
+          type="button"
+          className="app-clear-canvas"
+          onClick={handleClearCanvas}
+          title="Remove all cards and reset canvas"
+        >
+          Clear canvas
         </button>
       </header>
       <Canvas
