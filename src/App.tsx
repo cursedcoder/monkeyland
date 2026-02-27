@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { loadModels, igniteModel, Message } from "multi-llm-ts";
+import type { LlmChunk } from "multi-llm-ts";
 import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
 import "./App.css";
 import type { SessionLayout, CanvasLayoutPayload } from "./types";
+import type { LlmProviderId } from "./types";
 import {
   PROMPT_CARD_DEFAULT_W,
   PROMPT_CARD_DEFAULT_H,
@@ -156,29 +159,103 @@ export default function App() {
   }, [persistLayouts]);
 
   const handleLaunch = useCallback(
-    (nodeId: string) => {
-      setLayouts((prev) => {
-        const promptLayout = prev.find(
-          (l) => l.session_id === nodeId && (l.node_type ?? "agent") === "prompt"
-        );
-        if (!promptLayout) return prev;
+    async (nodeId: string) => {
+      const promptLayout = layouts.find(
+        (l) => l.session_id === nodeId && (l.node_type ?? "agent") === "prompt"
+      );
+      if (!promptLayout) return;
 
-        const newAgentLayout: SessionLayout = {
-          session_id: generateNodeId(),
-          x: promptLayout.x,
-          y: promptLayout.y + promptLayout.h + GRID_STEP,
-          w: SESSION_CARD_DEFAULT_W,
-          h: SESSION_CARD_DEFAULT_H,
-          collapsed: false,
-          node_type: "agent",
-          payload: JSON.stringify({ sourcePromptId: nodeId }),
-        };
+      let promptText = "";
+      try {
+        const o = JSON.parse(promptLayout.payload ?? "{}") as { promptText?: string };
+        promptText = o.promptText?.trim() ?? "";
+      } catch {
+        /* ignore */
+      }
+
+      const newAgentId = generateNodeId();
+      const newAgentLayout: SessionLayout = {
+        session_id: newAgentId,
+        x: promptLayout.x,
+        y: promptLayout.y + promptLayout.h + GRID_STEP,
+        w: SESSION_CARD_DEFAULT_W,
+        h: SESSION_CARD_DEFAULT_H,
+        collapsed: false,
+        node_type: "agent",
+        payload: JSON.stringify({
+          sourcePromptId: nodeId,
+          status: "loading",
+          answer: "",
+        }),
+      };
+
+      setLayouts((prev) => {
         const next = [...prev, newAgentLayout];
         if (loaded.current) persistLayouts(next);
         return next;
       });
+
+      const updateAgentPayload = (
+        update: { status: string; answer?: string; errorMessage?: string },
+        persistWhenFinal?: boolean
+      ) => {
+        setLayouts((prev) => {
+          const next = prev.map((l) => {
+            if (l.session_id !== newAgentId) return l;
+            try {
+              const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+              return { ...l, payload: JSON.stringify({ ...p, ...update }) };
+            } catch {
+              return l;
+            }
+          });
+          if (persistWhenFinal && loaded.current) persistLayouts(next);
+          return next;
+        });
+      };
+
+      try {
+        const settings = await invoke<{ provider: string; model: string }>("load_llm_settings");
+        const apiKey = await invoke<string | null>("get_llm_api_key", {
+          provider: settings.provider,
+        });
+        if (!apiKey?.trim()) {
+          updateAgentPayload({ status: "error", errorMessage: "LLM not configured. Set up API key in settings." });
+          return;
+        }
+
+        const modelsResult = await loadModels(settings.provider as LlmProviderId, {
+          apiKey: apiKey.trim(),
+        });
+        const model = modelsResult?.chat?.find((m) => m.id === settings.model) ?? modelsResult?.chat?.[0];
+        if (!model) {
+          updateAgentPayload({ status: "error", errorMessage: "No model available." });
+          return;
+        }
+
+        const llmModel = igniteModel(settings.provider, model, { apiKey: apiKey.trim() });
+        const stream = llmModel.generate([
+          new Message("user", promptText || "Hello, respond briefly."),
+        ]);
+
+        let fullText = "";
+        for await (const chunk of stream as AsyncIterable<LlmChunk>) {
+          if (chunk && typeof chunk === "object" && "type" in chunk && "text" in chunk) {
+            const c = chunk as { type: string; text?: string };
+            if ((c.type === "content" || c.type === "reasoning") && c.text) {
+              fullText += c.text;
+              updateAgentPayload({ status: "loading", answer: fullText });
+            }
+          }
+        }
+
+        updateAgentPayload({ status: "done", answer: fullText }, true);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        updateAgentPayload({ status: "error", errorMessage: msg }, true);
+      }
     },
-    [persistLayouts]
+    [layouts, persistLayouts]
   );
 
   const handleAddPrompt = useCallback(() => {

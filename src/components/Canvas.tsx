@@ -74,6 +74,33 @@ export function Canvas({
     [onLayoutCommit]
   );
 
+  const connectionLines = useMemo(() => {
+    const lines: { x1: number; y1: number; x2: number; y2: number }[] = [];
+    const promptById = new Map(
+      layouts.filter((l) => (l.node_type ?? "agent") === "prompt").map((l) => [l.session_id, l])
+    );
+    for (const layout of layouts) {
+      if ((layout.node_type ?? "agent") !== "agent" || !layout.payload) continue;
+      try {
+        const p = JSON.parse(layout.payload) as { sourcePromptId?: string };
+        const promptId = p?.sourcePromptId;
+        const prompt = promptId ? promptById.get(promptId) : undefined;
+        if (!prompt) continue;
+        const fromX = prompt.x + prompt.w / 2;
+        const fromY = prompt.y + prompt.h;
+        const toX = layout.x + layout.w / 2;
+        const toY = layout.y;
+        lines.push({ x1: fromX, y1: fromY, x2: toX, y2: toY });
+      } catch {
+        /* ignore */
+      }
+    }
+    return lines;
+  }, [layouts]);
+
+  const svgSize = 8000;
+  const svgViewBox = `0 0 ${svgSize} ${svgSize}`;
+
   return (
     <div
       ref={containerRef}
@@ -91,6 +118,27 @@ export function Canvas({
           transformOrigin: "0 0",
         }}
       >
+        <svg
+          className="canvas-connections"
+          width={svgSize}
+          height={svgSize}
+          viewBox={svgViewBox}
+          preserveAspectRatio="none"
+          style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none" }}
+        >
+          {connectionLines.map((line, i) => (
+            <line
+              key={i}
+              x1={line.x1}
+              y1={line.y1}
+              x2={line.x2}
+              y2={line.y2}
+              stroke="var(--connection-stroke, #7aa2f7)"
+              strokeWidth="2"
+              strokeOpacity="0.8"
+            />
+          ))}
+        </svg>
         {layouts.map((layout) => {
           if (!visibleIds.has(layout.session_id)) return null;
           const nodeType = layout.node_type ?? "agent";

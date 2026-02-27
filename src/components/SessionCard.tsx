@@ -159,9 +159,47 @@ export function SessionCard({
       </div>
       {!layout.collapsed && (
         <div className="session-card-body">
-          <div className="session-card-placeholder">
-            Terminal + browser (Stage 3–4)
-          </div>
+          {(() => {
+            try {
+              const p = JSON.parse(layout.payload ?? "{}") as {
+                sourcePromptId?: string;
+                status?: string;
+                answer?: string;
+                errorMessage?: string;
+              };
+              if (p.status === "loading") {
+                return (
+                  <div className="session-card-response">
+                    <p className="session-card-response-loading">Loading…</p>
+                    {p.answer ? (
+                      <div className="session-card-response-text">{p.answer}</div>
+                    ) : null}
+                  </div>
+                );
+              }
+              if (p.status === "error") {
+                return (
+                  <div className="session-card-response session-card-response-error">
+                    <p className="session-card-response-error-msg">{p.errorMessage ?? "Error"}</p>
+                  </div>
+                );
+              }
+              if (p.status === "done" && p.answer != null) {
+                return (
+                  <div className="session-card-response">
+                    <div className="session-card-response-text">{p.answer}</div>
+                  </div>
+                );
+              }
+            } catch {
+              /* ignore */
+            }
+            return (
+              <div className="session-card-placeholder">
+                Terminal + browser (Stage 3–4)
+              </div>
+            );
+          })()}
           <div
             className="session-card-resize-handle se"
             data-resize-handle

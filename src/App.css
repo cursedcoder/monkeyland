@@ -426,6 +426,43 @@
 .session-card-placeholder {
   font-size: 11px;
   color: #565f89;
+}
+
+.session-card-response {
+  padding: 10px 12px;
+  overflow: auto;
+  font-size: 12px;
+  color: #a9b1d6;
+  min-height: 0;
+  max-width: 100%;
+}
+
+.session-card-response-loading {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: #7aa2f7;
+}
+
+.session-card-response-text {
+  margin: 0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c0caf5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+}
+
+.session-card-response-error {
+  color: #f7768e;
+}
+
+.session-card-response-error-msg {
+  margin: 0;
+  font-size: 12px;
+  color: #f7768e;
   display: flex;
   align-items: center;
   justify-content: center;
