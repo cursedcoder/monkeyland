@@ -93,3 +93,30 @@ pub async fn save_llm_settings(
     meta_db.set_setting("llm_model", &payload.model)?;
     Ok(())
 }
+
+#[tauri::command]
+pub async fn get_llm_api_key(meta_db: State<'_, MetaDb>, provider: String) -> Result<Option<String>, String> {
+    let key = format!("llm_api_key_{}", provider);
+    meta_db.get_setting(&key)
+}
+
+#[tauri::command]
+pub async fn set_llm_api_key(
+    meta_db: State<'_, MetaDb>,
+    provider: String,
+    api_key: String,
+) -> Result<(), String> {
+    let key = format!("llm_api_key_{}", provider);
+    meta_db.set_setting(&key, &api_key)
+}
+
+#[tauri::command]
+pub async fn get_llm_setup_done(meta_db: State<'_, MetaDb>) -> Result<bool, String> {
+    let v = meta_db.get_setting("llm_setup_done")?;
+    Ok(v.as_deref() == Some("1"))
+}
+
+#[tauri::command]
+pub async fn set_llm_setup_done(meta_db: State<'_, MetaDb>) -> Result<(), String> {
+    meta_db.set_setting("llm_setup_done", "1")
+}

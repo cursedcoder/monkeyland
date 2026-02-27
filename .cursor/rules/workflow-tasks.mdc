@@ -34,6 +34,7 @@ Before you finish, confirm:
 
 - [ ] Task file status set to Done and file moved to `docs/tasks/done/`.
 - [ ] Next task created in `docs/tasks/in-progress/` (if applicable).
+- [ ] **`npm run validate:no-errors`** passed (validates no console/page errors in frontend). See docs/CONTEXT.md §5.
 - [ ] **`git add` and `git commit` executed** with message `id-N: Short title`. If you did not commit, the run is incomplete.
 
 ## Reference

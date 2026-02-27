@@ -43,21 +43,37 @@ export interface LlmSettings {
   model: string;
 }
 
-/** Known providers and their models (for dropdowns). */
-export const LLM_PROVIDERS = ["anthropic", "openai"] as const;
-export type LlmProvider = (typeof LLM_PROVIDERS)[number];
+/** Provider IDs supported by multi-llm-ts (loadModels). */
+export const LLM_PROVIDER_IDS = [
+  "anthropic",
+  "openai",
+  "azure",
+  "cerebras",
+  "deepseek",
+  "google",
+  "groq",
+  "lmstudio",
+  "meta",
+  "mistralai",
+  "ollama",
+  "openrouter",
+  "xai",
+] as const;
+export type LlmProviderId = (typeof LLM_PROVIDER_IDS)[number];
 
-export const LLM_MODELS: Record<LlmProvider, readonly string[]> = {
-  anthropic: [
-    "claude-sonnet-4-20250514",
-    "claude-3-5-sonnet-20241022",
-    "claude-3-5-haiku-20241022",
-    "claude-3-opus-20240229",
-  ],
-  openai: [
-    "gpt-4o",
-    "gpt-4o-mini",
-    "gpt-4-turbo",
-    "gpt-3.5-turbo",
-  ],
+/** Display names for provider dropdown. */
+export const LLM_PROVIDER_LABELS: Record<LlmProviderId, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  azure: "Azure AI",
+  cerebras: "Cerebras",
+  deepseek: "DeepSeek",
+  google: "Google",
+  groq: "Groq",
+  lmstudio: "LM Studio",
+  meta: "Meta / Llama",
+  mistralai: "Mistral AI",
+  ollama: "Ollama",
+  openrouter: "OpenRouter",
+  xai: "xAI",
 };

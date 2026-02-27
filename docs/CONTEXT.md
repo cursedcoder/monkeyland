@@ -56,13 +56,25 @@ Agents must not implement outside the current task. When a task is done, the **n
 
 ---
 
-## 5. Critical rules (summary)
+## 5. Validating no frontend errors
+
+**Agents must be able to validate there are no console/runtime errors** without connecting to a live app’s devtools. Run:
+
+```bash
+npm run validate:no-errors
+```
+
+This script builds the frontend, serves it with Tauri IPC mocked (`window.__TAURI_VALIDATE__`), loads the app in headless Chromium via Playwright, and collects **console errors**, **console warnings**, and **uncaught page errors**. If any are found, it exits with code 1 and prints them. Run it after frontend changes (or as part of the completion checklist) to confirm no regressions.
+
+---
+
+## 6. Critical rules (summary)
 
 When implementing, comply with the rules in `monkeyland.md` (e.g. DOM canvas only; PTYs in Rust; one Chromium; per-session SQLite). Use the **Key rules** in the relevant Stage when creating or executing a task.
 
 ---
 
-## 6. Keeping context in markdown
+## 7. Keeping context in markdown
 
 - **Task files** carry context: Status, checkboxes, Progress/Notes, and **Source** (link to monkeyland.md).
 - **Done folder** is the record of what’s done; **Source** lines allow the next agent to derive the next task from `monkeyland.md` without human input.
@@ -71,7 +83,7 @@ Agents can run in a loop: complete task → move to done → derive and create n
 
 ---
 
-## 7. Git (agent runs)
+## 8. Git (agent runs)
 
 - **Required:** After finishing work on a task, you **must** run `git add` (for all changed files) and `git commit`. Do not end your run with uncommitted changes. If you skip the commit, the run is incomplete.
 - **When to commit:** After completing a task: commit all changes (code, task file moved to `done/`, new task file in `in-progress/`) in one commit. If you made progress but did not complete the task, you may commit with message `WIP: id-N: Short title` so the next run has a checkpoint.

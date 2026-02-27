@@ -94,6 +94,264 @@
   border-color: #7aa2f7;
 }
 
+.llm-settings-apikey {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.llm-settings-input {
+  background: #24283b;
+  color: #c0caf5;
+  border: 1px solid #3b4261;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  width: 120px;
+}
+
+.llm-settings-input::placeholder {
+  color: #565f89;
+}
+
+.llm-settings-input:focus {
+  outline: none;
+  border-color: #7aa2f7;
+}
+
+.llm-settings-save-key {
+  padding: 4px 10px;
+  font-size: 11px;
+  background: #363b54;
+  color: #a9b1d6;
+  border: 1px solid #565f89;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.llm-settings-save-key:hover:not(:disabled) {
+  background: #3b4261;
+  color: #c0caf5;
+}
+
+.llm-settings-save-key:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* --- LLM Setup Wizard (first run / change) --- */
+.llm-wizard-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.llm-wizard-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+.llm-wizard-card {
+  position: relative;
+  width: 100%;
+  max-width: 440px;
+  background: #1e2030;
+  border: 1px solid #3b4261;
+  border-radius: 12px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+  padding: 28px 24px;
+}
+
+.llm-wizard-title {
+  margin: 0 0 20px;
+  font-size: 20px;
+  font-weight: 600;
+  color: #7aa2f7;
+}
+
+.llm-wizard-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 24px;
+  font-size: 11px;
+  color: #565f89;
+}
+
+.llm-wizard-step.active {
+  color: #7aa2f7;
+  font-weight: 600;
+}
+
+.llm-wizard-step.done {
+  color: #9ece6a;
+}
+
+.llm-wizard-body {
+  min-height: 120px;
+  margin-bottom: 24px;
+}
+
+.llm-wizard-label {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #c0caf5;
+}
+
+.llm-wizard-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #565f89;
+}
+
+.llm-wizard-providers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 8px;
+}
+
+.llm-wizard-provider-btn {
+  padding: 10px 14px;
+  font-size: 12px;
+  background: #24283b;
+  color: #a9b1d6;
+  border: 1px solid #3b4261;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.llm-wizard-provider-btn:hover {
+  background: #2a2e3e;
+  border-color: #565f89;
+}
+
+.llm-wizard-provider-btn.selected {
+  background: #364872;
+  border-color: #7aa2f7;
+  color: #c0caf5;
+}
+
+.llm-wizard-input,
+.llm-wizard-select {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 13px;
+  background: #24283b;
+  color: #c0caf5;
+  border: 1px solid #3b4261;
+  border-radius: 8px;
+}
+
+.llm-wizard-input:focus,
+.llm-wizard-select:focus {
+  outline: none;
+  border-color: #7aa2f7;
+}
+
+.llm-wizard-input::placeholder {
+  color: #565f89;
+}
+
+.llm-wizard-loading {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: #7aa2f7;
+}
+
+.llm-wizard-success {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: #9ece6a;
+}
+
+.llm-wizard-error {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: #f7768e;
+}
+
+.llm-wizard-btn {
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 8px;
+  cursor: pointer;
+  border: none;
+  margin-top: 12px;
+}
+
+.llm-wizard-btn.primary {
+  background: #7aa2f7;
+  color: #1a1b26;
+}
+
+.llm-wizard-btn.primary:hover:not(:disabled) {
+  background: #89b4fa;
+}
+
+.llm-wizard-btn.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.llm-wizard-btn.secondary {
+  background: transparent;
+  color: #a9b1d6;
+  border: 1px solid #565f89;
+}
+
+.llm-wizard-btn.secondary:hover:not(:disabled) {
+  background: #363b54;
+  color: #c0caf5;
+}
+
+.llm-wizard-btn.secondary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.llm-wizard-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid #3b4261;
+}
+
+.llm-settings-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  background: #24283b;
+  color: #a9b1d6;
+  border: 1px solid #3b4261;
+  border-radius: 8px;
+  margin-left: 24px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.llm-settings-chip:hover {
+  background: #2a2e3e;
+  border-color: #7aa2f7;
+  color: #c0caf5;
+}
+
+.llm-settings-chip strong {
+  color: #7aa2f7;
+  font-weight: 600;
+}
+
 .canvas-container {
   flex: 1;
   overflow: hidden;

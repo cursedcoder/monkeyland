@@ -50,6 +50,10 @@ pub fn run() {
             crate::commands::load_canvas_layout,
             crate::commands::load_llm_settings,
             crate::commands::save_llm_settings,
+            crate::commands::get_llm_api_key,
+            crate::commands::set_llm_api_key,
+            crate::commands::get_llm_setup_done,
+            crate::commands::set_llm_setup_done,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Monkeyland");

@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { LlmSettings as LlmSettingsType } from "../types";
-import {
-  LLM_PROVIDERS,
-  LLM_MODELS,
-  type LlmProvider,
-} from "../types";
+import { LlmSetupWizard } from "./LlmSetupWizard";
+import { LLM_PROVIDER_LABELS, type LlmProviderId } from "../types";
 
 interface LlmSettingsPayload {
   provider: string;
@@ -13,102 +9,64 @@ interface LlmSettingsPayload {
 }
 
 export function LlmSettings() {
-  const [provider, setProvider] = useState<string>("anthropic");
-  const [model, setModel] = useState<string>("");
+  const [setupDone, setSetupDone] = useState<boolean | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [provider, setProvider] = useState("");
+  const [model, setModel] = useState("");
 
-  const loadSettings = useCallback(async () => {
+  const checkSetup = useCallback(async () => {
     try {
-      const payload = await invoke<LlmSettingsPayload>("load_llm_settings");
-      const p = LLM_PROVIDERS.includes(payload.provider as LlmProvider)
-        ? (payload.provider as LlmProvider)
-        : "anthropic";
-      setProvider(p);
-      const models = LLM_MODELS[p];
-      const m =
-        payload.model && models.includes(payload.model)
-          ? payload.model
-          : models[0] ?? "";
-      setModel(m);
+      const done = await invoke<boolean>("get_llm_setup_done");
+      setSetupDone(done);
+      if (done) {
+        const payload = await invoke<LlmSettingsPayload>("load_llm_settings");
+        setProvider(payload.provider);
+        setModel(payload.model);
+      }
     } catch (_) {
-      setProvider("anthropic");
-      setModel("claude-sonnet-4-20250514");
+      setSetupDone(false);
     }
   }, []);
 
   useEffect(() => {
-    loadSettings();
-  }, [loadSettings]);
+    checkSetup();
+  }, [checkSetup]);
 
-  const saveSettings = useCallback(
-    async (next: LlmSettingsType) => {
-      try {
-        await invoke("save_llm_settings", { payload: next });
-      } catch (e) {
-        console.warn("Failed to save LLM settings", e);
-      }
-    },
-    []
-  );
+  const handleWizardComplete = useCallback(() => {
+    setWizardOpen(false);
+    setSetupDone(true);
+    checkSetup();
+  }, [checkSetup]);
 
-  const handleProviderChange = useCallback(
-    (e: React.ChangeEvent<HTMLSelectElement>) => {
-      const nextProvider = e.target.value as LlmProvider;
-      setProvider(nextProvider);
-      const models = LLM_MODELS[nextProvider];
-      const nextModel = models[0] ?? "";
-      setModel(nextModel);
-      saveSettings({ provider: nextProvider, model: nextModel });
-    },
-    [saveSettings]
-  );
+  if (setupDone === null) {
+    return null;
+  }
 
-  const handleModelChange = useCallback(
-    (e: React.ChangeEvent<HTMLSelectElement>) => {
-      const nextModel = e.target.value;
-      setModel(nextModel);
-      saveSettings({ provider, model: nextModel });
-    },
-    [provider, saveSettings]
-  );
+  if (!setupDone || wizardOpen) {
+    return (
+      <LlmSetupWizard
+        onComplete={handleWizardComplete}
+        initialProvider={provider || "anthropic"}
+        initialModel={model}
+      />
+    );
+  }
 
-  const models = LLM_PROVIDERS.includes(provider as LlmProvider)
-    ? LLM_MODELS[provider as LlmProvider]
-    : [];
-  const modelValue =
-    model && models.includes(model) ? model : models[0] ?? "";
+  const providerLabel =
+    provider && LLM_PROVIDER_LABELS[provider as LlmProviderId]
+      ? LLM_PROVIDER_LABELS[provider as LlmProviderId]
+      : provider;
 
   return (
-    <div className="llm-settings">
-      <label className="llm-settings-label">
-        <span>Provider</span>
-        <select
-          className="llm-settings-select"
-          value={provider}
-          onChange={handleProviderChange}
-          aria-label="LLM provider"
-        >
-          {LLM_PROVIDERS.map((p) => (
-            <option key={p} value={p}>
-              {p === "anthropic" ? "Anthropic" : p === "openai" ? "OpenAI" : p}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="llm-settings-label">
-        <span>Model</span>
-        <select
-          className="llm-settings-select"
-          value={modelValue}
-          onChange={handleModelChange}
-          aria-label="LLM model"
-        >
-          {models.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
-      </label>
-    </div>
+    <button
+      type="button"
+      className="llm-settings-chip"
+      onClick={() => setWizardOpen(true)}
+      title="Change LLM provider and model"
+    >
+      <strong>{providerLabel}</strong>
+      <span>·</span>
+      <span>{model || "—"}</span>
+    </button>
   );
 }
