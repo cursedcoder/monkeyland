@@ -4,6 +4,7 @@ import { useViewportBounds, rectIntersects } from "../hooks/useViewportBounds";
 import { PromptCard } from "./PromptCard";
 import { SessionCard } from "./SessionCard";
 import { TerminalCard } from "./TerminalCard";
+import { BrowserCard } from "./BrowserCard";
 import type { SessionLayout } from "../types";
 import { CULL_MARGIN } from "../types";
 
@@ -113,6 +114,20 @@ export function Canvas({
             });
           }
         }
+
+        // Agent → Browser connection
+        if (layout.node_type === "browser" && p.parentAgentId) {
+          const agent = nodeById.get(p.parentAgentId);
+          if (agent) {
+            lines.push({
+              x1: agent.x + agent.w / 2,
+              y1: agent.y + agent.h,
+              x2: layout.x + layout.w / 2,
+              y2: layout.y,
+              color: "#bb9af7",
+            });
+          }
+        }
       } catch {
         /* ignore */
       }
@@ -183,6 +198,18 @@ export function Canvas({
           if (nodeType === "terminal") {
             return (
               <TerminalCard
+                key={layout.session_id}
+                layout={layout}
+                onLayoutChange={handleCardLayoutChange(layout.session_id)}
+                onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
+                scale={viewport.scale}
+              />
+            );
+          }
+
+          if (nodeType === "browser") {
+            return (
+              <BrowserCard
                 key={layout.session_id}
                 layout={layout}
                 onLayoutChange={handleCardLayoutChange(layout.session_id)}

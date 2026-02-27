@@ -5,6 +5,7 @@ import type { LlmChunk } from "multi-llm-ts";
 import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
 import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
+import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
 import "./App.css";
 import type { SessionLayout, CanvasLayoutPayload } from "./types";
 import type { LlmProviderId } from "./types";
@@ -16,6 +17,8 @@ import {
   SESSION_CARD_DEFAULT_H,
   TERMINAL_CARD_DEFAULT_W,
   TERMINAL_CARD_DEFAULT_H,
+  BROWSER_CARD_DEFAULT_W,
+  BROWSER_CARD_DEFAULT_H,
 } from "./types";
 
 function generateNodeId(): string {
@@ -65,7 +68,7 @@ export default function App() {
         if (cancelled) return;
         const raw = (payload.layouts || []).map((l) => ({
           ...l,
-          node_type: (l.node_type ?? "agent") as "prompt" | "agent" | "terminal",
+          node_type: (l.node_type ?? "agent") as "prompt" | "agent" | "terminal" | "browser",
           payload: l.payload ?? "{}",
         }));
 
@@ -192,6 +195,52 @@ export default function App() {
     return terminalId;
   }, []);
 
+  const addBrowserNode = useCallback(
+    (agentNodeId: string, port: number): string => {
+      const browserId = generateNodeId();
+      setLayouts((prev) => {
+        const agent = prev.find((l) => l.session_id === agentNodeId);
+        const terminal = prev.find((l) => {
+          if (l.node_type !== "terminal") return false;
+          try {
+            const p = JSON.parse(l.payload ?? "{}") as { parentAgentId?: string };
+            return p.parentAgentId === agentNodeId;
+          } catch {
+            return false;
+          }
+        });
+
+        let x: number, y: number;
+        if (terminal) {
+          x = terminal.x;
+          y = terminal.y + terminal.h + GRID_STEP;
+        } else if (agent) {
+          x = agent.x + agent.w + GRID_STEP;
+          y = agent.y;
+        } else {
+          x = 400;
+          y = 400;
+        }
+
+        const browserLayout: SessionLayout = {
+          session_id: browserId,
+          x,
+          y,
+          w: BROWSER_CARD_DEFAULT_W,
+          h: BROWSER_CARD_DEFAULT_H,
+          collapsed: false,
+          node_type: "browser",
+          payload: JSON.stringify({ parentAgentId: agentNodeId, browserPort: port }),
+        };
+        const next = [...prev, browserLayout];
+        if (loaded.current) persistLayoutsRef.current(next);
+        return next;
+      });
+      return browserId;
+    },
+    [],
+  );
+
   const handleLaunch = useCallback(
     async (nodeId: string) => {
       const promptLayout = layoutsRef.current.find(
@@ -269,9 +318,10 @@ export default function App() {
 
         const llmModel = igniteModel(settings.provider, model, { apiKey: apiKey.trim() });
 
-        // Register terminal tool
         const terminalPlugin = new TerminalToolPlugin(newAgentId, addTerminalNode);
         llmModel.addPlugin(terminalPlugin);
+        const browserPlugin = new BrowserToolPlugin(newAgentId, addBrowserNode);
+        llmModel.addPlugin(browserPlugin);
 
         const stream = llmModel.generate(
           [new Message("user", promptText || "Hello, respond briefly.")],
@@ -305,7 +355,7 @@ export default function App() {
         updateAgentPayload({ status: "error", errorMessage: msg }, true);
       }
     },
-    [persistLayouts, addTerminalNode]
+    [persistLayouts, addTerminalNode, addBrowserNode]
   );
 
   const handleAddPrompt = useCallback(() => {

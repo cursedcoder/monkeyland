@@ -1,3 +1,4 @@
+use crate::browser_pool::BrowserPool;
 use crate::pty_pool::PtyPool;
 use crate::storage::{MetaDb, SessionLayoutRow};
 use serde::{Deserialize, Serialize};
@@ -186,6 +187,11 @@ pub struct TerminalExecPayload {
 
 fn default_timeout() -> u64 {
     30_000
+}
+
+#[tauri::command]
+pub async fn browser_ensure_started(pool: State<'_, BrowserPool>) -> Result<u16, String> {
+    pool.ensure_started()
 }
 
 /// Execute a command and wait for output (silence-detection).

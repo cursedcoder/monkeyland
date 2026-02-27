@@ -1,4 +1,4 @@
-export type CanvasNodeType = "prompt" | "agent" | "terminal";
+export type CanvasNodeType = "prompt" | "agent" | "terminal" | "browser";
 
 export interface SessionLayout {
   session_id: string;
@@ -27,6 +27,10 @@ export const TERMINAL_CARD_DEFAULT_W = 560;
 export const TERMINAL_CARD_DEFAULT_H = 360;
 export const TERMINAL_CARD_MIN_W = 360;
 export const TERMINAL_CARD_MIN_H = 240;
+export const BROWSER_CARD_DEFAULT_W = 680;
+export const BROWSER_CARD_DEFAULT_H = 480;
+export const BROWSER_CARD_MIN_W = 400;
+export const BROWSER_CARD_MIN_H = 300;
 export const GRID_STEP = 40;
 export const CULL_MARGIN = 100;
 

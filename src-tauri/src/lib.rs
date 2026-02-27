@@ -15,6 +15,7 @@ pub fn run() {
             app.manage(batcher);
             app.manage(coalescing::CoalescingBus::new());
             app.manage(pty_pool::PtyPool::new());
+            app.manage(browser_pool::BrowserPool::new());
 
             // Write batcher flush: every 100 ms
             let handle = app.handle().clone();
@@ -81,11 +82,13 @@ pub fn run() {
             crate::commands::terminal_write,
             crate::commands::terminal_resize,
             crate::commands::terminal_exec,
+            crate::commands::browser_ensure_started,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Monkeyland");
 }
 
+mod browser_pool;
 mod coalescing;
 mod commands;
 mod pty_pool;
