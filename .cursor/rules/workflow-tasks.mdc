@@ -22,6 +22,7 @@ Scope is defined in **monkeyland.md** Section 7 (Development Stages). Work is tr
 
 - Set **Status** to `Done` and **move** the task file from `docs/tasks/in-progress/` to `docs/tasks/done/`.
 - **Create the next task:** Read monkeyland.md §7 and `docs/tasks/done/` (use **Source** lines). The next task is the next Stage or next deliverable(s) not yet covered. Create a new task file with **Source** set; put it in `docs/tasks/in-progress/` (or create in backlog and move to in-progress). Optionally **continue** in the same run by working on this new task.
+- **Commit:** Commit all changes (code + task file moves + new task file). Use message format `id-N: Short task title` (e.g. `id-1: Canvas prompt element`). This gives the next run a clear checkpoint. See docs/CONTEXT.md §7 for details.
 
 ## 4. Task file requirements
 
