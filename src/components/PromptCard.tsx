@@ -17,6 +17,8 @@ interface PromptCardProps {
   onLayoutCommit: (layout: SessionLayout) => void;
   onPromptChange: (text: string) => void;
   onLaunch: () => void;
+  /** Canvas scale (zoom); used so drag/resize deltas match cursor in screen space */
+  scale?: number;
 }
 
 export function PromptCard({
@@ -26,9 +28,11 @@ export function PromptCard({
   onLayoutCommit,
   onPromptChange,
   onLaunch,
+  scale = 1,
 }: PromptCardProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
   const lastEmittedLayout = useRef<SessionLayout>(layout);
   const dragStart = useRef({ x: 0, y: 0, layoutX: 0, layoutY: 0 });
   const resizeStart = useRef({
@@ -42,8 +46,10 @@ export function PromptCard({
   const handlePointerDownDrag = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0 || (e.target as HTMLElement).closest("[data-resize-handle]")) return;
+      e.preventDefault(); // prevent text selection / default drag behavior
       e.stopPropagation(); // so canvas pan does not start
       e.currentTarget.setPointerCapture(e.pointerId);
+      if (cardRef.current) cardRef.current.style.userSelect = "none";
       setIsDragging(true);
       dragStart.current = {
         x: e.clientX,
@@ -76,9 +82,10 @@ export function PromptCard({
     if (!isDragging && !isResizing) return;
 
     const onMove = (e: PointerEvent) => {
+      const s = scale;
       if (isDragging) {
-        const dx = e.clientX - dragStart.current.x;
-        const dy = e.clientY - dragStart.current.y;
+        const dx = (e.clientX - dragStart.current.x) / s;
+        const dy = (e.clientY - dragStart.current.y) / s;
         const next = {
           ...layout,
           x: snap(dragStart.current.layoutX + dx),
@@ -88,8 +95,8 @@ export function PromptCard({
         onLayoutChange(next);
       }
       if (isResizing) {
-        const dx = e.clientX - resizeStart.current.x;
-        const dy = e.clientY - resizeStart.current.y;
+        const dx = (e.clientX - resizeStart.current.x) / s;
+        const dy = (e.clientY - resizeStart.current.y) / s;
         let { w, h } = resizeStart.current;
         const edge = resizeStart.current.edge;
         if (edge.includes("e")) w = Math.max(PROMPT_CARD_MIN_W, w + dx);
@@ -103,6 +110,7 @@ export function PromptCard({
     };
 
     const onUp = () => {
+      if (cardRef.current) cardRef.current.style.userSelect = "";
       setIsDragging(false);
       setIsResizing(false);
       onLayoutCommit(lastEmittedLayout.current);
@@ -116,10 +124,11 @@ export function PromptCard({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [isDragging, isResizing, layout, onLayoutChange, onLayoutCommit]);
+  }, [isDragging, isResizing, layout, onLayoutChange, onLayoutCommit, scale]);
 
   return (
     <div
+      ref={cardRef}
       className="prompt-card"
       style={{
         position: "absolute",

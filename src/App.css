@@ -102,6 +102,7 @@
   background: #1f2335;
   border-bottom: 1px solid #3b4261;
   min-height: 32px;
+  user-select: none;
 }
 
 .session-card-title {
@@ -185,6 +186,7 @@
   background: #1f2335;
   border-bottom: 1px solid #3b4261;
   flex-shrink: 0;
+  user-select: none;
 }
 
 .prompt-card-title {

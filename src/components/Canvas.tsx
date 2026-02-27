@@ -105,6 +105,7 @@ export function Canvas({
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onPromptChange={(text) => onPromptChange?.(layout.session_id, text)}
                 onLaunch={() => onLaunch?.(layout.session_id)}
+                scale={viewport.scale}
               />
             );
           }
@@ -117,6 +118,7 @@ export function Canvas({
               index={index}
               onLayoutChange={handleCardLayoutChange(layout.session_id)}
               onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
+              scale={viewport.scale}
             />
           );
         })}
