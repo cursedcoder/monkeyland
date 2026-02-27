@@ -1,4 +1,4 @@
-# id-7: Terminal — JSON-RPC server and xterm.js pool (Stage 3 remaining)
+# id-8: JSON-RPC server and xterm.js pool (Stage 3 remaining)
 
 **Status:** In progress  
 **Source:** monkeyland.md §7 Stage 3, deliverables 4–5  
@@ -6,7 +6,7 @@
 
 ## Goal
 
-Complete remaining Stage 3 deliverables: JSON-RPC server on Unix domain socket with terminal methods (`terminal.exec`, `terminal.write`, `terminal.resize`), and xterm.js pool in frontend (max 8 visible instances, recycled on viewport pan).
+Complete remaining Stage 3 base deliverables: JSON-RPC server on Unix domain socket with terminal methods for external agents, and xterm.js pool in frontend (max 8 visible instances, recycled on viewport pan).
 
 ## Requirements
 
@@ -18,10 +18,11 @@ Complete remaining Stage 3 deliverables: JSON-RPC server on Unix domain socket w
 
 - Browser features (Stage 4)
 - Replay (Stage 5)
+- LLM tool plugin changes (done in id-7)
 
 ## Technical notes
 
-- Rule 7: Agents do NOT own PTYs. They send JSON-RPC commands to Rust core.
+- Rule 7: External agents do NOT own PTYs. They send JSON-RPC commands to Rust core.
 - Pool recycling: `xterm.reset()` + write last snapshot buffer on session switch.
 
 ## Done criteria
@@ -32,4 +33,4 @@ Complete remaining Stage 3 deliverables: JSON-RPC server on Unix domain socket w
 
 ## Progress / Notes
 
-<!-- 2026-02-28: Created after id-4 completion (PTY pool + coalescing + visible terminal). -->
+<!-- 2026-02-28: Created after id-7 completion (terminal as LLM agent tool). -->

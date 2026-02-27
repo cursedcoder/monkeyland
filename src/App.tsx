@@ -4,6 +4,7 @@ import { loadModels, igniteModel, Message } from "multi-llm-ts";
 import type { LlmChunk } from "multi-llm-ts";
 import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
+import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
 import "./App.css";
 import type { SessionLayout, CanvasLayoutPayload } from "./types";
 import type { LlmProviderId } from "./types";
@@ -13,6 +14,8 @@ import {
   GRID_STEP,
   SESSION_CARD_DEFAULT_W,
   SESSION_CARD_DEFAULT_H,
+  TERMINAL_CARD_DEFAULT_W,
+  TERMINAL_CARD_DEFAULT_H,
 } from "./types";
 
 function generateNodeId(): string {
@@ -27,6 +30,9 @@ export default function App() {
   const loaded = useRef(false);
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const promptSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const layoutsRef = useRef<SessionLayout[]>([]);
+  layoutsRef.current = layouts;
 
   const persistLayouts = useCallback((next: SessionLayout[]) => {
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
@@ -59,11 +65,10 @@ export default function App() {
         if (cancelled) return;
         const raw = (payload.layouts || []).map((l) => ({
           ...l,
-          node_type: (l.node_type ?? "agent") as "prompt" | "agent",
+          node_type: (l.node_type ?? "agent") as "prompt" | "agent" | "terminal",
           payload: l.payload ?? "{}",
         }));
 
-        // Legacy: 20 placeholder agents → empty canvas, persist so next load is clean
         const nodeType = (l: (typeof raw)[0]) =>
           String(l.node_type ?? "agent").toLowerCase();
         const allAgents =
@@ -81,7 +86,6 @@ export default function App() {
           return;
         }
 
-        // Cap empty prompts: keep all prompts with content + at most 1 empty
         const withPromptText = raw.map((l) => {
           let promptText = "";
           if (l.node_type === "prompt" && l.payload) {
@@ -101,11 +105,13 @@ export default function App() {
           (x) => x.layout.node_type === "prompt" && x.promptText.trim() === ""
         );
         const keptEmpty = emptyPrompts.slice(0, 1).map((x) => x.layout);
-        const agents = withPromptText.filter((x) => x.layout.node_type === "agent").map((x) => x.layout);
+        const others = withPromptText
+          .filter((x) => x.layout.node_type !== "prompt")
+          .map((x) => x.layout);
         const filtered: SessionLayout[] = [
           ...withContent.map((x) => x.layout),
           ...keptEmpty,
-          ...agents,
+          ...others,
         ];
         if (filtered.length > 0) {
           setLayouts(filtered);
@@ -158,9 +164,37 @@ export default function App() {
     });
   }, [persistLayouts]);
 
+  /**
+   * Add a terminal node to the canvas, positioned to the right of the agent.
+   * Returns the session_id of the new terminal node.
+   */
+  const addTerminalNode = useCallback((agentNodeId: string): string => {
+    const terminalId = generateNodeId();
+    setLayouts((prev) => {
+      const agent = prev.find((l) => l.session_id === agentNodeId);
+      const x = agent ? agent.x + agent.w + GRID_STEP : 400;
+      const y = agent ? agent.y : 200;
+
+      const terminalLayout: SessionLayout = {
+        session_id: terminalId,
+        x,
+        y,
+        w: TERMINAL_CARD_DEFAULT_W,
+        h: TERMINAL_CARD_DEFAULT_H,
+        collapsed: false,
+        node_type: "terminal",
+        payload: JSON.stringify({ parentAgentId: agentNodeId }),
+      };
+      const next = [...prev, terminalLayout];
+      if (loaded.current) persistLayoutsRef.current(next);
+      return next;
+    });
+    return terminalId;
+  }, []);
+
   const handleLaunch = useCallback(
     async (nodeId: string) => {
-      const promptLayout = layouts.find(
+      const promptLayout = layoutsRef.current.find(
         (l) => l.session_id === nodeId && (l.node_type ?? "agent") === "prompt"
       );
       if (!promptLayout) return;
@@ -196,7 +230,7 @@ export default function App() {
       });
 
       const updateAgentPayload = (
-        update: { status: string; answer?: string; errorMessage?: string },
+        update: Record<string, unknown>,
         persistWhenFinal?: boolean
       ) => {
         setLayouts((prev) => {
@@ -234,28 +268,44 @@ export default function App() {
         }
 
         const llmModel = igniteModel(settings.provider, model, { apiKey: apiKey.trim() });
-        const stream = llmModel.generate([
-          new Message("user", promptText || "Hello, respond briefly."),
-        ]);
+
+        // Register terminal tool
+        const terminalPlugin = new TerminalToolPlugin(newAgentId, addTerminalNode);
+        llmModel.addPlugin(terminalPlugin);
+
+        const stream = llmModel.generate(
+          [new Message("user", promptText || "Hello, respond briefly.")],
+          { tools: true },
+        );
 
         let fullText = "";
         for await (const chunk of stream as AsyncIterable<LlmChunk>) {
-          if (chunk && typeof chunk === "object" && "type" in chunk && "text" in chunk) {
-            const c = chunk as { type: string; text?: string };
-            if ((c.type === "content" || c.type === "reasoning") && c.text) {
-              fullText += c.text;
-              updateAgentPayload({ status: "loading", answer: fullText });
+          if (!chunk || typeof chunk !== "object" || !("type" in chunk)) continue;
+          const c = chunk as { type: string; text?: string; name?: string; state?: string; status?: string };
+
+          if ((c.type === "content" || c.type === "reasoning") && c.text) {
+            fullText += c.text;
+            updateAgentPayload({ status: "loading", answer: fullText, toolActivity: "" });
+          }
+
+          if (c.type === "tool") {
+            const statusText =
+              c.state === "running" ? (c.status || `Running ${c.name}...`) :
+              c.state === "preparing" ? `Calling ${c.name}...` :
+              c.state === "completed" ? "" : "";
+            if (statusText) {
+              updateAgentPayload({ status: "loading", toolActivity: statusText });
             }
           }
         }
 
-        updateAgentPayload({ status: "done", answer: fullText }, true);
+        updateAgentPayload({ status: "done", answer: fullText, toolActivity: "" }, true);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         updateAgentPayload({ status: "error", errorMessage: msg }, true);
       }
     },
-    [layouts, persistLayouts]
+    [persistLayouts, addTerminalNode]
   );
 
   const handleAddPrompt = useCallback(() => {

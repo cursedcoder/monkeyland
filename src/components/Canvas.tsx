@@ -3,6 +3,7 @@ import { useCanvasPanZoom } from "../hooks/useCanvasPanZoom";
 import { useViewportBounds, rectIntersects } from "../hooks/useViewportBounds";
 import { PromptCard } from "./PromptCard";
 import { SessionCard } from "./SessionCard";
+import { TerminalCard } from "./TerminalCard";
 import type { SessionLayout } from "../types";
 import { CULL_MARGIN } from "../types";
 
@@ -75,22 +76,43 @@ export function Canvas({
   );
 
   const connectionLines = useMemo(() => {
-    const lines: { x1: number; y1: number; x2: number; y2: number }[] = [];
-    const promptById = new Map(
-      layouts.filter((l) => (l.node_type ?? "agent") === "prompt").map((l) => [l.session_id, l])
-    );
+    const lines: { x1: number; y1: number; x2: number; y2: number; color?: string }[] = [];
+    const nodeById = new Map(layouts.map((l) => [l.session_id, l]));
+
     for (const layout of layouts) {
-      if ((layout.node_type ?? "agent") !== "agent" || !layout.payload) continue;
+      if (!layout.payload) continue;
       try {
-        const p = JSON.parse(layout.payload) as { sourcePromptId?: string };
-        const promptId = p?.sourcePromptId;
-        const prompt = promptId ? promptById.get(promptId) : undefined;
-        if (!prompt) continue;
-        const fromX = prompt.x + prompt.w / 2;
-        const fromY = prompt.y + prompt.h;
-        const toX = layout.x + layout.w / 2;
-        const toY = layout.y;
-        lines.push({ x1: fromX, y1: fromY, x2: toX, y2: toY });
+        const p = JSON.parse(layout.payload) as {
+          sourcePromptId?: string;
+          parentAgentId?: string;
+        };
+
+        // Prompt → Agent connection
+        if (layout.node_type === "agent" && p.sourcePromptId) {
+          const prompt = nodeById.get(p.sourcePromptId);
+          if (prompt) {
+            lines.push({
+              x1: prompt.x + prompt.w / 2,
+              y1: prompt.y + prompt.h,
+              x2: layout.x + layout.w / 2,
+              y2: layout.y,
+            });
+          }
+        }
+
+        // Agent → Terminal connection
+        if (layout.node_type === "terminal" && p.parentAgentId) {
+          const agent = nodeById.get(p.parentAgentId);
+          if (agent) {
+            lines.push({
+              x1: agent.x + agent.w,
+              y1: agent.y + agent.h / 2,
+              x2: layout.x,
+              y2: layout.y + (layout.collapsed ? 24 : layout.h / 2),
+              color: "#9ece6a",
+            });
+          }
+        }
       } catch {
         /* ignore */
       }
@@ -133,7 +155,7 @@ export function Canvas({
               y1={line.y1}
               x2={line.x2}
               y2={line.y2}
-              stroke="var(--connection-stroke, #7aa2f7)"
+              stroke={line.color ?? "var(--connection-stroke, #7aa2f7)"}
               strokeWidth="2"
               strokeOpacity="0.8"
             />
@@ -153,6 +175,18 @@ export function Canvas({
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onPromptChange={(text) => onPromptChange?.(layout.session_id, text)}
                 onLaunch={() => onLaunch?.(layout.session_id)}
+                scale={viewport.scale}
+              />
+            );
+          }
+
+          if (nodeType === "terminal") {
+            return (
+              <TerminalCard
+                key={layout.session_id}
+                layout={layout}
+                onLayoutChange={handleCardLayoutChange(layout.session_id)}
+                onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 scale={viewport.scale}
               />
             );

@@ -1,16 +1,16 @@
 import React, { useCallback, useRef, useState } from "react";
 import type { SessionLayout } from "../types";
 import {
-  SESSION_CARD_MIN_W,
-  SESSION_CARD_MIN_H,
+  TERMINAL_CARD_MIN_W,
+  TERMINAL_CARD_MIN_H,
   GRID_STEP,
 } from "../types";
+import { Terminal } from "./Terminal";
 
-interface SessionCardProps {
+interface TerminalCardProps {
   layout: SessionLayout;
   onLayoutChange: (layout: SessionLayout) => void;
   onLayoutCommit: (layout: SessionLayout) => void;
-  index: number;
   scale?: number;
 }
 
@@ -18,13 +18,12 @@ function snap(v: number) {
   return Math.round(v / GRID_STEP) * GRID_STEP;
 }
 
-export function SessionCard({
+export function TerminalCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
-  index,
   scale = 1,
-}: SessionCardProps) {
+}: TerminalCardProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -95,10 +94,10 @@ export function SessionCard({
         const dy = (e.clientY - resizeStart.current.y) / s;
         let { w, h } = resizeStart.current;
         const edge = resizeStart.current.edge;
-        if (edge.includes("e")) w = Math.max(SESSION_CARD_MIN_W, w + dx);
-        if (edge.includes("w")) w = Math.max(SESSION_CARD_MIN_W, w - dx);
-        if (edge.includes("s")) h = Math.max(SESSION_CARD_MIN_H, h + dy);
-        if (edge.includes("n")) h = Math.max(SESSION_CARD_MIN_H, h - dy);
+        if (edge.includes("e")) w = Math.max(TERMINAL_CARD_MIN_W, w + dx);
+        if (edge.includes("w")) w = Math.max(TERMINAL_CARD_MIN_W, w - dx);
+        if (edge.includes("s")) h = Math.max(TERMINAL_CARD_MIN_H, h + dy);
+        if (edge.includes("n")) h = Math.max(TERMINAL_CARD_MIN_H, h - dy);
         const next = { ...layout, w: snap(w), h: snap(h) };
         lastEmittedLayout.current = next;
         onLayoutChange(next);
@@ -130,7 +129,7 @@ export function SessionCard({
   return (
     <div
       ref={cardRef}
-      className="session-card"
+      className="terminal-card"
       style={{
         position: "absolute",
         left: layout.x,
@@ -142,14 +141,14 @@ export function SessionCard({
       }}
     >
       <div
-        className="session-card-header"
+        className="terminal-card-header"
         style={{ cursor: isDragging ? "grabbing" : "grab" }}
         onPointerDown={handlePointerDownDrag}
       >
-        <span className="session-card-title">Agent {index + 1}</span>
+        <span className="terminal-card-title">Terminal</span>
         <button
           type="button"
-          className="session-card-collapse"
+          className="terminal-card-collapse"
           onClick={handleToggleCollapse}
           aria-label={layout.collapsed ? "Expand" : "Collapse"}
         >
@@ -157,65 +156,20 @@ export function SessionCard({
         </button>
       </div>
       {!layout.collapsed && (
-        <div className="session-card-body">
-          {(() => {
-            try {
-              const p = JSON.parse(layout.payload ?? "{}") as {
-                sourcePromptId?: string;
-                status?: string;
-                answer?: string;
-                errorMessage?: string;
-                toolActivity?: string;
-              };
-              if (p.status === "loading") {
-                return (
-                  <div className="session-card-response">
-                    <p className="session-card-response-loading">
-                      {p.toolActivity || "Thinking\u2026"}
-                    </p>
-                    {p.answer ? (
-                      <div className="session-card-response-text">{p.answer}</div>
-                    ) : null}
-                  </div>
-                );
-              }
-              if (p.status === "error") {
-                return (
-                  <div className="session-card-response session-card-response-error">
-                    <p className="session-card-response-error-msg">
-                      {p.errorMessage ?? "Error"}
-                    </p>
-                  </div>
-                );
-              }
-              if (p.status === "done" && p.answer != null) {
-                return (
-                  <div className="session-card-response">
-                    <div className="session-card-response-text">{p.answer}</div>
-                  </div>
-                );
-              }
-            } catch {
-              /* ignore */
-            }
-            return (
-              <div className="session-card-placeholder">
-                Waiting for prompt\u2026
-              </div>
-            );
-          })()}
+        <div className="terminal-card-body">
+          <Terminal sessionId={layout.session_id} />
           <div
-            className="session-card-resize-handle se"
+            className="terminal-card-resize-handle se"
             data-resize-handle
             onPointerDown={(e) => handlePointerDownResize(e, "se")}
           />
           <div
-            className="session-card-resize-handle s"
+            className="terminal-card-resize-handle s"
             data-resize-handle
             onPointerDown={(e) => handlePointerDownResize(e, "s")}
           />
           <div
-            className="session-card-resize-handle e"
+            className="terminal-card-resize-handle e"
             data-resize-handle
             onPointerDown={(e) => handlePointerDownResize(e, "e")}
           />

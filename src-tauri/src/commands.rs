@@ -1,6 +1,7 @@
 use crate::pty_pool::PtyPool;
 use crate::storage::{MetaDb, SessionLayoutRow};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,4 +174,61 @@ pub async fn terminal_resize(
     payload: TerminalResizePayload,
 ) -> Result<(), String> {
     pool.resize(&payload.session_id, payload.cols, payload.rows)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalExecPayload {
+    pub session_id: String,
+    pub command: String,
+    #[serde(default = "default_timeout")]
+    pub timeout_ms: u64,
+}
+
+fn default_timeout() -> u64 {
+    30_000
+}
+
+/// Execute a command and wait for output (silence-detection).
+/// Returns accumulated output text. Meanwhile the coalescing bus
+/// still streams live data to the UI.
+#[tauri::command]
+pub async fn terminal_exec(
+    pool: State<'_, PtyPool>,
+    payload: TerminalExecPayload,
+) -> Result<String, String> {
+    let acc = pool.exec_command(&payload.session_id, &payload.command)?;
+
+    let poll_ms: u64 = 100;
+    let silence_threshold: u64 = 15; // 1.5 s of silence
+    let max_polls = payload.timeout_ms / poll_ms;
+    let mut last_len: usize = 0;
+    let mut silence_count: u64 = 0;
+
+    // Give the command a moment to start producing output
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    for _ in 0..max_polls {
+        tokio::time::sleep(Duration::from_millis(poll_ms)).await;
+        let current_len = acc.lock().map_err(|e| e.to_string())?.len();
+        if current_len == last_len {
+            silence_count += 1;
+            if silence_count >= silence_threshold {
+                break;
+            }
+        } else {
+            silence_count = 0;
+            last_len = current_len;
+        }
+    }
+
+    let data = acc.lock().map_err(|e| e.to_string())?.clone();
+    let output = String::from_utf8_lossy(&data).into_owned();
+    // Cap output to avoid sending huge payloads back to the LLM
+    const MAX_OUTPUT: usize = 16_000;
+    if output.len() > MAX_OUTPUT {
+        let truncated = &output[output.len() - MAX_OUTPUT..];
+        Ok(format!("[...truncated...]\n{truncated}"))
+    } else {
+        Ok(output)
+    }
 }

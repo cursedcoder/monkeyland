@@ -80,6 +80,7 @@ pub fn run() {
             crate::commands::terminal_spawn,
             crate::commands::terminal_write,
             crate::commands::terminal_resize,
+            crate::commands::terminal_exec,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Monkeyland");

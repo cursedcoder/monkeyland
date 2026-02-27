@@ -30,7 +30,6 @@ impl RingBuffer {
         }
     }
 
-    /// Drain all accumulated data since last drain. Returns empty vec if nothing new.
     pub fn drain(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.buf)
     }
@@ -38,10 +37,11 @@ impl RingBuffer {
 
 struct PtySession {
     ring: Arc<Mutex<RingBuffer>>,
+    /// Accumulator for tool-exec results. Separate from ring buffer so UI
+    /// streaming and tool output capture work independently.
+    output_acc: Arc<Mutex<Vec<u8>>>,
     writer: Mutex<Box<dyn Write + Send>>,
     _master: Mutex<Box<dyn MasterPty + Send>>,
-    cols: u16,
-    rows: u16,
 }
 
 pub struct PtyPool {
@@ -55,14 +55,13 @@ impl PtyPool {
         }
     }
 
-    /// Spawn a new PTY for the given session. Returns Err if pool is full or session already exists.
     pub fn spawn(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
         let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         if sessions.len() >= MAX_SLOTS {
             return Err(format!("PTY pool full ({MAX_SLOTS} slots)"));
         }
         if sessions.contains_key(session_id) {
-            return Err(format!("PTY already exists for session {session_id}"));
+            return Ok(());
         }
 
         let pty_system = native_pty_system();
@@ -85,27 +84,26 @@ impl PtyPool {
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
         let ring = Arc::new(Mutex::new(RingBuffer::new()));
+        let output_acc = Arc::new(Mutex::new(Vec::<u8>::new()));
 
         let session = Arc::new(PtySession {
             ring: Arc::clone(&ring),
+            output_acc: Arc::clone(&output_acc),
             writer: Mutex::new(writer),
             _master: Mutex::new(pair.master),
-            cols,
-            rows,
         });
 
         sessions.insert(session_id.to_string(), Arc::clone(&session));
 
-        // Reader thread: reads PTY output into ring buffer
         let ring_for_thread = Arc::clone(&ring);
+        let acc_for_thread = Arc::clone(&output_acc);
         std::thread::spawn(move || {
-            pty_reader_loop(reader, ring_for_thread);
+            pty_reader_loop(reader, ring_for_thread, acc_for_thread);
         });
 
         Ok(())
     }
 
-    /// Write data to a session's PTY (user input).
     pub fn write(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let session = sessions
@@ -117,7 +115,6 @@ impl PtyPool {
         Ok(())
     }
 
-    /// Resize a session's PTY.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let session = sessions
@@ -135,8 +132,36 @@ impl PtyPool {
         Ok(())
     }
 
-    /// Drain all ring buffers. Called by the coalescing bus every 16 ms.
-    /// Returns session_id → data for sessions that have new output.
+    /// Clear the output accumulator and write a command, returning the
+    /// accumulator Arc so the caller can poll it across await points.
+    pub fn exec_command(
+        &self,
+        session_id: &str,
+        command: &str,
+    ) -> Result<Arc<Mutex<Vec<u8>>>, String> {
+        let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| format!("No PTY for session {session_id}"))?;
+
+        // Clear accumulator
+        {
+            let mut acc = session.output_acc.lock().map_err(|e| e.to_string())?;
+            acc.clear();
+        }
+
+        // Write command + newline
+        {
+            let mut writer = session.writer.lock().map_err(|e| e.to_string())?;
+            writer
+                .write_all(format!("{command}\n").as_bytes())
+                .map_err(|e| e.to_string())?;
+            writer.flush().map_err(|e| e.to_string())?;
+        }
+
+        Ok(Arc::clone(&session.output_acc))
+    }
+
     pub fn drain_all(&self) -> Result<HashMap<String, Vec<u8>>, String> {
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let mut out = HashMap::new();
@@ -151,7 +176,6 @@ impl PtyPool {
         Ok(out)
     }
 
-    /// Kill and remove a session PTY.
     pub fn kill(&self, session_id: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         sessions.remove(session_id);
@@ -165,14 +189,22 @@ impl Default for PtyPool {
     }
 }
 
-fn pty_reader_loop(mut reader: Box<dyn Read + Send>, ring: Arc<Mutex<RingBuffer>>) {
+fn pty_reader_loop(
+    mut reader: Box<dyn Read + Send>,
+    ring: Arc<Mutex<RingBuffer>>,
+    output_acc: Arc<Mutex<Vec<u8>>>,
+) {
     let mut buf = [0u8; 4096];
     loop {
         match reader.read(&mut buf) {
-            Ok(0) => break, // EOF
+            Ok(0) => break,
             Ok(n) => {
+                let chunk = &buf[..n];
                 if let Ok(mut r) = ring.lock() {
-                    r.push(&buf[..n]);
+                    r.push(chunk);
+                }
+                if let Ok(mut acc) = output_acc.lock() {
+                    acc.extend_from_slice(chunk);
                 }
             }
             Err(_) => break,

@@ -36,6 +36,8 @@ async function bootstrap() {
           return undefined;
         case "terminal_resize":
           return undefined;
+        case "terminal_exec":
+          return "mock output";
         default:
           return undefined;
       }
