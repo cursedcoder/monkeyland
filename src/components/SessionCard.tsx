@@ -5,13 +5,13 @@ import {
   SESSION_CARD_MIN_H,
   GRID_STEP,
 } from "../types";
+import { Terminal } from "./Terminal";
 
 interface SessionCardProps {
   layout: SessionLayout;
   onLayoutChange: (layout: SessionLayout) => void;
   onLayoutCommit: (layout: SessionLayout) => void;
   index: number;
-  /** Canvas scale (zoom); used so drag/resize deltas match cursor in screen space */
   scale?: number;
 }
 
@@ -43,8 +43,8 @@ export function SessionCard({
     (e: React.PointerEvent) => {
       if (e.button !== 0 || (e.target as HTMLElement).closest("[data-resize-handle]"))
         return;
-      e.preventDefault(); // prevent text selection / default drag behavior
-      e.stopPropagation(); // so canvas pan does not start
+      e.preventDefault();
+      e.stopPropagation();
       e.currentTarget.setPointerCapture(e.pointerId);
       if (cardRef.current) cardRef.current.style.userSelect = "none";
       setIsDragging(true);
@@ -159,47 +159,7 @@ export function SessionCard({
       </div>
       {!layout.collapsed && (
         <div className="session-card-body">
-          {(() => {
-            try {
-              const p = JSON.parse(layout.payload ?? "{}") as {
-                sourcePromptId?: string;
-                status?: string;
-                answer?: string;
-                errorMessage?: string;
-              };
-              if (p.status === "loading") {
-                return (
-                  <div className="session-card-response">
-                    <p className="session-card-response-loading">Loading…</p>
-                    {p.answer ? (
-                      <div className="session-card-response-text">{p.answer}</div>
-                    ) : null}
-                  </div>
-                );
-              }
-              if (p.status === "error") {
-                return (
-                  <div className="session-card-response session-card-response-error">
-                    <p className="session-card-response-error-msg">{p.errorMessage ?? "Error"}</p>
-                  </div>
-                );
-              }
-              if (p.status === "done" && p.answer != null) {
-                return (
-                  <div className="session-card-response">
-                    <div className="session-card-response-text">{p.answer}</div>
-                  </div>
-                );
-              }
-            } catch {
-              /* ignore */
-            }
-            return (
-              <div className="session-card-placeholder">
-                Terminal + browser (Stage 3–4)
-              </div>
-            );
-          })()}
+          <Terminal sessionId={layout.session_id} />
           <div
             className="session-card-resize-handle se"
             data-resize-handle

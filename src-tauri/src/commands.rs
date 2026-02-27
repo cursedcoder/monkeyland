@@ -1,3 +1,4 @@
+use crate::pty_pool::PtyPool;
 use crate::storage::{MetaDb, SessionLayoutRow};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -119,4 +120,57 @@ pub async fn get_llm_setup_done(meta_db: State<'_, MetaDb>) -> Result<bool, Stri
 #[tauri::command]
 pub async fn set_llm_setup_done(meta_db: State<'_, MetaDb>) -> Result<(), String> {
     meta_db.set_setting("llm_setup_done", "1")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalSpawnPayload {
+    pub session_id: String,
+    #[serde(default = "default_cols")]
+    pub cols: u16,
+    #[serde(default = "default_rows")]
+    pub rows: u16,
+}
+
+fn default_cols() -> u16 {
+    80
+}
+fn default_rows() -> u16 {
+    24
+}
+
+#[tauri::command]
+pub async fn terminal_spawn(
+    pool: State<'_, PtyPool>,
+    payload: TerminalSpawnPayload,
+) -> Result<(), String> {
+    pool.spawn(&payload.session_id, payload.cols, payload.rows)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalWritePayload {
+    pub session_id: String,
+    pub data: String,
+}
+
+#[tauri::command]
+pub async fn terminal_write(
+    pool: State<'_, PtyPool>,
+    payload: TerminalWritePayload,
+) -> Result<(), String> {
+    pool.write(&payload.session_id, payload.data.as_bytes())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalResizePayload {
+    pub session_id: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[tauri::command]
+pub async fn terminal_resize(
+    pool: State<'_, PtyPool>,
+    payload: TerminalResizePayload,
+) -> Result<(), String> {
+    pool.resize(&payload.session_id, payload.cols, payload.rows)
 }

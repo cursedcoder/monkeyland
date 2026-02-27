@@ -30,6 +30,12 @@ async function bootstrap() {
           return true;
         case "set_llm_setup_done":
           return undefined;
+        case "terminal_spawn":
+          return undefined;
+        case "terminal_write":
+          return undefined;
+        case "terminal_resize":
+          return undefined;
         default:
           return undefined;
       }

@@ -1,5 +1,5 @@
 use std::time::Duration;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,6 +14,9 @@ pub fn run() {
             let batcher = storage::WriteBatcher::new(config_dir.clone());
             app.manage(batcher);
             app.manage(coalescing::CoalescingBus::new());
+            app.manage(pty_pool::PtyPool::new());
+
+            // Write batcher flush: every 100 ms
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(100));
@@ -27,16 +30,36 @@ pub fn run() {
                     }
                 }
             });
+
+            // Coalescing bus: drain ring buffers every 16 ms, emit Tauri event
             let handle_bus = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(16));
                 loop {
                     interval.tick().await;
-                    if let Some(bus) = handle_bus.try_state::<coalescing::CoalescingBus>() {
-                        let _ = bus.tick();
+                    let payload = {
+                        let bus = match handle_bus.try_state::<coalescing::CoalescingBus>() {
+                            Some(b) => b,
+                            None => continue,
+                        };
+                        let pool = match handle_bus.try_state::<pty_pool::PtyPool>() {
+                            Some(p) => p,
+                            None => continue,
+                        };
+                        let batcher = match handle_bus.try_state::<storage::WriteBatcher>() {
+                            Some(b) => b,
+                            None => continue,
+                        };
+                        bus.tick(&pool, &batcher).ok()
+                    };
+                    if let Some(p) = payload {
+                        if !p.sessions.is_empty() {
+                            let _ = handle_bus.emit("terminal_batch", &p);
+                        }
                     }
                 }
             });
+
             #[cfg(debug_assertions)]
             {
                 if let Some(window) = app.get_webview_window("main") {
@@ -54,6 +77,9 @@ pub fn run() {
             crate::commands::set_llm_api_key,
             crate::commands::get_llm_setup_done,
             crate::commands::set_llm_setup_done,
+            crate::commands::terminal_spawn,
+            crate::commands::terminal_write,
+            crate::commands::terminal_resize,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Monkeyland");
@@ -61,4 +87,5 @@ pub fn run() {
 
 mod coalescing;
 mod commands;
+mod pty_pool;
 mod storage;
