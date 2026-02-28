@@ -92,7 +92,7 @@ export class BrowserToolPlugin extends Plugin {
     },
   ): Promise<{ result: string }> {
     if (!this.port) {
-      this.port = await invoke<number>("browser_ensure_started");
+      this.port = await invoke<number>("browser_ensure_started", { agent_id: this.agentNodeId });
     }
 
     if (!this.browserSessionId) {

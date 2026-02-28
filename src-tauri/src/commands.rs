@@ -204,6 +204,8 @@ pub struct TerminalExecPayload {
     pub timeout_ms: u64,
     #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -211,7 +213,14 @@ fn default_timeout() -> u64 {
 }
 
 #[tauri::command]
-pub async fn browser_ensure_started(pool: State<'_, BrowserPool>) -> Result<u16, String> {
+pub async fn browser_ensure_started(
+    pool: State<'_, BrowserPool>,
+    registry: State<'_, AgentRegistry>,
+    agent_id: Option<String>,
+) -> Result<u16, String> {
+    if let Some(ref aid) = agent_id {
+        registry.gate_tool(aid, "browser_ensure_started")?;
+    }
     pool.ensure_started()
 }
 
@@ -221,7 +230,14 @@ pub async fn browser_ensure_started(pool: State<'_, BrowserPool>) -> Result<u16,
 /// Creates the directory if it doesn't exist. Returns Ok even if `bd` is not installed
 /// (the caller can proceed without Beads).
 #[tauri::command]
-pub async fn beads_init(project_path: String) -> Result<String, String> {
+pub async fn beads_init(
+    registry: State<'_, AgentRegistry>,
+    project_path: String,
+    agent_id: Option<String>,
+) -> Result<String, String> {
+    if let Some(ref aid) = agent_id {
+        registry.gate_tool(aid, "beads_init")?;
+    }
     let path = Path::new(&project_path);
     if !path.exists() {
         std::fs::create_dir_all(path)
@@ -253,7 +269,15 @@ pub async fn beads_init(project_path: String) -> Result<String, String> {
 /// Run a Beads CLI command in the given project path. Returns stdout.
 /// Example: beads_run(project_path, ["ready", "--json"]).
 #[tauri::command]
-pub async fn beads_run(project_path: String, args: Vec<String>) -> Result<String, String> {
+pub async fn beads_run(
+    registry: State<'_, AgentRegistry>,
+    project_path: String,
+    args: Vec<String>,
+    agent_id: Option<String>,
+) -> Result<String, String> {
+    if let Some(ref aid) = agent_id {
+        registry.gate_tool(aid, "beads_run")?;
+    }
     let path = Path::new(&project_path);
     if !path.is_dir() {
         return Err(format!("Not a directory: {}", project_path));
@@ -284,8 +308,13 @@ pub async fn get_beads_project_path(meta_db: State<'_, MetaDb>) -> Result<Option
 #[tauri::command]
 pub async fn set_beads_project_path(
     meta_db: State<'_, MetaDb>,
+    registry: State<'_, AgentRegistry>,
     project_path: Option<String>,
+    agent_id: Option<String>,
 ) -> Result<(), String> {
+    if let Some(ref aid) = agent_id {
+        registry.gate_tool(aid, "set_beads_project_path")?;
+    }
     match project_path {
         Some(p) => meta_db.set_setting("beads_project_path", &p),
         None => meta_db.set_setting("beads_project_path", ""),
@@ -293,7 +322,14 @@ pub async fn set_beads_project_path(
 }
 
 #[tauri::command]
-pub async fn beads_dolt_start(project_path: String) -> Result<(), String> {
+pub async fn beads_dolt_start(
+    registry: State<'_, AgentRegistry>,
+    project_path: String,
+    agent_id: Option<String>,
+) -> Result<(), String> {
+    if let Some(ref aid) = agent_id {
+        registry.gate_tool(aid, "beads_dolt_start")?;
+    }
     let path = Path::new(&project_path);
     if !path.is_dir() {
         return Err(format!("Not a directory: {}", project_path));
@@ -428,9 +464,17 @@ pub async fn validation_submit(
 }
 
 /// Write content to a file, creating parent directories as needed.
-/// Used by the LLM agent write_file tool to avoid shell escaping issues.
+/// If agent_id is provided, the call is gated by the state machine.
 #[tauri::command]
-pub async fn write_file(path: String, content: String) -> Result<(), String> {
+pub async fn write_file(
+    registry: State<'_, AgentRegistry>,
+    path: String,
+    content: String,
+    agent_id: Option<String>,
+) -> Result<(), String> {
+    if let Some(ref aid) = agent_id {
+        registry.gate_tool(aid, "write_file")?;
+    }
     let p = std::path::Path::new(&path);
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
@@ -439,13 +483,16 @@ pub async fn write_file(path: String, content: String) -> Result<(), String> {
 }
 
 /// Execute a command via `bash -c` as a subprocess, capturing clean stdout+stderr.
-/// Returns clean text (no ANSI escapes) to the LLM. Does NOT write into the
-/// interactive PTY — the terminal card is only for visual context, not for piping.
+/// If payload.agent_id is set, gated by the state machine.
 #[tauri::command]
 pub async fn terminal_exec(
     _pool: State<'_, PtyPool>,
+    registry: State<'_, AgentRegistry>,
     payload: TerminalExecPayload,
 ) -> Result<String, String> {
+    if let Some(ref aid) = payload.agent_id {
+        registry.gate_tool(aid, "terminal_exec")?;
+    }
     let timeout = Duration::from_millis(payload.timeout_ms);
     let cmd = payload.command.clone();
     let cwd = payload.cwd.clone();
@@ -503,7 +550,14 @@ pub async fn terminal_exec(
 }
 
 #[tauri::command]
-pub async fn read_file(path: String) -> Result<String, String> {
+pub async fn read_file(
+    registry: State<'_, AgentRegistry>,
+    path: String,
+    agent_id: Option<String>,
+) -> Result<String, String> {
+    if let Some(ref aid) = agent_id {
+        registry.gate_tool(aid, "read_file")?;
+    }
     let p = std::path::Path::new(&path);
     if !p.exists() {
         return Err(format!("File not found: {path}"));
@@ -517,4 +571,25 @@ pub async fn read_file(path: String) -> Result<String, String> {
     } else {
         Ok(content)
     }
+}
+
+/// Non-developer agents call this to mark their task as Done.
+/// Developers are rejected by the state machine -- they must use yield_for_review.
+#[tauri::command]
+pub async fn agent_complete_task(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+) -> Result<(), String> {
+    registry.complete_task(&agent_id)
+}
+
+/// Explicit gate check. Frontend plugins can call this before executing any tool
+/// to get a clear error message if the agent is not allowed.
+#[tauri::command]
+pub async fn agent_gate_tool(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+    tool_name: String,
+) -> Result<(), String> {
+    registry.gate_tool(&agent_id, &tool_name)
 }

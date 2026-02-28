@@ -7,6 +7,13 @@ import { invoke } from "@tauri-apps/api/core";
  * Avoids the escaping and heredoc problems of writing files through a PTY shell.
  */
 export class WriteFileToolPlugin extends Plugin {
+  private agentId: string | null;
+
+  constructor(agentId: string | null = null) {
+    super();
+    this.agentId = agentId;
+  }
+
   isEnabled(): boolean {
     return true;
   }
@@ -57,6 +64,7 @@ export class WriteFileToolPlugin extends Plugin {
       await invoke("write_file", {
         path,
         content: parameters.content ?? "",
+        agent_id: this.agentId,
       });
       return { result: `File written: ${path}` };
     } catch (e) {

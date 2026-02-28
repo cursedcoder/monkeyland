@@ -97,18 +97,18 @@ export class BeadsToolPlugin extends Plugin {
     const steps: string[] = [];
 
     try {
-      await invoke("set_beads_project_path", { project_path: path });
+      await invoke("set_beads_project_path", { project_path: path, agent_id: this.agentNodeId });
       steps.push("Project path set.");
 
       let initResult = "Project path set.";
 
       if (doInit) {
-        initResult = await invoke<string>("beads_init", { project_path: path });
+        initResult = await invoke<string>("beads_init", { project_path: path, agent_id: this.agentNodeId });
         steps.push(initResult);
       }
 
       if (doDolt) {
-        await invoke("beads_dolt_start", { project_path: path });
+        await invoke("beads_dolt_start", { project_path: path, agent_id: this.agentNodeId });
         steps.push("Dolt server starting in background.");
       }
 

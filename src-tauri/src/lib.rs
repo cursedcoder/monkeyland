@@ -117,12 +117,15 @@ pub fn run() {
             crate::commands::agent_message,
             crate::commands::agent_poll_messages,
             crate::commands::validation_submit,
+            crate::commands::agent_complete_task,
+            crate::commands::agent_gate_tool,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Monkeyland");
 }
 
 mod agent_registry;
+mod agent_state_machine;
 mod browser_pool;
 mod coalescing;
 mod commands;

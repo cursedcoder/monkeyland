@@ -119,8 +119,11 @@ Runs via \`/bin/bash -c\`. Returns stdout+stderr.
 ### browser_action
 Test web pages. Actions: navigate, click, type, screenshot, content, evaluate.
 
-### mark_task_done
-When you finish your task, call this to mark it complete in Beads.
+### yield_for_review
+When you finish your task, call this to submit your work for validation.
+You CANNOT mark the task as done yourself. Three validators (Code Review, Business Logic, Scope)
+will analyze your changes. If all pass, the task is auto-completed. If any fail, you get feedback
+and can fix the issues (up to 3 attempts).
 
 ## Workflow
 
@@ -129,7 +132,7 @@ When you finish your task, call this to mark it complete in Beads.
 3. Implement the changes using \`write_file\`.
 4. Run necessary commands (install, build, test) using \`run_terminal_command\` with \`cwd\`.
 5. Verify your work compiles/runs correctly.
-6. Call \`mark_task_done\` when finished.
+6. Call \`yield_for_review\` with a brief summary of what you changed.
 
 ## Conventions
 
@@ -150,7 +153,7 @@ export const WORKER_PROMPT = `You are a Worker in Monkeyland. You execute one sp
 - You have a 2-minute time limit. Be fast.
 - Do exactly what the task says. Nothing more.
 - Use \`write_file\` for file changes, \`run_terminal_command\` with \`cwd\` for commands.
-- Call \`mark_task_done\` when finished.
+- Call \`complete_task\` when finished.
 - Do NOT explore, plan, or expand scope. Execute and done.
 `;
 
@@ -216,15 +219,15 @@ export function getPromptForRole(role: AgentRole | "orchestrator"): string {
  * Which tools each role is allowed to use.
  * The agent runner uses this to filter which plugins to attach.
  */
-export type ToolName = "write_file" | "read_file" | "run_terminal_command" | "browser_action" | "open_project_with_beads" | "create_beads_task" | "mark_task_done";
+export type ToolName = "write_file" | "read_file" | "run_terminal_command" | "browser_action" | "open_project_with_beads" | "create_beads_task" | "yield_for_review" | "complete_task";
 
 export const ROLE_TOOLS: Record<AgentRole | "orchestrator", ToolName[]> = {
-  workforce_manager: ["open_project_with_beads", "create_beads_task"],
-  orchestrator: ["open_project_with_beads", "create_beads_task"],
-  project_manager: ["read_file", "create_beads_task"],
-  developer: ["write_file", "read_file", "run_terminal_command", "browser_action", "mark_task_done"],
-  worker: ["write_file", "read_file", "run_terminal_command", "mark_task_done"],
-  code_review_validator: ["read_file"],
-  business_logic_validator: ["read_file", "run_terminal_command"],
-  scope_validator: ["read_file"],
+  workforce_manager: ["open_project_with_beads", "create_beads_task", "complete_task"],
+  orchestrator: ["open_project_with_beads", "create_beads_task", "complete_task"],
+  project_manager: ["read_file", "create_beads_task", "complete_task"],
+  developer: ["write_file", "read_file", "run_terminal_command", "browser_action", "yield_for_review"],
+  worker: ["write_file", "read_file", "run_terminal_command", "complete_task"],
+  code_review_validator: ["read_file", "complete_task"],
+  business_logic_validator: ["read_file", "run_terminal_command", "complete_task"],
+  scope_validator: ["read_file", "complete_task"],
 };

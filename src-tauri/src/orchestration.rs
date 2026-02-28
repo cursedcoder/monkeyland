@@ -159,7 +159,7 @@ pub async fn tick(
         );
     }
 
-    // 4. Process yield queue: agents in InReview get validation started and frontend is notified
+    // 4. Process yield queue: agents in Yielded state get validation started and frontend is notified
     let yield_queue = registry.yield_queue()?;
     for (developer_agent_id, task_id, git_branch, diff_summary) in yield_queue {
         let _ = registry.start_validation(&developer_agent_id, task_id.clone());
@@ -172,6 +172,22 @@ pub async fn tick(
                 diff_summary,
             },
         );
+    }
+
+    // 5. Mark completed tasks in Beads (agents in Done state with a task_id)
+    let done_agents = registry.done_agents_with_tasks()?;
+    for (agent_id, task_id) in done_agents {
+        let done_args = vec![
+            "update".to_string(),
+            task_id.clone(),
+            "--status".to_string(),
+            "done".to_string(),
+        ];
+        let path_done = path.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || run_bd_sync(&path_done, &done_args)).await;
+        // Clean up the agent from registry now that it's fully done.
+        let _ = registry.kill(&agent_id);
+        let _ = pool.kill(&agent_id);
     }
 
     Ok(())

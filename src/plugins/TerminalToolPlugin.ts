@@ -86,6 +86,7 @@ export class TerminalToolPlugin extends Plugin {
         command: parameters.command,
         timeout_ms: 120_000,
         cwd: parameters.cwd ?? null,
+        agent_id: this.agentNodeId,
       },
     });
 

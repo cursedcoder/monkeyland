@@ -8,9 +8,11 @@ import { invoke } from "@tauri-apps/api/core";
  */
 export class CreateBeadsTaskPlugin extends Plugin {
   private projectPath: string | null = null;
+  private agentId: string | null;
 
-  constructor() {
+  constructor(agentId: string | null = null) {
     super();
+    this.agentId = agentId;
   }
 
   setProjectPath(path: string) {
@@ -132,6 +134,7 @@ export class CreateBeadsTaskPlugin extends Plugin {
       const stdout = await invoke<string>("beads_run", {
         project_path: projectPath,
         args,
+        agent_id: this.agentId,
       });
 
       const idMatch = stdout.match(/([A-Z0-9]+-\d+|[a-z0-9-]+)/);
@@ -142,6 +145,7 @@ export class CreateBeadsTaskPlugin extends Plugin {
           await invoke<string>("beads_run", {
             project_path: projectPath,
             args: ["update", taskId, "--body", parameters.description],
+            agent_id: this.agentId,
           });
         } catch {
           /* body update is best-effort */

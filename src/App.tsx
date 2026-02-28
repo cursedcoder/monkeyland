@@ -8,7 +8,8 @@ import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
 import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
 import { BeadsToolPlugin } from "./plugins/BeadsToolPlugin";
 import { CreateBeadsTaskPlugin } from "./plugins/CreateBeadsTaskPlugin";
-import { MarkTaskDonePlugin } from "./plugins/MarkTaskDonePlugin";
+import { YieldForReviewPlugin } from "./plugins/YieldForReviewPlugin";
+import { CompleteTaskPlugin } from "./plugins/CompleteTaskPlugin";
 import { WriteFileToolPlugin } from "./plugins/WriteFileToolPlugin";
 import { ReadFileToolPlugin } from "./plugins/ReadFileToolPlugin";
 import { runAgent } from "./agentRunner";
@@ -457,7 +458,7 @@ export default function App() {
         plugins.push(new BeadsToolPlugin(agentNodeId, addBeadsNode, updateBeadsStatus));
       }
       if (allowed.has("create_beads_task")) {
-        plugins.push(new CreateBeadsTaskPlugin());
+        plugins.push(new CreateBeadsTaskPlugin(agentNodeId));
       }
       if (allowed.has("run_terminal_command")) {
         plugins.push(new TerminalToolPlugin(agentNodeId, addTerminalLogNode, updateTerminalLog));
@@ -466,13 +467,16 @@ export default function App() {
         plugins.push(new BrowserToolPlugin(agentNodeId, addBrowserNode));
       }
       if (allowed.has("write_file")) {
-        plugins.push(new WriteFileToolPlugin());
+        plugins.push(new WriteFileToolPlugin(agentNodeId));
       }
       if (allowed.has("read_file")) {
-        plugins.push(new ReadFileToolPlugin());
+        plugins.push(new ReadFileToolPlugin(agentNodeId));
       }
-      if (allowed.has("mark_task_done")) {
-        plugins.push(new MarkTaskDonePlugin(taskId));
+      if (allowed.has("yield_for_review")) {
+        plugins.push(new YieldForReviewPlugin(agentNodeId, taskId));
+      }
+      if (allowed.has("complete_task")) {
+        plugins.push(new CompleteTaskPlugin(agentNodeId, taskId));
       }
 
       return plugins;
@@ -688,6 +692,90 @@ export default function App() {
           }
         }),
       );
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Listen for validation_requested: spawn 3 parallel validator agents
+  useEffect(() => {
+    const unlisten = listen<{
+      developer_agent_id: string;
+      task_id: string | null;
+      git_branch: string | null;
+      diff_summary: string | null;
+    }>("validation_requested", async (event) => {
+      const { developer_agent_id, task_id, diff_summary } = event.payload;
+      const validatorRoles: AgentRole[] = [
+        "code_review_validator",
+        "business_logic_validator",
+        "scope_validator",
+      ];
+
+      const devLayout = layoutsRef.current.find((l) => l.session_id === developer_agent_id);
+      let baseX = devLayout ? devLayout.x : REPOSITION_ORIGIN.x;
+      let baseY = devLayout ? devLayout.y + devLayout.h + GRID_STEP : REPOSITION_ORIGIN.y;
+
+      for (const role of validatorRoles) {
+        const validatorId = generateNodeId();
+        const userMessage = [
+          `Task ID: ${task_id ?? "unknown"}`,
+          `Developer agent: ${developer_agent_id}`,
+          "",
+          "## Changes to review",
+          diff_summary ?? "No diff summary provided.",
+        ].join("\n");
+
+        // Spawn validator -- it runs, produces verdict, then we submit it
+        const validatorPromise = startAgentConversationRef.current({
+          agentNodeId: validatorId,
+          role,
+          userMessage,
+          taskId: task_id,
+          parentAgentId: developer_agent_id,
+          preferredX: baseX,
+          preferredY: baseY,
+        });
+
+        // After the validator finishes, parse verdict and submit
+        validatorPromise.then(async () => {
+          const validatorLayout = layoutsRef.current.find((l) => l.session_id === validatorId);
+          let pass = true;
+          let reasons: string[] = [];
+          if (validatorLayout?.payload) {
+            try {
+              const p = JSON.parse(validatorLayout.payload) as { answer?: string };
+              const answer = p.answer ?? "";
+              try {
+                const verdict = JSON.parse(answer) as { status?: string; reasons?: string[] };
+                pass = verdict.status === "pass";
+                reasons = verdict.reasons ?? [];
+              } catch {
+                pass = !answer.toLowerCase().includes('"fail"');
+                reasons = [answer.slice(0, 500)];
+              }
+            } catch {
+              /* assume pass if unparseable */
+            }
+          }
+          try {
+            await invoke("validation_submit", {
+              payload: {
+                developer_agent_id,
+                validator_role: role,
+                pass,
+                reasons,
+              },
+            });
+          } catch {
+            /* best effort */
+          }
+        });
+
+        baseX += GRID_STEP * 7;
+      }
     });
 
     return () => {
