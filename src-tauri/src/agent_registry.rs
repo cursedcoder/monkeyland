@@ -614,9 +614,9 @@ impl AgentRegistry {
     }
 
     /// Handle an agent's LLM turn ending without explicit completion/yield.
-    /// For developers: auto-yield for review (so validation can run).
-    /// For other roles: auto-complete.
-    /// Returns: "yielded", "completed", "already_done", or "not_found".
+    /// For developers still in Running: returns "needs_nudge" so frontend can prompt them.
+    /// For other roles in Running: auto-complete.
+    /// Returns: "needs_nudge", "completed", "already_done", or "not_found".
     pub fn handle_turn_ended(&self, agent_id: &str, role: &str) -> Result<String, String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = match inner.agents.get_mut(agent_id) {
@@ -635,16 +635,8 @@ impl AgentRegistry {
         }
 
         if role == "developer" {
-            // Developers get auto-yielded for validation
-            match agent_state_machine::try_transition(entry.state, Event::Yield, &entry.role) {
-                Ok(new_state) => {
-                    entry.state = new_state;
-                    entry.yield_git_branch = None;
-                    entry.yield_diff_summary = Some("Auto-yielded: LLM turn ended without explicit yield".to_string());
-                    Ok("yielded".to_string())
-                }
-                Err(_) => Ok("already_done".to_string()),
-            }
+            // Developers need a nudge to call yield_for_review
+            Ok("needs_nudge".to_string())
         } else {
             // Non-developers get auto-completed
             match agent_state_machine::try_transition(entry.state, Event::Complete, &entry.role) {
