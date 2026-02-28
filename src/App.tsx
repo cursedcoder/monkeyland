@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Plugin } from "multi-llm-ts";
 import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
+import { WorkforceOverlay } from "./components/WorkforceOverlay";
+import { DebugPanel } from "./components/DebugPanel";
 import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
 import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
 import { BeadsToolPlugin } from "./plugins/BeadsToolPlugin";
@@ -15,6 +17,7 @@ import { ReadFileToolPlugin } from "./plugins/ReadFileToolPlugin";
 import { runAgent } from "./agentRunner";
 import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
 import type { ToolName } from "./agentPrompts";
+import { createCostStore, CostStoreContext } from "./costStore";
 import "./App.css";
 import type { SessionLayout, CanvasLayoutPayload, CanvasNodeType, AgentRole } from "./types";
 import {
@@ -151,6 +154,7 @@ function getStoredTheme(): Theme {
 }
 
 export default function App() {
+  const costStore = useMemo(() => createCostStore(), []);
   const [layouts, setLayouts] = useState<SessionLayout[]>([]);
   const [theme, setTheme] = useState<Theme>(getStoredTheme);
   const loaded = useRef(false);
@@ -547,6 +551,7 @@ export default function App() {
 
       const plugins = buildPlugins(role, agentNodeId, taskId);
       let accumulatedText = "";
+      const mi = { modelName: "unknown", inputPricePerM: 0, outputPricePerM: 0 };
 
       await runAgent({
         systemPrompt: getPromptForRole(role),
@@ -554,6 +559,11 @@ export default function App() {
         plugins,
         signal: controller.signal,
         callbacks: {
+          onModelLoaded: (info) => {
+            mi.modelName = info.modelName;
+            mi.inputPricePerM = info.inputPricePerM;
+            mi.outputPricePerM = info.outputPricePerM;
+          },
           onChunk: (c) => {
             if ((c.type === "content" || c.type === "reasoning") && c.text) {
               accumulatedText += c.text;
@@ -566,6 +576,17 @@ export default function App() {
                 c.state === "completed" ? "" : "";
               if (statusText) updatePayload({ status: "loading", toolActivity: statusText });
             }
+          },
+          onUsage: (usage) => {
+            costStore.reportUsage(
+              agentNodeId, role, mi.modelName,
+              usage.prompt_tokens, usage.completion_tokens,
+              mi.inputPricePerM, mi.outputPricePerM,
+            );
+            invoke("agent_report_tokens", {
+              agentId: agentNodeId,
+              delta: usage.prompt_tokens + usage.completion_tokens,
+            }).catch(() => {});
           },
           onDone: (fullText) => {
             updatePayload({ status: "done", answer: fullText, toolActivity: "" }, true);
@@ -581,7 +602,7 @@ export default function App() {
 
       abortControllers.current.delete(agentNodeId);
     },
-    [persistLayouts, buildPlugins],
+    [persistLayouts, buildPlugins, costStore],
   );
 
   const handleLaunch = useCallback(
@@ -875,60 +896,59 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1><span className="app-logo" aria-hidden>🍌</span> Monkeyland</h1>
-        <span className="app-subtitle">Agent Canvas</span>
-        <LlmSettings />
-        <button
-          type="button"
-          className="app-add-prompt"
-          onClick={handleAddPrompt}
-        >
-          Add prompt
-        </button>
-        <button
-          type="button"
-          className="app-reposition-canvas"
-          onClick={handleReposition}
-          title="Arrange cards in a clean grid (prompts, agents, terminals, browsers)"
-        >
-          Reposition
-        </button>
-        <button
-          type="button"
-          className="app-clear-canvas"
-          onClick={handleClearCanvas}
-          title="Remove all cards and reset canvas"
-        >
-          Clear canvas
-        </button>
-        <button
-          type="button"
-          className="app-theme-toggle"
-          onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
-          title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
-          aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
-        >
-          {theme === "light" ? "🌙" : "☀️"}
-        </button>
-      </header>
-      <Canvas
-        layouts={layouts}
-        onLayoutChange={handleLayoutChange}
-        onLayoutCommit={handleLayoutCommit}
-        onPromptChange={handlePromptChange}
-        onLaunch={handleLaunch}
-        onStopAgent={handleStopAgent}
-      />
-      <button
-        type="button"
-        className="debug-copy-btn"
-        onClick={handleCopyDebug}
-        title="Copy canvas debug data to clipboard (for bug reports)"
-      >
-        {debugCopied ? "Copied!" : "Copy debug data"}
-      </button>
-    </div>
+    <CostStoreContext.Provider value={costStore}>
+      <div className="app">
+        <header className="app-header">
+          <h1><span className="app-logo" aria-hidden>🍌</span> Monkeyland</h1>
+          <span className="app-subtitle">Agent Canvas</span>
+          <LlmSettings />
+          <button
+            type="button"
+            className="app-add-prompt"
+            onClick={handleAddPrompt}
+          >
+            Add prompt
+          </button>
+          <button
+            type="button"
+            className="app-reposition-canvas"
+            onClick={handleReposition}
+            title="Arrange cards in a clean grid (prompts, agents, terminals, browsers)"
+          >
+            Reposition
+          </button>
+          <button
+            type="button"
+            className="app-clear-canvas"
+            onClick={handleClearCanvas}
+            title="Remove all cards and reset canvas"
+          >
+            Clear canvas
+          </button>
+          <button
+            type="button"
+            className="app-theme-toggle"
+            onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
+            title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+            aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+          >
+            {theme === "light" ? "🌙" : "☀️"}
+          </button>
+        </header>
+        <Canvas
+          layouts={layouts}
+          onLayoutChange={handleLayoutChange}
+          onLayoutCommit={handleLayoutCommit}
+          onPromptChange={handlePromptChange}
+          onLaunch={handleLaunch}
+          onStopAgent={handleStopAgent}
+        />
+        <WorkforceOverlay />
+        <DebugPanel
+          onCopyDebug={handleCopyDebug}
+          debugCopied={debugCopied}
+        />
+      </div>
+    </CostStoreContext.Provider>
   );
 }

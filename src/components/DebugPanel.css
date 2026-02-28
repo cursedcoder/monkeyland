@@ -1,0 +1,166 @@
+.debug-panel-container {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 9999;
+}
+
+.debug-panel-toggle {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(30, 30, 36, 0.88);
+  color: #aaa;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(6px);
+  transition: background 0.15s, color 0.15s;
+}
+
+.debug-panel-toggle:hover {
+  background: rgba(50, 50, 60, 0.95);
+  color: #fff;
+}
+
+.debug-panel {
+  width: 280px;
+  background: rgba(22, 22, 28, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  color: #ccc;
+  backdrop-filter: blur(8px);
+}
+
+.debug-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+  color: #eee;
+}
+
+.debug-panel__close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.debug-panel__close:hover {
+  color: #fff;
+}
+
+.debug-panel__section {
+  padding: 8px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.debug-panel__section:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.debug-panel__action {
+  width: 100%;
+  padding: 6px 0;
+  border-radius: 4px;
+  border: 1px solid rgba(100, 200, 255, 0.2);
+  background: rgba(100, 200, 255, 0.08);
+  color: #8cf;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.15s;
+}
+
+.debug-panel__action:hover {
+  background: rgba(100, 200, 255, 0.18);
+}
+
+.debug-panel__label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #aaa;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.debug-panel__warn {
+  color: #f66;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.debug-panel__row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.debug-panel__input {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 4px 6px;
+  color: #eee;
+  font-size: 12px;
+  outline: none;
+}
+
+.debug-panel__input:focus {
+  border-color: rgba(100, 200, 255, 0.4);
+}
+
+.debug-panel__input--small {
+  width: 54px;
+  flex: none;
+}
+
+.debug-panel__save {
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(100, 255, 100, 0.2);
+  background: rgba(100, 255, 100, 0.08);
+  color: #8f8;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.debug-panel__save:hover {
+  background: rgba(100, 255, 100, 0.18);
+}
+
+.debug-panel__hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #888;
+}
+
+.debug-panel__role-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.debug-panel__role-label {
+  flex: 1;
+  font-size: 11px;
+}
+
+.debug-panel__role-count {
+  color: #8af;
+}

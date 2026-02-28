@@ -181,6 +181,17 @@ impl AgentRegistry {
         }
     }
 
+    /// Dynamically update `max_count` for a role at runtime (called from frontend debug panel).
+    pub fn set_role_max_count(&self, role: &str, max_count: Option<u32>) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let config = inner
+            .role_config
+            .entry(role.to_string())
+            .or_insert_with(RoleConfig::default);
+        config.max_count = max_count.unwrap_or(u32::MAX);
+        Ok(())
+    }
+
     /// Spawn a new agent (register only; caller must create PTY/session with returned id).
     /// Returns agent_id to use as session_id for the PTY.
     pub fn spawn(

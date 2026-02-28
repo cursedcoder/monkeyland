@@ -463,6 +463,15 @@ pub async fn agent_status(registry: State<'_, AgentRegistry>) -> Result<AgentSta
 }
 
 #[tauri::command]
+pub async fn set_role_config(
+    registry: State<'_, AgentRegistry>,
+    role: String,
+    max_count: Option<u32>,
+) -> Result<(), String> {
+    registry.set_role_max_count(&role, max_count)
+}
+
+#[tauri::command]
 pub async fn agent_quota(
     registry: State<'_, AgentRegistry>,
     agent_id: String,

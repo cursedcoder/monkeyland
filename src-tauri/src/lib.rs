@@ -111,6 +111,7 @@ pub fn run() {
             crate::commands::agent_spawn,
             crate::commands::agent_kill,
             crate::commands::agent_status,
+            crate::commands::set_role_config,
             crate::commands::agent_quota,
             crate::commands::agent_report_tokens,
             crate::commands::agent_yield,
