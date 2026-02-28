@@ -14,6 +14,7 @@ import { YieldForReviewPlugin } from "./plugins/YieldForReviewPlugin";
 import { CompleteTaskPlugin } from "./plugins/CompleteTaskPlugin";
 import { WriteFileToolPlugin } from "./plugins/WriteFileToolPlugin";
 import { ReadFileToolPlugin } from "./plugins/ReadFileToolPlugin";
+import { DispatchAgentPlugin } from "./plugins/DispatchAgentPlugin";
 import { runAgent } from "./agentRunner";
 import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
 import type { ToolName } from "./agentPrompts";
@@ -450,6 +451,14 @@ export default function App() {
   );
 
   /**
+   * Dispatch an agent directly from the WM (no Beads, no orchestration loop).
+   * Uses a ref so it can call startAgentConversation which is defined later.
+   */
+  const dispatchAgentRef = useRef<(p: { role: "developer" | "worker"; taskDescription: string; parentAgentId: string }) => string>(
+    () => { throw new Error("dispatchAgent not ready"); },
+  );
+
+  /**
    * Build the plugin array for a given agent role.
    * Only includes tools the role is permitted to use (per ROLE_TOOLS).
    */
@@ -463,6 +472,9 @@ export default function App() {
       }
       if (allowed.has("create_beads_task")) {
         plugins.push(new CreateBeadsTaskPlugin(agentNodeId));
+      }
+      if (allowed.has("dispatch_agent")) {
+        plugins.push(new DispatchAgentPlugin(agentNodeId, (p) => dispatchAgentRef.current(p)));
       }
       if (allowed.has("run_terminal_command")) {
         plugins.push(new TerminalToolPlugin(agentNodeId, addTerminalLogNode, updateTerminalLog, projectPath));
@@ -651,6 +663,24 @@ export default function App() {
   // Listen for agent_spawned events from the Rust orchestration loop
   const startAgentConversationRef = useRef(startAgentConversation);
   startAgentConversationRef.current = startAgentConversation;
+
+  // Wire up dispatchAgentRef so WM's dispatch_agent tool can spawn agents.
+  dispatchAgentRef.current = (p) => {
+    const agentId = generateNodeId();
+    const wmLayout = layoutsRef.current.find((l) => l.session_id === p.parentAgentId);
+    const prefX = wmLayout ? wmLayout.x : REPOSITION_ORIGIN.x;
+    const prefY = wmLayout ? wmLayout.y + wmLayout.h + GRID_STEP : REPOSITION_ORIGIN.y;
+    startAgentConversationRef.current({
+      agentNodeId: agentId,
+      role: p.role as AgentRole,
+      userMessage: p.taskDescription,
+      taskId: null,
+      parentAgentId: p.parentAgentId,
+      preferredX: prefX,
+      preferredY: prefY,
+    });
+    return agentId;
+  };
 
   useEffect(() => {
     const unlisten = listen<{
