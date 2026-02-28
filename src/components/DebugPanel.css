@@ -1,3 +1,4 @@
+/* Debug panel: uses theme variables for dark/light consistency */
 .debug-panel-container {
   position: fixed;
   bottom: 16px;
@@ -9,33 +10,34 @@
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(30, 30, 36, 0.88);
-  color: #aaa;
+  border: 1px solid var(--ml-border);
+  background: var(--ml-bg-card);
+  color: var(--ml-text-accent);
   font-size: 18px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(6px);
-  transition: background 0.15s, color 0.15s;
+  box-shadow: var(--ml-shadow-card);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .debug-panel-toggle:hover {
-  background: rgba(50, 50, 60, 0.95);
-  color: #fff;
+  background: var(--ml-bg-card-header);
+  color: var(--ml-text);
+  border-color: var(--ml-border-accent);
 }
 
 .debug-panel {
   width: 280px;
-  background: rgba(22, 22, 28, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--ml-bg-card);
+  border: 1px solid var(--ml-border);
   border-radius: 8px;
   padding: 10px 12px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 12px;
-  color: #ccc;
-  backdrop-filter: blur(8px);
+  color: var(--ml-text);
+  box-shadow: var(--ml-shadow-card);
 }
 
 .debug-panel__header {
@@ -45,25 +47,26 @@
   font-weight: 600;
   font-size: 13px;
   margin-bottom: 8px;
-  color: #eee;
+  color: var(--ml-text);
 }
 
 .debug-panel__close {
   background: none;
   border: none;
-  color: #888;
+  color: var(--ml-text-muted);
   font-size: 16px;
   cursor: pointer;
   padding: 0 4px;
+  transition: color 0.15s;
 }
 
 .debug-panel__close:hover {
-  color: #fff;
+  color: var(--ml-text);
 }
 
 .debug-panel__section {
   padding: 8px 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--ml-border);
 }
 
 .debug-panel__section:first-of-type {
@@ -75,30 +78,31 @@
   width: 100%;
   padding: 6px 0;
   border-radius: 4px;
-  border: 1px solid rgba(100, 200, 255, 0.2);
-  background: rgba(100, 200, 255, 0.08);
-  color: #8cf;
+  border: 1px solid var(--ml-border-accent);
+  background: var(--ml-bg-card-alt);
+  color: var(--ml-accent);
   cursor: pointer;
   font-size: 12px;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
 
 .debug-panel__action:hover {
-  background: rgba(100, 200, 255, 0.18);
+  background: var(--ml-bg-card-header);
+  border-color: var(--ml-accent);
 }
 
 .debug-panel__label {
   display: block;
   font-weight: 600;
   margin-bottom: 4px;
-  color: #aaa;
+  color: var(--ml-text-muted);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
 
 .debug-panel__warn {
-  color: #f66;
+  color: var(--ml-error);
   font-weight: 700;
   text-transform: none;
 }
@@ -111,17 +115,19 @@
 
 .debug-panel__input {
   flex: 1;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--ml-bg-input);
+  border: 1px solid var(--ml-border);
   border-radius: 4px;
   padding: 4px 6px;
-  color: #eee;
+  color: var(--ml-text);
   font-size: 12px;
   outline: none;
+  transition: border-color 0.15s;
 }
 
 .debug-panel__input:focus {
-  border-color: rgba(100, 200, 255, 0.4);
+  border-color: var(--ml-border-accent);
+  box-shadow: var(--ml-shadow-focus);
 }
 
 .debug-panel__input--small {
@@ -132,21 +138,23 @@
 .debug-panel__save {
   padding: 4px 8px;
   border-radius: 4px;
-  border: 1px solid rgba(100, 255, 100, 0.2);
-  background: rgba(100, 255, 100, 0.08);
-  color: #8f8;
+  border: 1px solid var(--ml-border);
+  background: var(--ml-success);
+  color: var(--ml-accent-on);
   cursor: pointer;
   font-size: 11px;
+  font-weight: 600;
+  transition: filter 0.15s;
 }
 
 .debug-panel__save:hover {
-  background: rgba(100, 255, 100, 0.18);
+  filter: brightness(1.1);
 }
 
 .debug-panel__hint {
   margin-top: 4px;
   font-size: 11px;
-  color: #888;
+  color: var(--ml-text-muted);
 }
 
 .debug-panel__role-row {
@@ -159,8 +167,9 @@
 .debug-panel__role-label {
   flex: 1;
   font-size: 11px;
+  color: var(--ml-text);
 }
 
 .debug-panel__role-count {
-  color: #8af;
+  color: var(--ml-text-accent);
 }

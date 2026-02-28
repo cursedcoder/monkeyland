@@ -1,0 +1,29 @@
+/* FPS counter: theme-aware, compact pill in header */
+.fps-counter {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--ml-bg-card);
+  border: 1px solid var(--ml-border);
+  font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+  color: var(--ml-text-muted);
+  margin-left: 8px;
+  box-shadow: var(--ml-shadow-card);
+}
+
+.fps-counter__label {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ml-text-accent);
+}
+
+.fps-counter__value {
+  font-weight: 700;
+  color: var(--ml-text);
+  min-width: 1.8em;
+  text-align: right;
+}
