@@ -36,6 +36,7 @@
   box-shadow: var(--ml-shadow-hover);
 }
 
+.app-reposition-canvas,
 .app-clear-canvas {
   margin-left: 8px;
   padding: 8px 14px;
@@ -47,6 +48,7 @@
   cursor: pointer;
 }
 
+.app-reposition-canvas:hover,
 .app-clear-canvas:hover {
   background: var(--ml-bg-card);
   color: var(--ml-text);

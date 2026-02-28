@@ -7,7 +7,7 @@ import { LlmSettings } from "./components/LlmSettings";
 import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
 import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
 import "./App.css";
-import type { SessionLayout, CanvasLayoutPayload } from "./types";
+import type { SessionLayout, CanvasLayoutPayload, CanvasNodeType } from "./types";
 import type { LlmProviderId } from "./types";
 import {
   PROMPT_CARD_DEFAULT_W,
@@ -20,6 +20,38 @@ import {
   BROWSER_CARD_DEFAULT_W,
   BROWSER_CARD_DEFAULT_H,
 } from "./types";
+
+const REPOSITION_ORIGIN = { x: 80, y: 80 };
+const REPOSITION_ROW_WIDTH = 2400;
+
+/** Returns new layouts with x,y reset to a clean grid: prompts → agents → terminals → browsers. */
+function repositionLayouts(layouts: SessionLayout[]): SessionLayout[] {
+  const typeOrder: CanvasNodeType[] = ["prompt", "agent", "terminal", "browser"];
+  const sorted = [...layouts].sort((a, b) => {
+    const ta = typeOrder.indexOf((a.node_type ?? "agent") as CanvasNodeType);
+    const tb = typeOrder.indexOf((b.node_type ?? "agent") as CanvasNodeType);
+    if (ta !== tb) return ta - tb;
+    return a.session_id.localeCompare(b.session_id);
+  });
+
+  let x = REPOSITION_ORIGIN.x;
+  let y = REPOSITION_ORIGIN.y;
+  let rowMaxH = 0;
+
+  return sorted.map((layout) => {
+    const w = layout.w;
+    const h = layout.collapsed ? 48 : layout.h;
+    if (x > REPOSITION_ORIGIN.x && x + w > REPOSITION_ROW_WIDTH) {
+      x = REPOSITION_ORIGIN.x;
+      y += rowMaxH + GRID_STEP;
+      rowMaxH = 0;
+    }
+    const next = { ...layout, x, y };
+    rowMaxH = Math.max(rowMaxH, h);
+    x += w + GRID_STEP;
+    return next;
+  });
+}
 
 function generateNodeId(): string {
   return `node-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -403,6 +435,15 @@ export default function App() {
     }
   }, []);
 
+  const handleReposition = useCallback(() => {
+    setLayouts((prev) => {
+      if (prev.length === 0) return prev;
+      const next = repositionLayouts(prev);
+      if (loaded.current) persistLayouts(next);
+      return next;
+    });
+  }, [persistLayouts]);
+
   return (
     <div className="app">
       <header className="app-header">
@@ -415,6 +456,14 @@ export default function App() {
           onClick={handleAddPrompt}
         >
           Add prompt
+        </button>
+        <button
+          type="button"
+          className="app-reposition-canvas"
+          onClick={handleReposition}
+          title="Arrange cards in a clean grid (prompts, agents, terminals, browsers)"
+        >
+          Reposition
         </button>
         <button
           type="button"
