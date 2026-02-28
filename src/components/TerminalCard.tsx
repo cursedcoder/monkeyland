@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { SessionLayout } from "../types";
 import {
   TERMINAL_CARD_MIN_W,
@@ -6,6 +6,7 @@ import {
   GRID_STEP,
 } from "../types";
 import { Terminal } from "./Terminal";
+import { cardColorsFromId } from "../utils/cardColors";
 
 interface TerminalCardProps {
   layout: SessionLayout;
@@ -26,8 +27,10 @@ export function TerminalCard({
 }: TerminalCardProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [liveLayout, setLiveLayout] = useState<SessionLayout | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const lastEmittedLayout = useRef<SessionLayout>(layout);
+  const cardColors = useMemo(() => cardColorsFromId(layout.session_id), [layout.session_id]);
   const dragStart = useRef({ x: 0, y: 0, layoutX: 0, layoutY: 0 });
   const resizeStart = useRef({
     x: 0,
@@ -36,6 +39,15 @@ export function TerminalCard({
     h: 0,
     edge: "" as string,
   });
+  const layoutRef = useRef(layout);
+  const onLayoutChangeRef = useRef(onLayoutChange);
+  const onLayoutCommitRef = useRef(onLayoutCommit);
+  const setLiveLayoutRef = useRef(setLiveLayout);
+  layoutRef.current = layout;
+  onLayoutChangeRef.current = onLayoutChange;
+  onLayoutCommitRef.current = onLayoutCommit;
+  setLiveLayoutRef.current = setLiveLayout;
+  const displayLayout = liveLayout ?? layout;
 
   const handlePointerDownDrag = useCallback(
     (e: React.PointerEvent) => {
@@ -44,6 +56,7 @@ export function TerminalCard({
       e.preventDefault();
       e.stopPropagation();
       e.currentTarget.setPointerCapture(e.pointerId);
+      setLiveLayout(layout);
       setIsDragging(true);
       dragStart.current = {
         x: e.clientX,
@@ -61,6 +74,7 @@ export function TerminalCard({
       e.stopPropagation();
       if (e.button !== 0) return;
       e.currentTarget.setPointerCapture(e.pointerId);
+      setLiveLayout(layout);
       setIsResizing(true);
       resizeStart.current = {
         x: e.clientX,
@@ -79,16 +93,18 @@ export function TerminalCard({
 
     const onMove = (e: PointerEvent) => {
       const s = scale;
+      const currentLayout = layoutRef.current;
       if (isDragging) {
         const dx = (e.clientX - dragStart.current.x) / s;
         const dy = (e.clientY - dragStart.current.y) / s;
         const next = {
-          ...layout,
+          ...currentLayout,
           x: snap(dragStart.current.layoutX + dx),
           y: snap(dragStart.current.layoutY + dy),
         };
         lastEmittedLayout.current = next;
-        onLayoutChange(next);
+        setLiveLayoutRef.current(next);
+        onLayoutChangeRef.current(next);
       }
       if (isResizing) {
         const dx = (e.clientX - resizeStart.current.x) / s;
@@ -99,16 +115,18 @@ export function TerminalCard({
         if (edge.includes("w")) w = Math.max(TERMINAL_CARD_MIN_W, w - dx);
         if (edge.includes("s")) h = Math.max(TERMINAL_CARD_MIN_H, h + dy);
         if (edge.includes("n")) h = Math.max(TERMINAL_CARD_MIN_H, h - dy);
-        const next = { ...layout, w: snap(w), h: snap(h) };
+        const next = { ...currentLayout, w: snap(w), h: snap(h) };
         lastEmittedLayout.current = next;
-        onLayoutChange(next);
+        setLiveLayoutRef.current(next);
+        onLayoutChangeRef.current(next);
       }
     };
 
     const onUp = () => {
+      setLiveLayoutRef.current(null);
       setIsDragging(false);
       setIsResizing(false);
-      onLayoutCommit(lastEmittedLayout.current);
+      onLayoutCommitRef.current(lastEmittedLayout.current);
     };
 
     window.addEventListener("pointermove", onMove);
@@ -120,7 +138,7 @@ export function TerminalCard({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [isDragging, isResizing, layout, onLayoutChange, onLayoutCommit, scale]);
+  }, [isDragging, isResizing, scale]);
 
   const handleToggleCollapse = useCallback(() => {
     onLayoutChange({ ...layout, collapsed: !layout.collapsed });
@@ -133,12 +151,14 @@ export function TerminalCard({
       className="terminal-card"
       style={{
         position: "absolute",
-        left: layout.x,
-        top: layout.y,
-        width: layout.w,
-        height: layout.collapsed ? 48 : layout.h,
+        left: displayLayout.x,
+        top: displayLayout.y,
+        width: displayLayout.w,
+        height: displayLayout.collapsed ? 48 : displayLayout.h,
         cursor: "default",
         userSelect: isDragging ? "none" : "auto",
+        ["--card-accent" as string]: cardColors.primary,
+        ["--card-accent-muted" as string]: cardColors.secondary,
       }}
     >
       <div
@@ -158,12 +178,16 @@ export function TerminalCard({
         </button>
       </div>
       {!layout.collapsed && (
-        <div className="terminal-card-body">
-          <Terminal sessionId={layout.session_id} />
+        <>
+          <div className="terminal-card-body">
+            <Terminal sessionId={layout.session_id} />
+          </div>
           <div
             className="terminal-card-resize-handle se"
             data-resize-handle
             onPointerDown={(e) => handlePointerDownResize(e, "se")}
+            title="Drag to resize width and height"
+            aria-label="Resize card"
           />
           <div
             className="terminal-card-resize-handle s"
@@ -175,7 +199,7 @@ export function TerminalCard({
             data-resize-handle
             onPointerDown={(e) => handlePointerDownResize(e, "e")}
           />
-        </div>
+        </>
       )}
     </div>
   );

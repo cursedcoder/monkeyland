@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionLayout } from "../types";
 import {
   BROWSER_CARD_MIN_W,
   BROWSER_CARD_MIN_H,
   GRID_STEP,
 } from "../types";
+import { cardColorsFromId } from "../utils/cardColors";
 
 interface BrowserCardProps {
   layout: SessionLayout;
@@ -61,6 +62,7 @@ export function BrowserCard({
 }: BrowserCardProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [liveLayout, setLiveLayout] = useState<SessionLayout | null>(null);
   const [frameUrl, setFrameUrl] = useState("about:blank");
   const [frameTitle, setFrameTitle] = useState("");
   const [frameSrc, setFrameSrc] = useState<string | null>(null);
@@ -68,10 +70,21 @@ export function BrowserCard({
   const [, setIsFocused] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const lastEmittedLayout = useRef<SessionLayout>(layout);
+  const cardColors = useMemo(() => cardColorsFromId(layout.session_id), [layout.session_id]);
   const dragStart = useRef({ x: 0, y: 0, layoutX: 0, layoutY: 0 });
   const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0, edge: "" as string });
+  const captureTargetRef = useRef<{ el: HTMLElement; pointerId: number } | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const addressInputRef = useRef<HTMLInputElement>(null);
+  const layoutRef = useRef(layout);
+  const onLayoutChangeRef = useRef(onLayoutChange);
+  const onLayoutCommitRef = useRef(onLayoutCommit);
+  const setLiveLayoutRef = useRef(setLiveLayout);
+  layoutRef.current = layout;
+  onLayoutChangeRef.current = onLayoutChange;
+  onLayoutCommitRef.current = onLayoutCommit;
+  setLiveLayoutRef.current = setLiveLayout;
+  const displayLayout = liveLayout ?? layout;
 
   const { browserPort } = parseBrowserPayload(layout.payload);
 
@@ -132,7 +145,10 @@ export function BrowserCard({
         return;
       e.preventDefault();
       e.stopPropagation();
-      e.currentTarget.setPointerCapture(e.pointerId);
+      const el = e.currentTarget as HTMLElement;
+      el.setPointerCapture(e.pointerId);
+      captureTargetRef.current = { el, pointerId: e.pointerId };
+      setLiveLayout(layout);
       setIsDragging(true);
       dragStart.current = {
         x: e.clientX,
@@ -150,7 +166,10 @@ export function BrowserCard({
       e.preventDefault();
       e.stopPropagation();
       if (e.button !== 0) return;
-      e.currentTarget.setPointerCapture(e.pointerId);
+      const el = e.currentTarget as HTMLElement;
+      el.setPointerCapture(e.pointerId);
+      captureTargetRef.current = { el, pointerId: e.pointerId };
+      setLiveLayout(layout);
       setIsResizing(true);
       resizeStart.current = {
         x: e.clientX,
@@ -169,16 +188,18 @@ export function BrowserCard({
 
     const onMove = (e: PointerEvent) => {
       const s = scale;
+      const currentLayout = layoutRef.current;
       if (isDragging) {
         const dx = (e.clientX - dragStart.current.x) / s;
         const dy = (e.clientY - dragStart.current.y) / s;
         const next = {
-          ...layout,
+          ...currentLayout,
           x: snap(dragStart.current.layoutX + dx),
           y: snap(dragStart.current.layoutY + dy),
         };
         lastEmittedLayout.current = next;
-        onLayoutChange(next);
+        setLiveLayoutRef.current(next);
+        onLayoutChangeRef.current(next);
       }
       if (isResizing) {
         const dx = (e.clientX - resizeStart.current.x) / s;
@@ -189,16 +210,35 @@ export function BrowserCard({
         if (edge.includes("w")) w = Math.max(BROWSER_CARD_MIN_W, w - dx);
         if (edge.includes("s")) h = Math.max(BROWSER_CARD_MIN_H, h + dy);
         if (edge.includes("n")) h = Math.max(BROWSER_CARD_MIN_H, h - dy);
-        const next = { ...layout, w: snap(w), h: snap(h) };
+        const next = { ...currentLayout, w: snap(w), h: snap(h) };
         lastEmittedLayout.current = next;
-        onLayoutChange(next);
+        setLiveLayoutRef.current(next);
+        onLayoutChangeRef.current(next);
       }
     };
 
     const onUp = () => {
+      const cap = captureTargetRef.current;
+      if (cap) {
+        try { cap.el.releasePointerCapture(cap.pointerId); } catch { /* already released */ }
+        captureTargetRef.current = null;
+      }
+      const wasResizing = isResizing;
+      const committed = lastEmittedLayout.current;
+      setLiveLayoutRef.current(null);
       setIsDragging(false);
       setIsResizing(false);
-      onLayoutCommit(lastEmittedLayout.current);
+      onLayoutCommitRef.current(committed);
+      if (wasResizing && browserPortRef.current) {
+        const contentH = Math.round(Math.max(200, committed.h - 68));
+        const width = Math.min(1920, Math.max(320, Math.round(committed.w)));
+        const height = Math.min(1080, contentH);
+        fetch(`http://127.0.0.1:${browserPortRef.current}/session/${sessionIdRef.current}/set-viewport`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ width, height }),
+        }).catch((err) => console.warn("[BrowserCard] set-viewport failed:", err));
+      }
     };
 
     window.addEventListener("pointermove", onMove);
@@ -210,7 +250,7 @@ export function BrowserCard({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [isDragging, isResizing, layout, onLayoutChange, onLayoutCommit, scale]);
+  }, [isDragging, isResizing, scale]);
 
   const handleToggleCollapse = useCallback(() => {
     onLayoutChange({ ...layout, collapsed: !layout.collapsed });
@@ -405,11 +445,13 @@ export function BrowserCard({
       className="browser-card"
       style={{
         position: "absolute",
-        left: layout.x,
-        top: layout.y,
-        width: layout.w,
-        height: layout.collapsed ? 32 : layout.h,
+        left: displayLayout.x,
+        top: displayLayout.y,
+        width: displayLayout.w,
+        height: displayLayout.collapsed ? 32 : displayLayout.h,
         cursor: "default",
+        ["--card-accent" as string]: cardColors.primary,
+        ["--card-accent-muted" as string]: cardColors.secondary,
       }}
     >
       {/* Title bar (draggable) */}
@@ -494,12 +536,15 @@ export function BrowserCard({
           {/* Body */}
           <div
             className="browser-card-body"
-            
             onPointerDown={(e) => {
               if (!(e.target as HTMLElement).closest("[data-resize-handle]"))
                 e.stopPropagation();
             }}
-            onPointerUp={(e) => e.stopPropagation()}
+            onPointerUp={(e) => {
+              if ((e.target as HTMLElement).closest("[data-resize-handle]"))
+                return;
+              e.stopPropagation();
+            }}
           >
             {frameSrc ? (
               <div style={{ position: "relative", width: "100%", height: "100%" }}>
@@ -530,22 +575,15 @@ export function BrowserCard({
                 Waiting for browser...
               </div>
             )}
-            <div
-              className="browser-card-resize-handle se"
-              data-resize-handle
-              onPointerDown={(e) => handlePointerDownResize(e, "se")}
-            />
-            <div
-              className="browser-card-resize-handle s"
-              data-resize-handle
-              onPointerDown={(e) => handlePointerDownResize(e, "s")}
-            />
-            <div
-              className="browser-card-resize-handle e"
-              data-resize-handle
-              onPointerDown={(e) => handlePointerDownResize(e, "e")}
-            />
           </div>
+          {/* Resize handle: direct child of card so overlay never covers it */}
+          <div
+            className="browser-card-resize-handle browser-card-resize-handle-se"
+            data-resize-handle
+            onPointerDown={(e) => handlePointerDownResize(e, "se")}
+            title="Drag to resize"
+            aria-label="Resize card"
+          />
         </>
       )}
     </div>

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionLayout } from "../types";
 import {
   GRID_STEP,
   PROMPT_CARD_MIN_W,
   PROMPT_CARD_MIN_H,
 } from "../types";
+import { cardColorsFromId } from "../utils/cardColors";
 
 function snap(v: number) {
   return Math.round(v / GRID_STEP) * GRID_STEP;
@@ -32,8 +33,10 @@ export function PromptCard({
 }: PromptCardProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [liveLayout, setLiveLayout] = useState<SessionLayout | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const lastEmittedLayout = useRef<SessionLayout>(layout);
+  const cardColors = useMemo(() => cardColorsFromId(layout.session_id), [layout.session_id]);
   const dragStart = useRef({ x: 0, y: 0, layoutX: 0, layoutY: 0 });
   const resizeStart = useRef({
     x: 0,
@@ -42,6 +45,15 @@ export function PromptCard({
     h: 0,
     edge: "" as string,
   });
+  const layoutRef = useRef(layout);
+  const onLayoutChangeRef = useRef(onLayoutChange);
+  const onLayoutCommitRef = useRef(onLayoutCommit);
+  const setLiveLayoutRef = useRef(setLiveLayout);
+  layoutRef.current = layout;
+  onLayoutChangeRef.current = onLayoutChange;
+  onLayoutCommitRef.current = onLayoutCommit;
+  setLiveLayoutRef.current = setLiveLayout;
+  const displayLayout = liveLayout ?? layout;
 
   const handlePointerDownDrag = useCallback(
     (e: React.PointerEvent) => {
@@ -49,6 +61,7 @@ export function PromptCard({
       e.preventDefault(); // prevent text selection / default drag behavior
       e.stopPropagation(); // so canvas pan does not start
       e.currentTarget.setPointerCapture(e.pointerId);
+      setLiveLayout(layout);
       setIsDragging(true);
       dragStart.current = {
         x: e.clientX,
@@ -66,6 +79,7 @@ export function PromptCard({
       e.stopPropagation();
       if (e.button !== 0) return;
       e.currentTarget.setPointerCapture(e.pointerId);
+      setLiveLayout(layout);
       setIsResizing(true);
       resizeStart.current = {
         x: e.clientX,
@@ -84,16 +98,18 @@ export function PromptCard({
 
     const onMove = (e: PointerEvent) => {
       const s = scale;
+      const currentLayout = layoutRef.current;
       if (isDragging) {
         const dx = (e.clientX - dragStart.current.x) / s;
         const dy = (e.clientY - dragStart.current.y) / s;
         const next = {
-          ...layout,
+          ...currentLayout,
           x: snap(dragStart.current.layoutX + dx),
           y: snap(dragStart.current.layoutY + dy),
         };
         lastEmittedLayout.current = next;
-        onLayoutChange(next);
+        setLiveLayoutRef.current(next);
+        onLayoutChangeRef.current(next);
       }
       if (isResizing) {
         const dx = (e.clientX - resizeStart.current.x) / s;
@@ -104,16 +120,18 @@ export function PromptCard({
         if (edge.includes("w")) w = Math.max(PROMPT_CARD_MIN_W, w - dx);
         if (edge.includes("s")) h = Math.max(PROMPT_CARD_MIN_H, h + dy);
         if (edge.includes("n")) h = Math.max(PROMPT_CARD_MIN_H, h - dy);
-        const next = { ...layout, w: snap(w), h: snap(h) };
+        const next = { ...currentLayout, w: snap(w), h: snap(h) };
         lastEmittedLayout.current = next;
-        onLayoutChange(next);
+        setLiveLayoutRef.current(next);
+        onLayoutChangeRef.current(next);
       }
     };
 
     const onUp = () => {
+      setLiveLayoutRef.current(null);
       setIsDragging(false);
       setIsResizing(false);
-      onLayoutCommit(lastEmittedLayout.current);
+      onLayoutCommitRef.current(lastEmittedLayout.current);
     };
 
     window.addEventListener("pointermove", onMove);
@@ -125,7 +143,7 @@ export function PromptCard({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [isDragging, isResizing, layout, onLayoutChange, onLayoutCommit, scale]);
+  }, [isDragging, isResizing, scale]);
 
   return (
     <div
@@ -133,12 +151,14 @@ export function PromptCard({
       className="prompt-card"
       style={{
         position: "absolute",
-        left: layout.x,
-        top: layout.y,
-        width: layout.w,
-        height: layout.h,
+        left: displayLayout.x,
+        top: displayLayout.y,
+        width: displayLayout.w,
+        height: displayLayout.h,
         cursor: isDragging ? "grabbing" : "default",
         userSelect: isDragging ? "none" : "auto",
+        ["--card-accent" as string]: cardColors.primary,
+        ["--card-accent-muted" as string]: cardColors.secondary,
       }}
     >
       <div
@@ -171,6 +191,8 @@ export function PromptCard({
         className="prompt-card-resize-handle se"
         data-resize-handle
         onPointerDown={(e) => handlePointerDownResize(e, "se")}
+        title="Drag to resize width and height"
+        aria-label="Resize card"
       />
       <div
         className="prompt-card-resize-handle s"

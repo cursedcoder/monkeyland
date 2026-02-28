@@ -257,6 +257,13 @@ async function handleRequest(req, res) {
           sendJson(res, { url: page.url(), title: await page.title() });
           break;
         }
+        case 'set-viewport': {
+          let width = Math.min(1920, Math.max(320, Number(body.width) || 1280));
+          let height = Math.min(1080, Math.max(200, Number(body.height) || 720));
+          await page.setViewportSize({ width, height });
+          sendJson(res, { ok: true, width, height });
+          break;
+        }
         case 'evaluate': {
           const result = await page.evaluate(body.javascript);
           sendJson(res, { result: typeof result === 'string' ? result : JSON.stringify(result) });
