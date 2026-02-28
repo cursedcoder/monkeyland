@@ -25,9 +25,16 @@ function badge(role: string): string {
 }
 
 function formatCost(usd: number): string {
-  if (usd < 0.001) return "$0.00";
+  if (usd < 0.0001) return "$0.00";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
   if (usd < 1) return `$${usd.toFixed(3)}`;
   return `$${usd.toFixed(2)}`;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
 }
 
 export function WorkforceOverlay() {
@@ -50,6 +57,7 @@ export function WorkforceOverlay() {
   const activeCount = status ? Object.values(status.by_role).reduce((a, b) => a + b, 0) : 0;
   const totalSlots = status?.total_slots ?? 100;
   const agentEntries = Array.from(agents.values());
+  const totalTokens = agentEntries.reduce((sum, a) => sum + a.promptTokens + a.completionTokens, 0);
   const hasActivity = totalCostUsd > 0 || agentEntries.length > 0;
 
   if (!hasActivity) return null;
@@ -58,20 +66,27 @@ export function WorkforceOverlay() {
     <div className="workforce-overlay">
       <div className="workforce-overlay__header">
         <span>Agents: {activeCount}/{totalSlots}</span>
+        {totalTokens > 0 && <span>Tokens: {formatTokens(totalTokens)}</span>}
         <span>Cost: {formatCost(totalCostUsd)}</span>
       </div>
       {agentEntries.length > 0 && (
         <div className="workforce-overlay__list">
-          {agentEntries.map((a) => (
-            <div key={a.agentId} className="workforce-overlay__row">
-              <span className="workforce-overlay__badge">{badge(a.role)}</span>
-              <span className="workforce-overlay__id" title={a.agentId}>
-                {a.agentId.length > 10 ? a.agentId.slice(0, 10) + ".." : a.agentId}
-              </span>
-              <span className="workforce-overlay__model">{a.modelName}</span>
-              <span className="workforce-overlay__cost">{formatCost(a.costUsd)}</span>
-            </div>
-          ))}
+          {agentEntries.map((a) => {
+            const agentTokens = a.promptTokens + a.completionTokens;
+            return (
+              <div key={a.agentId} className="workforce-overlay__row">
+                <span className="workforce-overlay__badge">{badge(a.role)}</span>
+                <span className="workforce-overlay__id" title={a.agentId}>
+                  {a.agentId.length > 10 ? a.agentId.slice(0, 10) + ".." : a.agentId}
+                </span>
+                <span className="workforce-overlay__model">{a.modelName}</span>
+                {agentTokens > 0 && (
+                  <span className="workforce-overlay__tokens">{formatTokens(agentTokens)}</span>
+                )}
+                <span className="workforce-overlay__cost">{formatCost(a.costUsd)}</span>
+              </div>
+            );
+          })}
         </div>
       )}
       {status && status.queue_depth > 0 && (

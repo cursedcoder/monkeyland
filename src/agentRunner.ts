@@ -59,9 +59,22 @@ async function loadLlmModel(): Promise<LoadedModel> {
     throw new Error("No model available.");
   }
 
-  const pricing = (model as Record<string, unknown>).pricing as { input?: number; output?: number; prompt?: string; completion?: string } | undefined;
-  const inputPricePerM = pricing?.input ?? (pricing?.prompt ? parseFloat(pricing.prompt) * 1_000_000 : 0);
-  const outputPricePerM = pricing?.output ?? (pricing?.completion ? parseFloat(pricing.completion) * 1_000_000 : 0);
+  const modelAny = model as Record<string, unknown>;
+  const pricing = modelAny.pricing as Record<string, unknown> | undefined;
+  // Pricing formats vary by provider:
+  //   OpenRouter: { prompt: "0.000003", completion: "0.000015" } (string, $/token)
+  //   Other:      { input: 0.000003, output: 0.000015 } (number, $/token)
+  // We normalize to price-per-million-tokens for costStore.
+  const inputPricePerM = pricing
+    ? (typeof pricing.input === "number" ? pricing.input * 1_000_000
+       : typeof pricing.prompt === "string" ? parseFloat(pricing.prompt) * 1_000_000
+       : 0)
+    : 0;
+  const outputPricePerM = pricing
+    ? (typeof pricing.output === "number" ? pricing.output * 1_000_000
+       : typeof pricing.completion === "string" ? parseFloat(pricing.completion) * 1_000_000
+       : 0)
+    : 0;
 
   return {
     engine: igniteModel(settings.provider, model, { apiKey: apiKey.trim() }),
@@ -108,19 +121,14 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
         fullText += c.text;
       }
 
-      // Some providers send usage in a dedicated chunk; others attach it to other chunks.
-      const usagePayload = (c.type === "usage" ? c.usage : c.usage ?? (c as { usage?: unknown }).usage) as
-        | { prompt_tokens?: number; completion_tokens?: number }
-        | undefined;
+      // Extract usage from dedicated "usage" chunks or from usage attached to other chunk types.
+      const usagePayload = (c.type === "usage" ? c.usage : c.usage) as Record<string, unknown> | undefined;
       if (usagePayload && typeof usagePayload === "object") {
-        const u = usagePayload;
-        const prompt = u.prompt_tokens ?? 0;
-        const completion = u.completion_tokens ?? 0;
+        // Handle both OpenAI (prompt_tokens) and Anthropic (input_tokens) field names.
+        const prompt = Number(usagePayload.prompt_tokens ?? usagePayload.input_tokens ?? 0) || 0;
+        const completion = Number(usagePayload.completion_tokens ?? usagePayload.output_tokens ?? 0) || 0;
         if (prompt > 0 || completion > 0) {
-          callbacks.onUsage?.({
-            prompt_tokens: prompt,
-            completion_tokens: completion,
-          });
+          callbacks.onUsage?.({ prompt_tokens: prompt, completion_tokens: completion });
         }
       }
     }

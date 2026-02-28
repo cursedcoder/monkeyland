@@ -454,7 +454,7 @@ export default function App() {
    * Only includes tools the role is permitted to use (per ROLE_TOOLS).
    */
   const buildPlugins = useCallback(
-    (role: AgentRole, agentNodeId: string, taskId: string | null): Plugin[] => {
+    (role: AgentRole, agentNodeId: string, taskId: string | null, projectPath?: string | null): Plugin[] => {
       const allowed = new Set<ToolName>(ROLE_TOOLS[role] ?? []);
       const plugins: Plugin[] = [];
 
@@ -465,7 +465,7 @@ export default function App() {
         plugins.push(new CreateBeadsTaskPlugin(agentNodeId));
       }
       if (allowed.has("run_terminal_command")) {
-        plugins.push(new TerminalToolPlugin(agentNodeId, addTerminalLogNode, updateTerminalLog));
+        plugins.push(new TerminalToolPlugin(agentNodeId, addTerminalLogNode, updateTerminalLog, projectPath));
       }
       if (allowed.has("browser_action")) {
         plugins.push(new BrowserToolPlugin(agentNodeId, addBrowserNode));
@@ -503,8 +503,9 @@ export default function App() {
       preferredX: number;
       preferredY: number;
       taskMeta?: { title?: string; type?: string; priority?: number; description?: string };
+      projectPath?: string | null;
     }) => {
-      const { agentNodeId, role, userMessage, taskId, sourcePromptId, parentAgentId, preferredX, preferredY, taskMeta } = params;
+      const { agentNodeId, role, userMessage, taskId, sourcePromptId, parentAgentId, preferredX, preferredY, taskMeta, projectPath } = params;
       const size = getDefaultSize(role === "worker" ? "worker" : role.includes("validator") ? "validator" : "agent");
 
       setLayouts((prev) => {
@@ -554,7 +555,7 @@ export default function App() {
       const controller = new AbortController();
       abortControllers.current.set(agentNodeId, controller);
 
-      const plugins = buildPlugins(role, agentNodeId, taskId);
+      const plugins = buildPlugins(role, agentNodeId, taskId, projectPath);
       let accumulatedText = "";
       const mi = { modelName: "unknown", inputPricePerM: 0, outputPricePerM: 0 };
 
@@ -662,28 +663,31 @@ export default function App() {
 
       let taskDescription = `Execute task ${task_id ?? "unknown"}.`;
       let taskMeta: { title?: string; type?: string; priority?: number; description?: string } | undefined;
-      if (task_id) {
+      let resolvedProjectPath: string | null = null;
+      try {
+        resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
+      } catch { /* */ }
+
+      if (task_id && resolvedProjectPath) {
         try {
-          const projectPath = await invoke<string | null>("get_beads_project_path");
-          if (projectPath) {
-            const jsonOut = await invoke<string>("beads_run", {
-              projectPath,
-              args: ["show", task_id, "--json"],
-            });
-            try {
-              const parsed = JSON.parse(jsonOut.trim()) as {
-                title?: string; type?: string; priority?: number; description?: string;
-              };
+          const jsonOut = await invoke<string>("beads_run", {
+            projectPath: resolvedProjectPath,
+            args: ["show", task_id, "--json"],
+          });
+          try {
+            const raw = JSON.parse(jsonOut.trim());
+            const parsed = (Array.isArray(raw) ? raw[0] : raw) as Record<string, unknown> | undefined;
+            if (parsed) {
               taskMeta = {
-                title: parsed.title,
-                type: parsed.type,
-                priority: parsed.priority,
-                description: parsed.description,
+                title: (parsed.title as string) ?? undefined,
+                type: ((parsed.issue_type ?? parsed.type) as string) ?? undefined,
+                priority: typeof parsed.priority === "number" ? parsed.priority : undefined,
+                description: ((parsed.description ?? parsed.body) as string) ?? undefined,
               };
-              taskDescription = parsed.description || parsed.title || taskDescription;
-            } catch {
-              taskDescription = jsonOut.trim() || taskDescription;
+              taskDescription = (taskMeta.description || taskMeta.title || taskDescription);
             }
+          } catch {
+            taskDescription = jsonOut.trim() || taskDescription;
           }
         } catch {
           /* use default description */
@@ -712,6 +716,7 @@ export default function App() {
         parentAgentId: parentRef,
         preferredX,
         preferredY,
+        projectPath: resolvedProjectPath,
       });
     });
 

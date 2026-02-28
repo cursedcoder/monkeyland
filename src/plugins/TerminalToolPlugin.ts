@@ -18,17 +18,20 @@ export class TerminalToolPlugin extends Plugin {
   private logNodeId: string | null = null;
   private entries: TerminalLogEntry[] = [];
   private sessionId: string;
+  private defaultCwd: string | null;
 
   constructor(
     agentNodeId: string,
     addLogNode: AddTerminalLogNodeFn,
     updateLog: UpdateTerminalLogFn,
+    defaultCwd?: string | null,
   ) {
     super();
     this.agentNodeId = agentNodeId;
     this.addLogNode = addLogNode;
     this.updateLog = updateLog;
     this.sessionId = `exec-${Date.now()}`;
+    this.defaultCwd = defaultCwd ?? null;
   }
 
   isEnabled(): boolean {
@@ -66,7 +69,7 @@ export class TerminalToolPlugin extends Plugin {
       {
         name: "cwd",
         type: "string",
-        description: "Working directory for the command (absolute path). If not set, defaults to system default.",
+        description: `Working directory for the command (absolute path).${this.defaultCwd ? ` Defaults to ${this.defaultCwd} if not set.` : ""}`,
         required: false,
       },
     ];
@@ -85,7 +88,7 @@ export class TerminalToolPlugin extends Plugin {
         session_id: this.sessionId,
         command: parameters.command,
         timeout_ms: 120_000,
-        cwd: parameters.cwd ?? null,
+        cwd: parameters.cwd ?? this.defaultCwd ?? null,
         agent_id: this.agentNodeId,
       },
     });
