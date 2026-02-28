@@ -14,6 +14,7 @@ const ROLE_LABELS: Record<AgentRole, string> = {
   workforce_manager: "Workforce",
   project_manager: "PM",
   developer: "Developer",
+  operator: "Operator",
   worker: "Worker",
   code_review_validator: "Code Review",
   business_logic_validator: "Business Logic",

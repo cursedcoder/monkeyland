@@ -454,7 +454,7 @@ export default function App() {
    * Dispatch an agent directly from the WM (no Beads, no orchestration loop).
    * Uses a ref so it can call startAgentConversation which is defined later.
    */
-  const dispatchAgentRef = useRef<(p: { role: "developer" | "worker"; taskDescription: string; parentAgentId: string }) => string>(
+  const dispatchAgentRef = useRef<(p: { role: "operator" | "developer" | "worker"; taskDescription: string; parentAgentId: string }) => string>(
     () => { throw new Error("dispatchAgent not ready"); },
   );
 

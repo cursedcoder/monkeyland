@@ -14,6 +14,7 @@ const ROLE_BADGES: Record<string, string> = {
   workforce_manager: "WM",
   project_manager: "PM",
   developer: "DEV",
+  operator: "OP",
   worker: "WRK",
   code_review_validator: "CR",
   business_logic_validator: "BL",

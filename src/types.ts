@@ -5,6 +5,7 @@ export type AgentRole =
   | "workforce_manager"
   | "project_manager"
   | "developer"
+  | "operator"
   | "worker"
   | "code_review_validator"
   | "business_logic_validator"

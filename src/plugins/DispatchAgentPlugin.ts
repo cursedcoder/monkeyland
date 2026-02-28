@@ -2,7 +2,7 @@ import { Plugin } from "multi-llm-ts";
 import type { PluginParameter, PluginExecutionContext } from "multi-llm-ts";
 
 export type DispatchAgentFn = (params: {
-  role: "developer" | "worker";
+  role: "operator" | "developer" | "worker";
   taskDescription: string;
   parentAgentId: string;
 }) => string;
@@ -54,7 +54,7 @@ export class DispatchAgentPlugin extends Plugin {
       {
         name: "role",
         type: "string",
-        description: "Agent role: 'developer' (default, full tools) or 'worker' (fast, bounded).",
+        description: "Agent role: 'operator' (default — browse, run commands, read files), 'developer' (write code), or 'worker' (fast, bounded).",
         required: false,
       },
     ];
@@ -68,7 +68,7 @@ export class DispatchAgentPlugin extends Plugin {
     if (!desc) {
       return { result: "Error: task_description is required." };
     }
-    const role = (parameters.role === "worker" ? "worker" : "developer") as "developer" | "worker";
+    const role = (parameters.role === "developer" ? "developer" : parameters.role === "worker" ? "worker" : "operator") as "operator" | "developer" | "worker";
 
     try {
       const agentId = this.dispatchAgent({
