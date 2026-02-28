@@ -609,50 +609,58 @@ export default function App() {
           onDone: async (fullText) => {
             updatePayload({ status: "done", answer: fullText, toolActivity: "" }, true);
             // Check if developer needs a nudge to yield
-            try {
-              const result = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role });
-              if (result === "needs_nudge" && role === "developer") {
-                // Developer didn't call yield_for_review - nudge them
-                updatePayload({ status: "loading", toolActivity: "Prompting to submit..." });
-                const nudgeController = new AbortController();
-                abortControllers.current.set(agentNodeId, nudgeController);
-                await runAgent({
-                  systemPrompt: getPromptForRole(role),
-                  userMessage: "You finished working but didn't submit your changes. Please call yield_for_review now to submit your work for validation. Include a brief summary of what you implemented.",
-                  plugins: buildPlugins(role, agentNodeId, taskId, projectPath),
-                  signal: nudgeController.signal,
-                  callbacks: {
-                    onChunk: (c) => {
-                      if ((c.type === "content" || c.type === "reasoning") && c.text) {
-                        accumulatedText += c.text;
-                        updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "" });
-                      }
+            // Wait a moment for any pending tool calls to complete (race condition fix)
+            if (role === "developer") {
+              await new Promise((r) => setTimeout(r, 1000));
+              try {
+                // Re-check state after delay - tool calls may have completed
+                const result = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role });
+                if (result === "needs_nudge") {
+                  // Developer didn't call yield_for_review - nudge them
+                  updatePayload({ status: "loading", toolActivity: "Prompting to submit..." });
+                  const nudgeController = new AbortController();
+                  abortControllers.current.set(agentNodeId, nudgeController);
+                  await runAgent({
+                    systemPrompt: getPromptForRole(role),
+                    userMessage: "You finished working but didn't submit your changes. Please call yield_for_review now to submit your work for validation. Include a brief summary of what you implemented.",
+                    plugins: buildPlugins(role, agentNodeId, taskId, projectPath),
+                    signal: nudgeController.signal,
+                    callbacks: {
+                      onChunk: (c) => {
+                        if ((c.type === "content" || c.type === "reasoning") && c.text) {
+                          accumulatedText += c.text;
+                          updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "" });
+                        }
+                      },
+                      onUsage: (usage) => {
+                        costStore.reportUsage(
+                          agentNodeId, role, mi.modelName,
+                          usage.prompt_tokens, usage.completion_tokens,
+                          mi.inputPricePerM, mi.outputPricePerM,
+                        );
+                        invoke("agent_report_tokens", {
+                          agentId: agentNodeId,
+                          delta: usage.prompt_tokens + usage.completion_tokens,
+                        }).catch(() => {});
+                      },
+                      onDone: () => {
+                        updatePayload({ status: "done", answer: accumulatedText, toolActivity: "" }, true);
+                      },
+                      onError: () => {
+                        updatePayload({ status: "done", answer: accumulatedText, toolActivity: "" }, true);
+                      },
+                      onStopped: () => {
+                        updatePayload({ status: "stopped", answer: accumulatedText, toolActivity: "" }, true);
+                      },
                     },
-                    onUsage: (usage) => {
-                      costStore.reportUsage(
-                        agentNodeId, role, mi.modelName,
-                        usage.prompt_tokens, usage.completion_tokens,
-                        mi.inputPricePerM, mi.outputPricePerM,
-                      );
-                      invoke("agent_report_tokens", {
-                        agentId: agentNodeId,
-                        delta: usage.prompt_tokens + usage.completion_tokens,
-                      }).catch(() => {});
-                    },
-                    onDone: (nudgeText) => {
-                      updatePayload({ status: "done", answer: accumulatedText, toolActivity: "" }, true);
-                    },
-                    onError: () => {
-                      updatePayload({ status: "done", answer: accumulatedText, toolActivity: "" }, true);
-                    },
-                    onStopped: () => {
-                      updatePayload({ status: "stopped", answer: accumulatedText, toolActivity: "" }, true);
-                    },
-                  },
-                });
-                abortControllers.current.delete(agentNodeId);
-              }
-            } catch { /* best effort */ }
+                  });
+                  abortControllers.current.delete(agentNodeId);
+                }
+              } catch { /* best effort */ }
+            } else {
+              // Non-developers: just notify backend for auto-complete
+              invoke("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => {});
+            }
           },
           onError: (msg) => {
             updatePayload({ status: "error", errorMessage: msg }, true);
