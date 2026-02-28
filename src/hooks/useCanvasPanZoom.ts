@@ -84,19 +84,21 @@ export function useCanvasPanZoom(containerRef: React.RefObject<HTMLElement | nul
 
       e.preventDefault();
       const rect = container.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      const mouseX = e.clientX - cx;
-      const mouseY = e.clientY - cy;
+      // Canvas-stage has left:50% top:50%, so its (0,0) is at container center. Use center-relative coords.
+      const centerX = rect.width / 2;
+      const centerY = rect.height / 2;
+      const cursorX = e.clientX - rect.left - centerX;
+      const cursorY = e.clientY - rect.top - centerY;
 
       const delta = -e.deltaY * SCALE_SENSITIVITY;
       setViewport((v) => {
         const newScale = clampScale(v.scale + delta);
         const scaleFactor = newScale / v.scale;
+        // Keep the point under the cursor fixed in canvas space.
         return {
           scale: newScale,
-          x: v.x + mouseX * (1 - scaleFactor),
-          y: v.y + mouseY * (1 - scaleFactor),
+          x: cursorX + (v.x - cursorX) * scaleFactor,
+          y: cursorY + (v.y - cursorY) * scaleFactor,
         };
       });
     },
