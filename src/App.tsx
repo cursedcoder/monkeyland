@@ -488,10 +488,10 @@ export default function App() {
       if (allowed.has("read_file")) {
         plugins.push(new ReadFileToolPlugin(agentNodeId));
       }
-      if (allowed.has("yield_for_review")) {
+      if (allowed.has("yield_for_review") && taskId) {
         plugins.push(new YieldForReviewPlugin(agentNodeId, taskId));
       }
-      if (allowed.has("complete_task")) {
+      if (allowed.has("complete_task") && taskId) {
         plugins.push(new CompleteTaskPlugin(agentNodeId, taskId));
       }
 
