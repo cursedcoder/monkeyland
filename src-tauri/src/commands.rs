@@ -202,6 +202,8 @@ pub struct TerminalExecPayload {
     pub command: String,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -216,23 +218,36 @@ pub async fn browser_ensure_started(pool: State<'_, BrowserPool>) -> Result<u16,
 // --- Beads (bd) integration: init and run CLI in project path ---
 
 /// Initialize Beads in the given project path. Creates .beads/ with Dolt database.
-/// Run from project root. Requires `bd` on PATH (e.g. npm install -g @beads/bd).
+/// Creates the directory if it doesn't exist. Returns Ok even if `bd` is not installed
+/// (the caller can proceed without Beads).
 #[tauri::command]
-pub async fn beads_init(project_path: String) -> Result<(), String> {
+pub async fn beads_init(project_path: String) -> Result<String, String> {
     let path = Path::new(&project_path);
+    if !path.exists() {
+        std::fs::create_dir_all(path)
+            .map_err(|e| format!("Failed to create directory {}: {e}", project_path))?;
+    }
     if !path.is_dir() {
         return Err(format!("Not a directory: {}", project_path));
     }
-    let out = Command::new("bd")
+    let out = match Command::new("bd")
         .args(["init", "--quiet"])
         .current_dir(path)
         .output()
-        .map_err(|e| format!("Failed to run bd: {}", e))?;
+    {
+        Ok(o) => o,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Ok("bd not found on PATH — Beads skipped. Install with: npm i -g @anthropic-ai/beads".to_string());
+            }
+            return Err(format!("Failed to run bd: {e}"));
+        }
+    };
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("bd init failed: {}", stderr.trim()));
+        return Ok(format!("bd init warning: {}", stderr.trim()));
     }
-    Ok(())
+    Ok("Beads initialized.".to_string())
 }
 
 /// Run a Beads CLI command in the given project path. Returns stdout.
@@ -412,47 +427,94 @@ pub async fn validation_submit(
     )
 }
 
-/// Execute a command and wait for output (silence-detection).
-/// Returns accumulated output text. Meanwhile the coalescing bus
-/// still streams live data to the UI.
+/// Write content to a file, creating parent directories as needed.
+/// Used by the LLM agent write_file tool to avoid shell escaping issues.
+#[tauri::command]
+pub async fn write_file(path: String, content: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
+    }
+    std::fs::write(p, content.as_bytes()).map_err(|e| format!("write failed: {e}"))
+}
+
+/// Execute a command via `bash -c` as a subprocess, capturing clean stdout+stderr.
+/// Returns clean text (no ANSI escapes) to the LLM. Does NOT write into the
+/// interactive PTY — the terminal card is only for visual context, not for piping.
 #[tauri::command]
 pub async fn terminal_exec(
-    pool: State<'_, PtyPool>,
+    _pool: State<'_, PtyPool>,
     payload: TerminalExecPayload,
 ) -> Result<String, String> {
-    let acc = pool.exec_command(&payload.session_id, &payload.command)?;
+    let timeout = Duration::from_millis(payload.timeout_ms);
+    let cmd = payload.command.clone();
+    let cwd = payload.cwd.clone();
 
-    let poll_ms: u64 = 100;
-    let silence_threshold: u64 = 15; // 1.5 s of silence
-    let max_polls = payload.timeout_ms / poll_ms;
-    let mut last_len: usize = 0;
-    let mut silence_count: u64 = 0;
-
-    // Give the command a moment to start producing output
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    for _ in 0..max_polls {
-        tokio::time::sleep(Duration::from_millis(poll_ms)).await;
-        let current_len = acc.lock().map_err(|e| e.to_string())?.len();
-        if current_len == last_len {
-            silence_count += 1;
-            if silence_count >= silence_threshold {
-                break;
+    let result = tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || {
+        let mut builder = Command::new("/bin/bash");
+        builder.args(["-c", &cmd]);
+        builder.stdin(std::process::Stdio::null());
+        if let Some(ref dir) = cwd {
+            let p = std::path::Path::new(dir);
+            if p.is_dir() {
+                builder.current_dir(p);
             }
-        } else {
-            silence_count = 0;
-            last_len = current_len;
         }
-    }
+        let output = builder
+            .output()
+            .map_err(|e| format!("Failed to run bash: {e}"))?;
 
-    let data = acc.lock().map_err(|e| e.to_string())?.clone();
-    let output = String::from_utf8_lossy(&data).into_owned();
-    // Cap output to avoid sending huge payloads back to the LLM
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        let mut combined = String::new();
+        if !stdout.is_empty() {
+            combined.push_str(&stdout);
+        }
+        if !stderr.is_empty() {
+            if !combined.is_empty() {
+                combined.push('\n');
+            }
+            combined.push_str(&stderr);
+        }
+
+        if !output.status.success() {
+            let code = output.status.code().unwrap_or(-1);
+            combined.push_str(&format!("\n[exit code: {code}]"));
+        }
+
+        Ok::<String, String>(combined)
+    }))
+    .await;
+
+    let output = match result {
+        Ok(Ok(s)) => s?,
+        Ok(Err(e)) => return Err(format!("Task join error: {e}")),
+        Err(_) => return Err("Command timed out".to_string()),
+    };
+
     const MAX_OUTPUT: usize = 16_000;
     if output.len() > MAX_OUTPUT {
         let truncated = &output[output.len() - MAX_OUTPUT..];
         Ok(format!("[...truncated...]\n{truncated}"))
     } else {
         Ok(output)
+    }
+}
+
+#[tauri::command]
+pub async fn read_file(path: String) -> Result<String, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("File not found: {path}"));
+    }
+    let content = std::fs::read_to_string(p)
+        .map_err(|e| format!("Failed to read {path}: {e}"))?;
+    const MAX_FILE: usize = 32_000;
+    if content.len() > MAX_FILE {
+        let truncated = &content[..MAX_FILE];
+        Ok(format!("{truncated}\n[...truncated at {MAX_FILE} chars...]"))
+    } else {
+        Ok(content)
     }
 }

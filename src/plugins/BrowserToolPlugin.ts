@@ -32,7 +32,7 @@ export class BrowserToolPlugin extends Plugin {
       "- click: Click an element. Requires 'selector' (CSS).",
       "- type: Type text into an input. Requires 'selector' and 'text'.",
       "- screenshot: Capture a screenshot of the current page.",
-      "- get_content: Get the visible text content of the page.",
+      "- content: Get the visible text content of the page.",
       "- evaluate: Run JavaScript on the page. Requires 'javascript'.",
     ].join(" ");
   }
@@ -51,7 +51,7 @@ export class BrowserToolPlugin extends Plugin {
         name: "action",
         type: "string",
         description:
-          "The browser action: navigate, click, type, screenshot, get_content, evaluate",
+          "The browser action: navigate, click, type, screenshot, content, evaluate",
         required: true,
       },
       {
@@ -129,6 +129,7 @@ export class BrowserToolPlugin extends Plugin {
         };
         break;
       case "screenshot":
+      case "content":
       case "get_content":
         break;
       case "evaluate":
@@ -138,7 +139,8 @@ export class BrowserToolPlugin extends Plugin {
         return { result: `Unknown action: ${parameters.action}` };
     }
 
-    const resp = await fetch(`${base}/${parameters.action}`, {
+    const serverAction = parameters.action === "get_content" ? "content" : parameters.action;
+    const resp = await fetch(`${base}/${serverAction}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -162,6 +164,7 @@ export class BrowserToolPlugin extends Plugin {
         return { result: `Typed "${parameters.text}" into ${parameters.selector}` };
       case "screenshot":
         return { result: "Screenshot captured. The user can see it in the browser card." };
+      case "content":
       case "get_content":
         return {
           result: `Page: ${data.url}\nTitle: ${data.title}\n\nContent:\n${data.content}`,

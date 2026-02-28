@@ -5,6 +5,8 @@ import { PromptCard } from "./PromptCard";
 import { SessionCard } from "./SessionCard";
 import { TerminalCard } from "./TerminalCard";
 import { BrowserCard } from "./BrowserCard";
+import { BeadsCard } from "./BeadsCard";
+import { TerminalLogCard } from "./TerminalLogCard";
 import type { SessionLayout } from "../types";
 import { CULL_MARGIN } from "../types";
 
@@ -14,6 +16,7 @@ interface CanvasProps {
   onLayoutCommit: (nodeId: string, layout: SessionLayout) => void;
   onPromptChange?: (nodeId: string, text: string) => void;
   onLaunch?: (nodeId: string) => void;
+  onStopAgent?: (nodeId: string) => void;
 }
 
 function parsePromptPayload(payload?: string): string {
@@ -52,6 +55,7 @@ export function Canvas({
   onLayoutCommit,
   onPromptChange,
   onLaunch,
+  onStopAgent,
 }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const {
@@ -158,8 +162,8 @@ export function Canvas({
           }
         }
 
-        // Agent → Terminal connection
-        if (layout.node_type === "terminal" && parentId) {
+        // Agent → Terminal / TerminalLog connection
+        if ((layout.node_type === "terminal" || layout.node_type === "terminal_log") && parentId) {
           const agent = effectiveLayoutById.get(parentId);
           const terminal = sourceOrTargetLayout;
           if (agent && terminal) {
@@ -184,6 +188,21 @@ export function Canvas({
               x2: browser.x + browser.w / 2,
               y2: browser.y,
               color: "#bb9af7",
+            });
+          }
+        }
+
+        // Agent → Beads connection
+        if (layout.node_type === "beads" && parentId) {
+          const agent = effectiveLayoutById.get(parentId);
+          const beads = sourceOrTargetLayout;
+          if (agent && beads) {
+            lines.push({
+              x1: agent.x + agent.w,
+              y1: agent.y + agent.h / 2,
+              x2: beads.x,
+              y2: beads.y + (beads.collapsed ? 24 : beads.h / 2),
+              color: "#f7768e",
             });
           }
         }
@@ -302,6 +321,32 @@ export function Canvas({
             );
           }
 
+          if (nodeType === "beads") {
+            return (
+              <BeadsCard
+                key={layout.session_id}
+                layout={layout}
+                onLayoutChange={handleCardLayoutChange(layout.session_id)}
+                onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
+                onDragStart={handleDragStart}
+                scale={viewport.scale}
+              />
+            );
+          }
+
+          if (nodeType === "terminal_log") {
+            return (
+              <TerminalLogCard
+                key={layout.session_id}
+                layout={layout}
+                onLayoutChange={handleCardLayoutChange(layout.session_id)}
+                onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
+                onDragStart={handleDragStart}
+                scale={viewport.scale}
+              />
+            );
+          }
+
           // agent, worker, validator: SessionCard (worker/validator use smaller default size from layout)
           const agentLike = ["agent", "worker", "validator"];
           const index = layouts.filter((l) =>
@@ -315,6 +360,7 @@ export function Canvas({
               onLayoutChange={handleCardLayoutChange(layout.session_id)}
               onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
               onDragStart={handleDragStart}
+              onStop={() => onStopAgent?.(layout.session_id)}
               scale={viewport.scale}
             />
           );

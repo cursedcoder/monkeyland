@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface Bounds {
   left: number;
@@ -7,6 +7,19 @@ export interface Bounds {
   bottom: number;
   width: number;
   height: number;
+}
+
+function boundsEqual(a: Bounds | null, b: Bounds | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.left === b.left &&
+    a.top === b.top &&
+    a.right === b.right &&
+    a.bottom === b.bottom &&
+    a.width === b.width &&
+    a.height === b.height
+  );
 }
 
 /**
@@ -18,6 +31,7 @@ export function useViewportBounds(
   viewport: { x: number; y: number; scale: number }
 ): Bounds | null {
   const [bounds, setBounds] = useState<Bounds | null>(null);
+  const boundsRef = useRef<Bounds | null>(null);
 
   const update = useCallback(() => {
     const el = containerRef.current;
@@ -28,14 +42,18 @@ export function useViewportBounds(
     const top = (-y - rect.height / 2) / scale;
     const width = rect.width / scale;
     const height = rect.height / scale;
-    setBounds({
+    const next: Bounds = {
       left,
       top,
       right: left + width,
       bottom: top + height,
       width,
       height,
-    });
+    };
+    if (!boundsEqual(boundsRef.current, next)) {
+      boundsRef.current = next;
+      setBounds(next);
+    }
   }, [containerRef, viewport.x, viewport.y, viewport.scale]);
 
   useEffect(() => {

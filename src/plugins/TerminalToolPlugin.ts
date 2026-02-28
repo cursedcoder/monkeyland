@@ -1,23 +1,34 @@
 import { Plugin } from "multi-llm-ts";
 import type { PluginParameter, PluginExecutionContext } from "multi-llm-ts";
 import { invoke } from "@tauri-apps/api/core";
+import type { TerminalLogEntry } from "../components/TerminalLogCard";
 
-export type AddTerminalNodeFn = (agentNodeId: string) => string;
+export type AddTerminalLogNodeFn = (agentNodeId: string) => string;
+export type UpdateTerminalLogFn = (nodeId: string, entries: TerminalLogEntry[]) => void;
 
 /**
- * LLM agent tool that runs commands in a PTY terminal.
- * When invoked, creates a visible terminal node on the canvas,
- * executes the command, and returns the output to the LLM.
+ * LLM agent tool that runs shell commands via bash -c subprocess.
+ * Each call starts a FRESH shell -- no state persists between calls.
+ * Creates a terminal log card on the canvas showing command history.
  */
 export class TerminalToolPlugin extends Plugin {
   private agentNodeId: string;
-  private addTerminalNode: AddTerminalNodeFn;
-  private terminalSessionId: string | null = null;
+  private addLogNode: AddTerminalLogNodeFn;
+  private updateLog: UpdateTerminalLogFn;
+  private logNodeId: string | null = null;
+  private entries: TerminalLogEntry[] = [];
+  private sessionId: string;
 
-  constructor(agentNodeId: string, addTerminalNode: AddTerminalNodeFn) {
+  constructor(
+    agentNodeId: string,
+    addLogNode: AddTerminalLogNodeFn,
+    updateLog: UpdateTerminalLogFn,
+  ) {
     super();
     this.agentNodeId = agentNodeId;
-    this.addTerminalNode = addTerminalNode;
+    this.addLogNode = addLogNode;
+    this.updateLog = updateLog;
+    this.sessionId = `exec-${Date.now()}`;
   }
 
   isEnabled(): boolean {
@@ -29,7 +40,15 @@ export class TerminalToolPlugin extends Plugin {
   }
 
   getDescription(): string {
-    return "Run a shell command in a terminal. Use this to execute commands, install packages, build projects, run tests, read files, etc. The command runs in a real shell and you get the output back.";
+    return [
+      "Run a shell command via /bin/bash -c and return stdout+stderr.",
+      "IMPORTANT: Each call starts a FRESH shell. No state (cwd, env vars) persists between calls.",
+      "Use the 'cwd' parameter to set the working directory instead of 'cd'.",
+      "Commands have a 2-minute timeout. stdin is closed, so interactive prompts get EOF.",
+      "For interactive installers, use --yes or -y flags (e.g. 'npx --yes create-vite').",
+      "For creating or editing files, prefer the write_file tool instead.",
+      "For long-running servers: use 'nohup cmd > /tmp/out.log 2>&1 & echo started' then check the log in a follow-up call.",
+    ].join(" ");
   }
 
   getRunningDescription(_tool: string, args: { command?: string }): string {
@@ -41,32 +60,43 @@ export class TerminalToolPlugin extends Plugin {
       {
         name: "command",
         type: "string",
-        description: "The shell command to execute",
+        description: "The shell command to execute (bash -c)",
         required: true,
+      },
+      {
+        name: "cwd",
+        type: "string",
+        description: "Working directory for the command (absolute path). If not set, defaults to system default.",
+        required: false,
       },
     ];
   }
 
   async execute(
     _context: PluginExecutionContext,
-    parameters: { command: string },
+    parameters: { command: string; cwd?: string },
   ): Promise<{ output: string }> {
-    if (!this.terminalSessionId) {
-      this.terminalSessionId = this.addTerminalNode(this.agentNodeId);
-      await invoke("terminal_spawn", {
-        payload: { session_id: this.terminalSessionId, cols: 120, rows: 30 },
-      });
-      // Give shell a moment to initialize
-      await new Promise((r) => setTimeout(r, 500));
+    if (!this.logNodeId) {
+      this.logNodeId = this.addLogNode(this.agentNodeId);
     }
 
     const output = await invoke<string>("terminal_exec", {
       payload: {
-        session_id: this.terminalSessionId,
+        session_id: this.sessionId,
         command: parameters.command,
-        timeout_ms: 30_000,
+        timeout_ms: 120_000,
+        cwd: parameters.cwd ?? null,
       },
     });
+
+    const entry: TerminalLogEntry = {
+      command: parameters.command,
+      cwd: parameters.cwd,
+      output,
+      ts: Date.now(),
+    };
+    this.entries.push(entry);
+    this.updateLog(this.logNodeId, [...this.entries]);
 
     return { output };
   }

@@ -6,6 +6,10 @@ import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
 import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
 import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
+import { BeadsToolPlugin } from "./plugins/BeadsToolPlugin";
+import { WriteFileToolPlugin } from "./plugins/WriteFileToolPlugin";
+import { ReadFileToolPlugin } from "./plugins/ReadFileToolPlugin";
+import { ORCHESTRATOR_SYSTEM_PROMPT } from "./orchestratorPrompt";
 import "./App.css";
 import type { SessionLayout, CanvasLayoutPayload, CanvasNodeType } from "./types";
 import type { LlmProviderId } from "./types";
@@ -15,10 +19,12 @@ import {
   GRID_STEP,
   SESSION_CARD_DEFAULT_W,
   SESSION_CARD_DEFAULT_H,
-  TERMINAL_CARD_DEFAULT_W,
-  TERMINAL_CARD_DEFAULT_H,
   BROWSER_CARD_DEFAULT_W,
   BROWSER_CARD_DEFAULT_H,
+  TERMINAL_LOG_DEFAULT_W,
+  TERMINAL_LOG_DEFAULT_H,
+  BEADS_CARD_DEFAULT_W,
+  BEADS_CARD_DEFAULT_H,
 } from "./types";
 
 const REPOSITION_ORIGIN = { x: 80, y: 80 };
@@ -99,7 +105,7 @@ function findNonOverlappingPosition(
 
 /** Returns new layouts with x,y reset to a clean grid: prompts → agents → terminals → browsers. */
 function repositionLayouts(layouts: SessionLayout[]): SessionLayout[] {
-  const typeOrder: CanvasNodeType[] = ["prompt", "agent", "terminal", "browser"];
+  const typeOrder: CanvasNodeType[] = ["prompt", "agent", "terminal", "terminal_log", "browser", "beads"];
   const sorted = [...layouts].sort((a, b) => {
     const ta = typeOrder.indexOf((a.node_type ?? "agent") as CanvasNodeType);
     const tb = typeOrder.indexOf((b.node_type ?? "agent") as CanvasNodeType);
@@ -150,6 +156,8 @@ export default function App() {
 
   const layoutsRef = useRef<SessionLayout[]>([]);
   layoutsRef.current = layouts;
+
+  const abortControllers = useRef(new Map<string, AbortController>());
 
   const persistLayouts = useCallback((next: SessionLayout[]) => {
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
@@ -290,12 +298,8 @@ export default function App() {
     });
   }, [persistLayouts]);
 
-  /**
-   * Add a terminal node to the canvas, positioned to the right of the agent.
-   * Returns the session_id of the new terminal node.
-   */
-  const addTerminalNode = useCallback((agentNodeId: string): string => {
-    const terminalId = generateNodeId();
+  const addTerminalLogNode = useCallback((agentNodeId: string): string => {
+    const logId = generateNodeId();
     setLayouts((prev) => {
       const agent = prev.find((l) => l.session_id === agentNodeId);
       const preferredX = agent ? agent.x + agent.w + GRID_STEP : REPOSITION_ORIGIN.x;
@@ -304,24 +308,84 @@ export default function App() {
         prev,
         preferredX,
         preferredY,
-        TERMINAL_CARD_DEFAULT_W,
-        TERMINAL_CARD_DEFAULT_H
+        TERMINAL_LOG_DEFAULT_W,
+        TERMINAL_LOG_DEFAULT_H
       );
-      const terminalLayout: SessionLayout = {
-        session_id: terminalId,
+      const logLayout: SessionLayout = {
+        session_id: logId,
         x,
         y,
-        w: TERMINAL_CARD_DEFAULT_W,
-        h: TERMINAL_CARD_DEFAULT_H,
+        w: TERMINAL_LOG_DEFAULT_W,
+        h: TERMINAL_LOG_DEFAULT_H,
         collapsed: false,
-        node_type: "terminal",
-        payload: JSON.stringify({ parentAgentId: agentNodeId }),
+        node_type: "terminal_log",
+        payload: JSON.stringify({ parentAgentId: agentNodeId, entries: [] }),
       };
-      const next = [...prev, terminalLayout];
+      const next = [...prev, logLayout];
       if (loaded.current) persistLayoutsRef.current(next);
       return next;
     });
-    return terminalId;
+    return logId;
+  }, []);
+
+  const updateTerminalLog = useCallback((nodeId: string, entries: import("./components/TerminalLogCard").TerminalLogEntry[]) => {
+    setLayouts((prev) => {
+      const next = prev.map((l) => {
+        if (l.session_id !== nodeId) return l;
+        try {
+          const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+          return { ...l, payload: JSON.stringify({ ...p, entries }) };
+        } catch {
+          return l;
+        }
+      });
+      return next;
+    });
+  }, []);
+
+  const addBeadsNode = useCallback((agentNodeId: string): string => {
+    const beadsId = generateNodeId();
+    setLayouts((prev) => {
+      const agent = prev.find((l) => l.session_id === agentNodeId);
+      const preferredX = agent ? agent.x + agent.w + GRID_STEP : REPOSITION_ORIGIN.x;
+      const preferredY = agent ? agent.y + (agent.h / 2) : REPOSITION_ORIGIN.y;
+      const { x, y } = findNonOverlappingPosition(
+        prev,
+        preferredX,
+        preferredY,
+        BEADS_CARD_DEFAULT_W,
+        BEADS_CARD_DEFAULT_H
+      );
+      const beadsLayout: SessionLayout = {
+        session_id: beadsId,
+        x,
+        y,
+        w: BEADS_CARD_DEFAULT_W,
+        h: BEADS_CARD_DEFAULT_H,
+        collapsed: false,
+        node_type: "beads",
+        payload: JSON.stringify({ parentAgentId: agentNodeId, beadsStatus: null }),
+      };
+      const next = [...prev, beadsLayout];
+      if (loaded.current) persistLayoutsRef.current(next);
+      return next;
+    });
+    return beadsId;
+  }, []);
+
+  const updateBeadsStatus = useCallback((nodeId: string, status: import("./components/BeadsCard").BeadsStatus) => {
+    setLayouts((prev) => {
+      const next = prev.map((l) => {
+        if (l.session_id !== nodeId) return l;
+        try {
+          const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+          return { ...l, payload: JSON.stringify({ ...p, beadsStatus: status }) };
+        } catch {
+          return l;
+        }
+      });
+      return next;
+    });
   }, []);
 
   const addBrowserNode = useCallback(
@@ -441,6 +505,7 @@ export default function App() {
         });
       };
 
+      let fullText = "";
       try {
         const settings = await invoke<{ provider: string; model: string }>("load_llm_settings");
         const apiKey = await invoke<string | null>("get_llm_api_key", {
@@ -462,17 +527,28 @@ export default function App() {
 
         const llmModel = igniteModel(settings.provider, model, { apiKey: apiKey.trim() });
 
-        const terminalPlugin = new TerminalToolPlugin(newAgentId, addTerminalNode);
+        const terminalPlugin = new TerminalToolPlugin(newAgentId, addTerminalLogNode, updateTerminalLog);
         llmModel.addPlugin(terminalPlugin);
         const browserPlugin = new BrowserToolPlugin(newAgentId, addBrowserNode);
         llmModel.addPlugin(browserPlugin);
+        const beadsPlugin = new BeadsToolPlugin(newAgentId, addBeadsNode, updateBeadsStatus);
+        llmModel.addPlugin(beadsPlugin);
+        const writeFilePlugin = new WriteFileToolPlugin();
+        llmModel.addPlugin(writeFilePlugin);
+        const readFilePlugin = new ReadFileToolPlugin();
+        llmModel.addPlugin(readFilePlugin);
+
+        const controller = new AbortController();
+        abortControllers.current.set(newAgentId, controller);
 
         const stream = llmModel.generate(
-          [new Message("user", promptText || "Hello, respond briefly.")],
-          { tools: true },
+          [
+            new Message("system", ORCHESTRATOR_SYSTEM_PROMPT),
+            new Message("user", promptText || "Hello, respond briefly."),
+          ],
+          { tools: true, abortSignal: controller.signal },
         );
 
-        let fullText = "";
         for await (const chunk of stream as AsyncIterable<LlmChunk>) {
           if (!chunk || typeof chunk !== "object" || !("type" in chunk)) continue;
           const c = chunk as { type: string; text?: string; name?: string; state?: string; status?: string };
@@ -495,11 +571,17 @@ export default function App() {
 
         updateAgentPayload({ status: "done", answer: fullText, toolActivity: "" }, true);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        updateAgentPayload({ status: "error", errorMessage: msg }, true);
+        if (e instanceof DOMException && e.name === "AbortError") {
+          updateAgentPayload({ status: "stopped", answer: fullText, toolActivity: "" }, true);
+        } else {
+          const msg = e instanceof Error ? e.message : String(e);
+          updateAgentPayload({ status: "error", errorMessage: msg }, true);
+        }
+      } finally {
+        abortControllers.current.delete(newAgentId);
       }
     },
-    [persistLayouts, addTerminalNode, addBrowserNode]
+    [persistLayouts, addBrowserNode, addTerminalLogNode, updateTerminalLog, addBeadsNode, updateBeadsStatus]
   );
 
   const handleAddPrompt = useCallback(() => {
@@ -533,6 +615,13 @@ export default function App() {
       await invoke("save_canvas_layout", { payload: { layouts: [] } });
     } catch (e) {
       console.warn("Failed to clear canvas layout", e);
+    }
+  }, []);
+
+  const handleStopAgent = useCallback((nodeId: string) => {
+    const controller = abortControllers.current.get(nodeId);
+    if (controller) {
+      controller.abort();
     }
   }, []);
 
@@ -590,6 +679,7 @@ export default function App() {
         onLayoutCommit={handleLayoutCommit}
         onPromptChange={handlePromptChange}
         onLaunch={handleLaunch}
+        onStopAgent={handleStopAgent}
       />
     </div>
   );

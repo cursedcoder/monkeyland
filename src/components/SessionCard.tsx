@@ -37,6 +37,7 @@ interface SessionCardProps {
   onLayoutChange: (layout: SessionLayout) => void;
   onLayoutCommit: (layout: SessionLayout) => void;
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
+  onStop?: () => void;
   index: number;
   scale?: number;
 }
@@ -50,6 +51,7 @@ export function SessionCard({
   onLayoutChange,
   onLayoutCommit,
   onDragStart,
+  onStop,
   index,
   scale = 1,
 }: SessionCardProps) {
@@ -233,15 +235,37 @@ export function SessionCard({
         <span className="session-card-title">
           {parseRole(layout.payload) ? ROLE_LABELS[parseRole(layout.payload)!] : `Agent ${index + 1}`}
         </span>
-        <button
-          type="button"
-          className="session-card-collapse"
-          onClick={handleToggleCollapse}
-          onPointerDown={(e) => e.stopPropagation()}
-          aria-label={layout.collapsed ? "Expand" : "Collapse"}
-        >
-          {layout.collapsed ? "▶" : "▼"}
-        </button>
+        <div className="session-card-header-actions">
+          {(() => {
+            try {
+              const p = JSON.parse(layout.payload ?? "{}") as { status?: string };
+              if (p.status === "loading" && onStop) {
+                return (
+                  <button
+                    type="button"
+                    className="session-card-stop"
+                    onClick={(e) => { e.stopPropagation(); onStop(); }}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    aria-label="Stop agent"
+                    title="Stop agent"
+                  >
+                    Stop
+                  </button>
+                );
+              }
+            } catch { /* ignore */ }
+            return null;
+          })()}
+          <button
+            type="button"
+            className="session-card-collapse"
+            onClick={handleToggleCollapse}
+            onPointerDown={(e) => e.stopPropagation()}
+            aria-label={layout.collapsed ? "Expand" : "Collapse"}
+          >
+            {layout.collapsed ? "▶" : "▼"}
+          </button>
+        </div>
       </div>
       {!layout.collapsed && (
         <>
@@ -274,6 +298,20 @@ export function SessionCard({
                     <p className="session-card-response-loading">
                       {p.toolActivity || "Thinking\u2026"}
                     </p>
+                    {p.answer ? (
+                      <div className="session-card-response-text session-card-markdown">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {p.answer}
+                        </ReactMarkdown>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              }
+              if (p.status === "stopped") {
+                return (
+                  <div className="session-card-response">
+                    <p className="session-card-response-stopped">Stopped</p>
                     {p.answer ? (
                       <div className="session-card-response-text session-card-markdown">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>

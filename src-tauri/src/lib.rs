@@ -100,6 +100,8 @@ pub fn run() {
             crate::commands::terminal_write,
             crate::commands::terminal_resize,
             crate::commands::terminal_exec,
+            crate::commands::write_file,
+            crate::commands::read_file,
             crate::commands::browser_ensure_started,
             crate::commands::beads_init,
             crate::commands::beads_run,
