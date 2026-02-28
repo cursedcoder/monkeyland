@@ -55,9 +55,10 @@ export function WorkforceOverlay() {
     return () => { cancelled = true; clearInterval(iv); };
   }, []);
 
-  const activeCount = status ? Object.values(status.by_role).reduce((a, b) => a + b, 0) : 0;
-  const totalSlots = status?.total_slots ?? 100;
   const agentEntries = Array.from(agents.values());
+  const registryCount = status ? Object.values(status.by_role).reduce((a, b) => a + b, 0) : 0;
+  const activeCount = Math.max(registryCount, agentEntries.length);
+  const totalSlots = status?.total_slots ?? 100;
   const totalTokens = agentEntries.reduce((sum, a) => sum + a.promptTokens + a.completionTokens, 0);
   const hasActivity = totalCostUsd > 0 || agentEntries.length > 0;
 
