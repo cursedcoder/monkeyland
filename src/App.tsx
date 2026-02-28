@@ -6,7 +6,6 @@ import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
 import { WorkforceOverlay } from "./components/WorkforceOverlay";
 import { DebugPanel } from "./components/DebugPanel";
-import { FPSCounter } from "./components/FPSCounter";
 import { GlobalControls } from "./components/GlobalControls";
 import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
 import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
@@ -984,7 +983,6 @@ export default function App() {
           >
             Clear canvas
           </button>
-          <FPSCounter />
           <button
             type="button"
             className="app-theme-toggle"
