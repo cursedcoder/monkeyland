@@ -1,5 +1,8 @@
 import { createContext, useContext, useCallback, useRef, useSyncExternalStore } from "react";
 
+const COST_LIMIT_STORAGE_KEY = "monkeyland-cost-limit";
+const COST_STATE_STORAGE_KEY = "monkeyland-cost-state";
+
 export interface AgentCostEntry {
   agentId: string;
   role: string;
@@ -31,8 +34,69 @@ export interface CostStore {
   reset: () => void;
 }
 
+function loadPersistedCostLimit(): number | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(COST_LIMIT_STORAGE_KEY);
+    if (raw == null || raw === "") return null;
+    const n = parseFloat(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadPersistedCostState(): Partial<CostState> {
+  if (typeof localStorage === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(COST_STATE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as {
+      totalCostUsd?: number;
+      agents?: Array<[string, AgentCostEntry]>;
+    };
+    const out: Partial<CostState> = {};
+    if (Number.isFinite(parsed.totalCostUsd) && parsed.totalCostUsd! >= 0) {
+      out.totalCostUsd = parsed.totalCostUsd!;
+    }
+    if (Array.isArray(parsed.agents) && parsed.agents.length > 0) {
+      out.agents = new Map(parsed.agents as [string, AgentCostEntry][]);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function persistCostLimit(limit: number | null) {
+  try {
+    if (limit == null) localStorage.removeItem(COST_LIMIT_STORAGE_KEY);
+    else localStorage.setItem(COST_LIMIT_STORAGE_KEY, String(limit));
+  } catch {
+    /* ignore */
+  }
+}
+
+function persistCostState(state: CostState) {
+  try {
+    const payload = {
+      totalCostUsd: state.totalCostUsd,
+      agents: Array.from(state.agents.entries()),
+    };
+    localStorage.setItem(COST_STATE_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    /* ignore */
+  }
+}
+
 function createInitialState(): CostState {
-  return { agents: new Map(), totalCostUsd: 0, costLimitUsd: null };
+  const persisted = loadPersistedCostState();
+  const costLimit = loadPersistedCostLimit();
+  return {
+    agents: persisted.agents ?? new Map(),
+    totalCostUsd: persisted.totalCostUsd ?? 0,
+    costLimitUsd: costLimit,
+  };
 }
 
 export function createCostStore(): CostStore {
@@ -71,11 +135,13 @@ export function createCostStore(): CostStore {
         agents: next,
         totalCostUsd: state.totalCostUsd + deltaCost,
       };
+      persistCostState(state);
       emit();
     },
 
     setCostLimit(limit) {
       state = { ...state, costLimitUsd: limit };
+      persistCostLimit(limit);
       emit();
     },
 

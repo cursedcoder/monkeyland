@@ -108,12 +108,20 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
         fullText += c.text;
       }
 
-      if (c.type === "usage" && c.usage && typeof c.usage === "object") {
-        const u = c.usage as { prompt_tokens?: number; completion_tokens?: number };
-        callbacks.onUsage?.({
-          prompt_tokens: u.prompt_tokens ?? 0,
-          completion_tokens: u.completion_tokens ?? 0,
-        });
+      // Some providers send usage in a dedicated chunk; others attach it to other chunks.
+      const usagePayload = (c.type === "usage" ? c.usage : c.usage ?? (c as { usage?: unknown }).usage) as
+        | { prompt_tokens?: number; completion_tokens?: number }
+        | undefined;
+      if (usagePayload && typeof usagePayload === "object") {
+        const u = usagePayload;
+        const prompt = u.prompt_tokens ?? 0;
+        const completion = u.completion_tokens ?? 0;
+        if (prompt > 0 || completion > 0) {
+          callbacks.onUsage?.({
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+          });
+        }
       }
     }
 

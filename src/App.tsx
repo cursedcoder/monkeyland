@@ -6,7 +6,6 @@ import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
 import { WorkforceOverlay } from "./components/WorkforceOverlay";
 import { DebugPanel } from "./components/DebugPanel";
-import { GlobalControls } from "./components/GlobalControls";
 import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
 import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
 import { BeadsToolPlugin } from "./plugins/BeadsToolPlugin";
@@ -638,6 +637,12 @@ export default function App() {
         preferredX: promptLayout.x,
         preferredY: promptLayout.y + promptLayout.h + GRID_STEP,
       });
+      // Start orchestration so the loop can pick up tasks from Beads and spawn developer agents.
+      try {
+        await invoke("orch_start");
+      } catch {
+        /* already running or not available */
+      }
     },
     [startAgentConversation],
   );
@@ -933,20 +938,24 @@ export default function App() {
 
     const text = JSON.stringify(debug, null, 2);
     try {
-      await navigator.clipboard.writeText(text);
+      // Prefer Tauri command so clipboard works in the webview (navigator.clipboard often restricted)
+      await invoke("write_clipboard_text", { text });
     } catch {
-      // Clipboard API can throw NotAllowedError after async work (user gesture lost). Fallback:
-      const el = document.createElement("textarea");
-      el.value = text;
-      el.setAttribute("readonly", "");
-      el.style.position = "fixed";
-      el.style.opacity = "0";
-      document.body.appendChild(el);
-      el.select();
       try {
-        document.execCommand("copy");
-      } finally {
-        document.body.removeChild(el);
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const el = document.createElement("textarea");
+        el.value = text;
+        el.setAttribute("readonly", "");
+        el.style.position = "fixed";
+        el.style.opacity = "0";
+        document.body.appendChild(el);
+        el.select();
+        try {
+          document.execCommand("copy");
+        } finally {
+          document.body.removeChild(el);
+        }
       }
     }
     setDebugCopied(true);
@@ -1002,10 +1011,10 @@ export default function App() {
           onStopAgent={handleStopAgent}
         />
         <WorkforceOverlay />
-        <GlobalControls onStopAll={handleStopAll} />
         <DebugPanel
           onCopyDebug={handleCopyDebug}
           debugCopied={debugCopied}
+          onStopAll={handleStopAll}
         />
       </div>
     </CostStoreContext.Provider>

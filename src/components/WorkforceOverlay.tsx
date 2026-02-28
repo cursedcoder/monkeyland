@@ -50,6 +50,9 @@ export function WorkforceOverlay() {
   const activeCount = status ? Object.values(status.by_role).reduce((a, b) => a + b, 0) : 0;
   const totalSlots = status?.total_slots ?? 100;
   const agentEntries = Array.from(agents.values());
+  const hasActivity = totalCostUsd > 0 || agentEntries.length > 0;
+
+  if (!hasActivity) return null;
 
   return (
     <div className="workforce-overlay">
