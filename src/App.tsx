@@ -931,7 +931,24 @@ export default function App() {
       nodes: snap,
     };
 
-    await navigator.clipboard.writeText(JSON.stringify(debug, null, 2));
+    const text = JSON.stringify(debug, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard API can throw NotAllowedError after async work (user gesture lost). Fallback:
+      const el = document.createElement("textarea");
+      el.value = text;
+      el.setAttribute("readonly", "");
+      el.style.position = "fixed";
+      el.style.opacity = "0";
+      document.body.appendChild(el);
+      el.select();
+      try {
+        document.execCommand("copy");
+      } finally {
+        document.body.removeChild(el);
+      }
+    }
     setDebugCopied(true);
     setTimeout(() => setDebugCopied(false), 2000);
   }, []);
