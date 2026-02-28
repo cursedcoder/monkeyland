@@ -1,5 +1,6 @@
 use crate::agent_registry::{AgentQuota, AgentRegistry, AgentStatusResponse, YieldPayload};
 use crate::browser_pool::BrowserPool;
+use crate::orchestration::OrchestrationState;
 use crate::pty_pool::PtyPool;
 use crate::storage::{MetaDb, SessionLayoutRow};
 use serde::{Deserialize, Serialize};
@@ -469,6 +470,24 @@ pub async fn set_role_config(
     max_count: Option<u32>,
 ) -> Result<(), String> {
     registry.set_role_max_count(&role, max_count)
+}
+
+/// Returns orchestration state: 0 = idle, 1 = running, 2 = paused.
+#[tauri::command]
+pub async fn orch_get_state(state: State<'_, OrchestrationState>) -> Result<u8, String> {
+    Ok(state.get())
+}
+
+#[tauri::command]
+pub async fn orch_start(state: State<'_, OrchestrationState>) -> Result<(), String> {
+    state.set_running();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn orch_pause(state: State<'_, OrchestrationState>) -> Result<(), String> {
+    state.set_paused();
+    Ok(())
 }
 
 #[tauri::command]

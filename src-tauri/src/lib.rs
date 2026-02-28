@@ -17,6 +17,7 @@ pub fn run() {
             app.manage(pty_pool::PtyPool::new());
             app.manage(browser_pool::BrowserPool::new());
             app.manage(agent_registry::AgentRegistry::new());
+            app.manage(orchestration::OrchestrationState::new());
 
             // Orchestration loop: every 5 s, poll bd ready, spawn agents, claim tasks, kill expired
             let handle_orch = app.handle().clone();
@@ -24,6 +25,10 @@ pub fn run() {
                 let mut interval = tokio::time::interval(Duration::from_secs(5));
                 loop {
                     interval.tick().await;
+                    let orch_state = handle_orch.try_state::<orchestration::OrchestrationState>();
+                    if orch_state.as_deref().map_or(true, |s| !s.is_running()) {
+                        continue;
+                    }
                     if let (Some(meta_db), Some(registry), Some(pool)) = (
                         handle_orch.try_state::<storage::MetaDb>(),
                         handle_orch.try_state::<agent_registry::AgentRegistry>(),
@@ -112,6 +117,9 @@ pub fn run() {
             crate::commands::agent_kill,
             crate::commands::agent_status,
             crate::commands::set_role_config,
+            crate::commands::orch_get_state,
+            crate::commands::orch_start,
+            crate::commands::orch_pause,
             crate::commands::agent_quota,
             crate::commands::agent_report_tokens,
             crate::commands::agent_yield,

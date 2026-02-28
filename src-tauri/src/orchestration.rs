@@ -6,9 +6,35 @@ use crate::storage::MetaDb;
 use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicU8, Ordering};
 use tauri::Emitter;
 
 const BEADS_PROJECT_PATH_KEY: &str = "beads_project_path";
+
+/// 0 = idle (never started), 1 = running, 2 = paused
+pub struct OrchestrationState(AtomicU8);
+
+impl OrchestrationState {
+    pub fn new() -> Self {
+        Self(AtomicU8::new(0))
+    }
+
+    pub fn get(&self) -> u8 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn set_running(&self) {
+        self.0.store(1, Ordering::Relaxed);
+    }
+
+    pub fn set_paused(&self) {
+        self.0.store(2, Ordering::Relaxed);
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.0.load(Ordering::Relaxed) == 1
+    }
+}
 
 /// Run `bd` with args in project_path. Returns stdout. Runs in blocking context.
 pub fn run_bd_sync(project_path: &Path, args: &[String]) -> Result<String, String> {

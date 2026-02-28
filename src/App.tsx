@@ -6,6 +6,7 @@ import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
 import { WorkforceOverlay } from "./components/WorkforceOverlay";
 import { DebugPanel } from "./components/DebugPanel";
+import { GlobalControls } from "./components/GlobalControls";
 import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
 import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
 import { BeadsToolPlugin } from "./plugins/BeadsToolPlugin";
@@ -850,6 +851,26 @@ export default function App() {
     }
   }, []);
 
+  const handleStopAll = useCallback(() => {
+    for (const [id, controller] of abortControllers.current) {
+      controller.abort();
+      invoke("agent_kill", { agentId: id }).catch(() => {});
+    }
+    abortControllers.current.clear();
+    setLayouts((prev) =>
+      prev.map((l) => {
+        if (!["agent", "worker", "validator"].includes(l.node_type ?? "")) return l;
+        try {
+          const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+          if (p.status === "loading") {
+            return { ...l, payload: JSON.stringify({ ...p, status: "stopped", toolActivity: "" }) };
+          }
+        } catch { /* */ }
+        return l;
+      }),
+    );
+  }, []);
+
   const handleReposition = useCallback(() => {
     setLayouts((prev) => {
       if (prev.length === 0) return prev;
@@ -944,6 +965,7 @@ export default function App() {
           onStopAgent={handleStopAgent}
         />
         <WorkforceOverlay />
+        <GlobalControls onStopAll={handleStopAll} />
         <DebugPanel
           onCopyDebug={handleCopyDebug}
           debugCopied={debugCopied}
