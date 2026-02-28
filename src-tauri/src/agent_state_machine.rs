@@ -108,24 +108,16 @@ const TASK_REQUIRED_ROLES: &[&str] = &["developer", "worker", "project_manager"]
 ///
 /// Enforces:
 /// 1. Developers, workers, and PMs require a `task_id`.
-/// 2. Developers and workers require at least one active manager (WM or PM).
+/// 2. NOTE: We no longer require active managers for developers/workers when spawned
+///    via the orchestration loop (with a task_id). If a task exists in Beads, a manager
+///    already created it - the manager completing its planning phase shouldn't block work.
 pub fn validate_spawn(
     role: &str,
     task_id: &Option<String>,
-    active_role_counts: &HashMap<String, usize>,
+    _active_role_counts: &HashMap<String, usize>,
 ) -> Result<(), String> {
     if TASK_REQUIRED_ROLES.contains(&role) && task_id.is_none() {
         return Err(format!("Role {role} requires a task_id to spawn"));
-    }
-
-    if matches!(role, "developer" | "worker") {
-        let wm = active_role_counts.get("workforce_manager").copied().unwrap_or(0);
-        let pm = active_role_counts.get("project_manager").copied().unwrap_or(0);
-        if wm == 0 && pm == 0 {
-            return Err(format!(
-                "Cannot spawn {role}: no workforce_manager or project_manager is active"
-            ));
-        }
     }
 
     Ok(())
@@ -354,16 +346,8 @@ mod tests {
     }
 
     #[test]
-    fn developer_spawn_without_manager_rejected() {
+    fn developer_spawn_with_task_ok() {
         let active = HashMap::new();
-        let result = validate_spawn("developer", &Some("bd-1".to_string()), &active);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("no workforce_manager"));
-    }
-
-    #[test]
-    fn developer_spawn_with_task_and_manager_ok() {
-        let active = HashMap::from([("workforce_manager".to_string(), 1usize)]);
         let result = validate_spawn("developer", &Some("bd-1".to_string()), &active);
         assert!(result.is_ok());
     }
@@ -377,7 +361,7 @@ mod tests {
 
     #[test]
     fn worker_spawn_requires_task() {
-        let active = HashMap::from([("project_manager".to_string(), 1usize)]);
+        let active = HashMap::new();
         assert!(validate_spawn("worker", &None, &active).is_err());
         assert!(validate_spawn("worker", &Some("bd-2".to_string()), &active).is_ok());
     }

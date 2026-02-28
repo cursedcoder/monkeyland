@@ -796,12 +796,17 @@ export default function App() {
         "scope_validator",
       ];
 
+      // Get project path for sandboxing validators
+      let resolvedProjectPath: string | null = null;
+      try {
+        resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
+      } catch { /* */ }
+
       const devLayout = layoutsRef.current.find((l) => l.session_id === developer_agent_id);
       let baseX = devLayout ? devLayout.x : REPOSITION_ORIGIN.x;
       let baseY = devLayout ? devLayout.y + devLayout.h + GRID_STEP : REPOSITION_ORIGIN.y;
 
       for (const role of validatorRoles) {
-        const validatorId = generateNodeId();
         const userMessage = [
           `Task ID: ${task_id ?? "unknown"}`,
           `Developer agent: ${developer_agent_id}`,
@@ -809,6 +814,23 @@ export default function App() {
           "## Changes to review",
           diff_summary ?? "No diff summary provided.",
         ].join("\n");
+
+        // Register validator in backend for state machine + sandbox enforcement
+        let validatorId: string;
+        try {
+          const result = await invoke<{ agent_id: string }>("agent_spawn", {
+            payload: {
+              role,
+              task_id: task_id,
+              parent_agent_id: developer_agent_id,
+              cwd: resolvedProjectPath,
+            },
+          });
+          validatorId = result.agent_id;
+        } catch (e) {
+          console.error("Failed to spawn validator:", e);
+          continue;
+        }
 
         // Spawn validator -- it runs, produces verdict, then we submit it
         const validatorPromise = startAgentConversationRef.current({
@@ -819,6 +841,7 @@ export default function App() {
           parentAgentId: developer_agent_id,
           preferredX: baseX,
           preferredY: baseY,
+          projectPath: resolvedProjectPath,
         });
 
         // After the validator finishes, parse verdict and submit

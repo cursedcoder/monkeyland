@@ -433,6 +433,7 @@ pub async fn agent_spawn(
         &payload.role,
         payload.task_id.clone(),
         payload.parent_agent_id.clone(),
+        payload.cwd.clone(),
     )?;
     let cwd = payload
         .cwd
@@ -574,7 +575,7 @@ pub async fn validation_submit(
 }
 
 /// Write content to a file, creating parent directories as needed.
-/// If agent_id is provided, the call is gated by the state machine.
+/// If agent_id is provided, the call is gated by the state machine and sandboxed to project_path.
 #[tauri::command]
 pub async fn write_file(
     registry: State<'_, AgentRegistry>,
@@ -584,6 +585,7 @@ pub async fn write_file(
 ) -> Result<(), String> {
     if let Some(ref aid) = agent_id {
         registry.gate_tool(aid, "write_file")?;
+        registry.validate_path(aid, &path)?;
     }
     let p = std::path::Path::new(&path);
     if let Some(parent) = p.parent() {
@@ -593,7 +595,7 @@ pub async fn write_file(
 }
 
 /// Execute a command via `bash -c` as a subprocess, capturing clean stdout+stderr.
-/// If payload.agent_id is set, gated by the state machine.
+/// If payload.agent_id is set, gated by the state machine and cwd is validated against sandbox.
 #[tauri::command]
 pub async fn terminal_exec(
     _pool: State<'_, PtyPool>,
@@ -602,6 +604,16 @@ pub async fn terminal_exec(
 ) -> Result<String, String> {
     if let Some(ref aid) = payload.agent_id {
         registry.gate_tool(aid, "terminal_exec")?;
+        // Validate cwd is within project sandbox
+        if let Some(ref cwd) = payload.cwd {
+            registry.validate_path(aid, cwd)?;
+        } else {
+            // No cwd specified - use project_path as default or reject
+            let project_path = registry.get_project_path(aid)?;
+            if project_path.is_some() {
+                return Err("Terminal command requires 'cwd' parameter within project directory".to_string());
+            }
+        }
     }
     let timeout = Duration::from_millis(payload.timeout_ms);
     let cmd = payload.command.clone();
@@ -667,6 +679,7 @@ pub async fn read_file(
 ) -> Result<String, String> {
     if let Some(ref aid) = agent_id {
         registry.gate_tool(aid, "read_file")?;
+        registry.validate_path(aid, &path)?;
     }
     let p = std::path::Path::new(&path);
     if !p.exists() {

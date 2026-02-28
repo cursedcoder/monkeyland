@@ -173,6 +173,7 @@ and can fix the issues (up to 3 attempts).
 - Use \`cwd\` parameter on every \`run_terminal_command\` call.
 - Keep responses concise. Show what you did, not full file dumps.
 - Stay within scope -- only modify what your task requires.
+- **SANDBOX:** You can ONLY access files within your assigned project directory. Attempting to read/write outside this path will fail.
 `;
 
 /**
@@ -188,6 +189,7 @@ export const WORKER_PROMPT = `You are a Worker in Monkeyland. You execute one sp
 - Use \`write_file\` for file changes, \`run_terminal_command\` with \`cwd\` for commands.
 - Call \`complete_task\` when finished.
 - Do NOT explore, plan, or expand scope. Execute and done.
+- **SANDBOX:** You can ONLY access files within your assigned project directory.
 `;
 
 /**
@@ -293,9 +295,9 @@ export function getPromptForRole(role: AgentRole | "orchestrator"): string {
 export type ToolName = "write_file" | "read_file" | "run_terminal_command" | "browser_action" | "open_project_with_beads" | "create_beads_task" | "dispatch_agent" | "yield_for_review" | "complete_task";
 
 export const ROLE_TOOLS: Record<AgentRole | "orchestrator", ToolName[]> = {
-  workforce_manager: ["open_project_with_beads", "create_beads_task", "dispatch_agent", "complete_task"],
-  orchestrator: ["open_project_with_beads", "create_beads_task", "dispatch_agent", "complete_task"],
-  project_manager: ["read_file", "create_beads_task", "complete_task"],
+  workforce_manager: ["open_project_with_beads", "create_beads_task", "dispatch_agent"],
+  orchestrator: ["open_project_with_beads", "create_beads_task", "dispatch_agent"],
+  project_manager: ["read_file", "create_beads_task"],
   developer: ["write_file", "read_file", "run_terminal_command", "browser_action", "yield_for_review"],
   operator: ["read_file", "run_terminal_command", "browser_action"],
   worker: ["write_file", "read_file", "run_terminal_command", "complete_task"],

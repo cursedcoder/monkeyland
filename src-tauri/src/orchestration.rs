@@ -145,7 +145,7 @@ pub async fn tick(
         if !registry.can_spawn_role(&role)? {
             continue;
         }
-        let agent_id = match registry.spawn(&role, Some(task.id.clone()), None) {
+        let agent_id = match registry.spawn(&role, Some(task.id.clone()), None, Some(project_path.clone())) {
             Ok(id) => id,
             Err(_) => continue,
         };

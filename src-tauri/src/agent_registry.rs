@@ -66,6 +66,15 @@ fn default_role_configs() -> HashMap<String, RoleConfig> {
         },
     );
     m.insert(
+        "operator".to_string(),
+        RoleConfig {
+            ttl_secs: 300,
+            token_quota: 50_000,
+            max_children: 0,
+            max_count: 10,
+        },
+    );
+    m.insert(
         "code_review_validator".to_string(),
         RoleConfig {
             ttl_secs: 300,
@@ -111,6 +120,8 @@ pub struct AgentEntry {
     pub yield_git_branch: Option<String>,
     pub yield_diff_summary: Option<String>,
     pub validation_retry_count: u32,
+    /// Project directory this agent is sandboxed to. File operations outside this path are rejected.
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,11 +205,13 @@ impl AgentRegistry {
 
     /// Spawn a new agent (register only; caller must create PTY/session with returned id).
     /// Returns agent_id to use as session_id for the PTY.
+    /// `project_path` is the sandbox directory - file operations outside it will be rejected.
     pub fn spawn(
         &self,
         role: &str,
         task_id: Option<String>,
         parent_id: Option<String>,
+        project_path: Option<String>,
     ) -> Result<String, String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         let config = inner
@@ -247,6 +260,7 @@ impl AgentRegistry {
             yield_git_branch: None,
             yield_diff_summary: None,
             validation_retry_count: 0,
+            project_path,
         };
         inner.agents.insert(id.clone(), entry);
 
@@ -597,6 +611,85 @@ impl AgentRegistry {
             .filter(|a| a.role == role && !a.state.is_terminal())
             .count();
         Ok(count < config.max_count as usize)
+    }
+
+    /// Get the project_path (sandbox directory) for an agent.
+    pub fn get_project_path(&self, agent_id: &str) -> Result<Option<String>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        Ok(inner.agents.get(agent_id).and_then(|e| e.project_path.clone()))
+    }
+
+    /// Validate that a path is within the agent's sandbox (project_path).
+    /// Returns Ok(()) if allowed, Err with reason if not.
+    /// If agent has no project_path set, all paths are allowed (for WM, operators, etc).
+    pub fn validate_path(&self, agent_id: &str, path: &str) -> Result<(), String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = match inner.agents.get(agent_id) {
+            Some(e) => e,
+            None => return Ok(()), // Unknown agent, let it through (shouldn't happen)
+        };
+
+        let project_path = match &entry.project_path {
+            Some(p) => p,
+            None => return Ok(()), // No sandbox, allow all (WM, operators)
+        };
+
+        // Canonicalize both paths for comparison
+        let sandbox = match std::fs::canonicalize(project_path) {
+            Ok(p) => p,
+            Err(_) => {
+                // Project path doesn't exist yet? Allow if target is under the raw project_path
+                let sandbox = std::path::Path::new(project_path);
+                let target = std::path::Path::new(path);
+                if target.starts_with(sandbox) {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "Path '{}' is outside project directory '{}'",
+                    path, project_path
+                ));
+            }
+        };
+
+        // For the target path, try to canonicalize. If it doesn't exist, check parent dirs.
+        let target = std::path::Path::new(path);
+        let resolved = if target.exists() {
+            std::fs::canonicalize(target).map_err(|e| e.to_string())?
+        } else {
+            // File doesn't exist - check if any existing ancestor is under sandbox
+            let mut check = target.to_path_buf();
+            loop {
+                if check.exists() {
+                    let canonical = std::fs::canonicalize(&check).map_err(|e| e.to_string())?;
+                    if !canonical.starts_with(&sandbox) {
+                        return Err(format!(
+                            "Path '{}' is outside project directory '{}'",
+                            path, project_path
+                        ));
+                    }
+                    return Ok(());
+                }
+                if !check.pop() {
+                    // Reached root without finding existing ancestor - check raw path
+                    if target.starts_with(&sandbox) || target.starts_with(project_path) {
+                        return Ok(());
+                    }
+                    return Err(format!(
+                        "Path '{}' is outside project directory '{}'",
+                        path, project_path
+                    ));
+                }
+            }
+        };
+
+        if !resolved.starts_with(&sandbox) {
+            return Err(format!(
+                "Path '{}' is outside project directory '{}'",
+                path, project_path
+            ));
+        }
+
+        Ok(())
     }
 }
 
