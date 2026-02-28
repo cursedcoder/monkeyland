@@ -89,8 +89,7 @@ You receive an epic from the Workforce Manager. Your job is to decompose it into
    - What to create/modify (specific files and their paths)
    - Any technical requirements (frameworks, libraries)
    - Acceptance criteria (what "done" looks like)
-3. Use \`chore\` type for simple, mechanical work (renaming, moving files, updating configs).
-4. Use \`task\` type for substantial implementation work.
+3. Use \`task\` type for all implementation work. All tasks are assigned to Developers who go through validation.
 
 ## CRITICAL: Dependencies
 

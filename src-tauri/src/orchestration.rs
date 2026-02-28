@@ -239,8 +239,9 @@ fn default_priority() -> u8 {
 fn role_for_task(issue_type: &str, _priority: u8) -> String {
     match issue_type.to_lowercase().as_str() {
         "epic" => "project_manager".to_string(),
-        "feature" | "bug" | "task" => "developer".to_string(),
-        "chore" => "worker".to_string(),
+        // All task types go to developers. Workers are sub-agents spawned by
+        // developers on-demand, not independent task assignees from Beads.
+        // Developers go through validation; workers don't.
         _ => "developer".to_string(),
     }
 }
