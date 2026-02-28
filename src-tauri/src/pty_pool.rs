@@ -59,7 +59,15 @@ impl PtyPool {
         }
     }
 
-    pub fn spawn(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    /// Spawn a PTY for the given session. If `cwd` is Some, the shell starts in that directory
+    /// (e.g. project root or agent worktree with .beads/redirect for Beads CLI).
+    pub fn spawn(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+        cwd: Option<&std::path::Path>,
+    ) -> Result<(), String> {
         let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         if sessions.len() >= MAX_SLOTS {
             return Err(format!("PTY pool full ({MAX_SLOTS} slots)"));
@@ -81,6 +89,11 @@ impl PtyPool {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let mut cmd = CommandBuilder::new(&shell);
         cmd.env("TERM", "xterm-256color");
+        if let Some(dir) = cwd {
+            if dir.is_dir() {
+                cmd.cwd(dir);
+            }
+        }
 
         pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
 

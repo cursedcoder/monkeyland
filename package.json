@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:icon": "tauri icon public/favicon.svg",
-    "validate:no-errors": "node scripts/validate-no-console-errors.mjs"
+    "validate:no-errors": "node scripts/validate-no-console-errors.mjs",
+    "beads:install": "npm install -g @beads/bd"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

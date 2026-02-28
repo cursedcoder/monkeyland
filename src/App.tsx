@@ -191,7 +191,7 @@ export default function App() {
         if (cancelled) return;
         const raw = (payload.layouts || []).map((l) => ({
           ...l,
-          node_type: (l.node_type ?? "agent") as "prompt" | "agent" | "terminal" | "browser",
+          node_type: (l.node_type ?? "agent") as CanvasNodeType,
           payload: l.payload ?? "{}",
         }));
 

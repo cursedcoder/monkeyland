@@ -1,7 +1,10 @@
+use crate::agent_registry::{AgentQuota, AgentRegistry, AgentStatusResponse, YieldPayload};
 use crate::browser_pool::BrowserPool;
 use crate::pty_pool::PtyPool;
 use crate::storage::{MetaDb, SessionLayoutRow};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 use tauri::State;
 
@@ -131,6 +134,9 @@ pub struct TerminalSpawnPayload {
     pub cols: u16,
     #[serde(default = "default_rows")]
     pub rows: u16,
+    /// Working directory for the shell (e.g. project root for Beads). If absent, shell uses app cwd.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 fn default_cols() -> u16 {
@@ -145,7 +151,12 @@ pub async fn terminal_spawn(
     pool: State<'_, PtyPool>,
     payload: TerminalSpawnPayload,
 ) -> Result<(), String> {
-    pool.spawn(&payload.session_id, payload.cols, payload.rows)
+    let cwd = payload
+        .cwd
+        .as_deref()
+        .map(std::path::Path::new)
+        .filter(|p| p.as_os_str().len() > 0);
+    pool.spawn(&payload.session_id, payload.cols, payload.rows, cwd)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +211,205 @@ fn default_timeout() -> u64 {
 #[tauri::command]
 pub async fn browser_ensure_started(pool: State<'_, BrowserPool>) -> Result<u16, String> {
     pool.ensure_started()
+}
+
+// --- Beads (bd) integration: init and run CLI in project path ---
+
+/// Initialize Beads in the given project path. Creates .beads/ with Dolt database.
+/// Run from project root. Requires `bd` on PATH (e.g. npm install -g @beads/bd).
+#[tauri::command]
+pub async fn beads_init(project_path: String) -> Result<(), String> {
+    let path = Path::new(&project_path);
+    if !path.is_dir() {
+        return Err(format!("Not a directory: {}", project_path));
+    }
+    let out = Command::new("bd")
+        .args(["init", "--quiet"])
+        .current_dir(path)
+        .output()
+        .map_err(|e| format!("Failed to run bd: {}", e))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("bd init failed: {}", stderr.trim()));
+    }
+    Ok(())
+}
+
+/// Run a Beads CLI command in the given project path. Returns stdout.
+/// Example: beads_run(project_path, ["ready", "--json"]).
+#[tauri::command]
+pub async fn beads_run(project_path: String, args: Vec<String>) -> Result<String, String> {
+    let path = Path::new(&project_path);
+    if !path.is_dir() {
+        return Err(format!("Not a directory: {}", project_path));
+    }
+    let out = Command::new("bd")
+        .args(&args)
+        .current_dir(path)
+        .output()
+        .map_err(|e| format!("Failed to run bd: {}", e))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "bd failed: {}",
+            stderr.trim().lines().next().unwrap_or(stderr.trim())
+        ));
+    }
+    Ok(stdout)
+}
+
+/// Start the Beads Dolt server in the background for multi-agent concurrent access.
+/// The process is spawned and detached; stop it manually (e.g. kill the process) when done.
+#[tauri::command]
+pub async fn get_beads_project_path(meta_db: State<'_, MetaDb>) -> Result<Option<String>, String> {
+    meta_db.get_setting("beads_project_path")
+}
+
+#[tauri::command]
+pub async fn set_beads_project_path(
+    meta_db: State<'_, MetaDb>,
+    project_path: Option<String>,
+) -> Result<(), String> {
+    match project_path {
+        Some(p) => meta_db.set_setting("beads_project_path", &p),
+        None => meta_db.set_setting("beads_project_path", ""),
+    }
+}
+
+#[tauri::command]
+pub async fn beads_dolt_start(project_path: String) -> Result<(), String> {
+    let path = Path::new(&project_path);
+    if !path.is_dir() {
+        return Err(format!("Not a directory: {}", project_path));
+    }
+    Command::new("bd")
+        .args(["dolt", "start"])
+        .current_dir(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to start bd dolt: {}", e))?;
+    Ok(())
+}
+
+// --- Agent registry (orchestration) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSpawnPayload {
+    pub role: String,
+    pub task_id: Option<String>,
+    pub parent_agent_id: Option<String>,
+    /// Working directory for the agent's PTY (e.g. project root for Beads).
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+#[tauri::command]
+pub async fn agent_spawn(
+    pool: State<'_, PtyPool>,
+    registry: State<'_, AgentRegistry>,
+    payload: AgentSpawnPayload,
+) -> Result<serde_json::Value, String> {
+    let agent_id = registry.spawn(
+        &payload.role,
+        payload.task_id.clone(),
+        payload.parent_agent_id.clone(),
+    )?;
+    let cwd = payload
+        .cwd
+        .as_deref()
+        .map(std::path::Path::new)
+        .filter(|p| p.as_os_str().len() > 0);
+    pool.spawn(&agent_id, 80, 24, cwd)?;
+    #[derive(serde::Serialize)]
+    struct Out {
+        agent_id: String,
+    }
+    Ok(serde_json::to_value(Out { agent_id }).map_err(|e| e.to_string())?)
+}
+
+#[tauri::command]
+pub async fn agent_kill(
+    pool: State<'_, PtyPool>,
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+) -> Result<bool, String> {
+    let ok = registry.kill(&agent_id)?;
+    let _ = pool.kill(&agent_id);
+    Ok(ok)
+}
+
+#[tauri::command]
+pub async fn agent_status(registry: State<'_, AgentRegistry>) -> Result<AgentStatusResponse, String> {
+    registry.status()
+}
+
+#[tauri::command]
+pub async fn agent_quota(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+) -> Result<Option<AgentQuota>, String> {
+    registry.quota(&agent_id)
+}
+
+#[tauri::command]
+pub async fn agent_report_tokens(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+    delta: u64,
+) -> Result<(), String> {
+    registry.report_tokens(&agent_id, delta)
+}
+
+#[tauri::command]
+pub async fn agent_yield(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+    payload: YieldPayload,
+) -> Result<(), String> {
+    registry.yield_for_review(&agent_id, payload)
+}
+
+#[tauri::command]
+pub async fn agent_message(
+    registry: State<'_, AgentRegistry>,
+    from_agent_id: String,
+    to_agent_id: String,
+    payload: String,
+) -> Result<bool, String> {
+    registry.message(&from_agent_id, &to_agent_id, payload)
+}
+
+#[tauri::command]
+pub async fn agent_poll_messages(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+) -> Result<Vec<crate::agent_registry::InboundMessage>, String> {
+    registry.poll_messages(&agent_id)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationSubmitPayload {
+    pub developer_agent_id: String,
+    pub validator_role: String,
+    pub pass: bool,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn validation_submit(
+    registry: State<'_, AgentRegistry>,
+    payload: ValidationSubmitPayload,
+) -> Result<Option<bool>, String> {
+    registry.validation_submit(
+        &payload.developer_agent_id,
+        &payload.validator_role,
+        payload.pass,
+        payload.reasons,
+    )
 }
 
 /// Execute a command and wait for output (silence-detection).

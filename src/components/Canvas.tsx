@@ -140,7 +140,9 @@ export function Canvas({
         const p = JSON.parse(layout.payload) as {
           sourcePromptId?: string;
           parentAgentId?: string;
+          parent_agent_id?: string;
         };
+        const parentId = p.parentAgentId ?? p.parent_agent_id;
 
         // Prompt → Agent connection (use effective layout so lines follow dragged cards)
         if (layout.node_type === "agent" && p.sourcePromptId) {
@@ -157,8 +159,8 @@ export function Canvas({
         }
 
         // Agent → Terminal connection
-        if (layout.node_type === "terminal" && p.parentAgentId) {
-          const agent = effectiveLayoutById.get(p.parentAgentId);
+        if (layout.node_type === "terminal" && parentId) {
+          const agent = effectiveLayoutById.get(parentId);
           const terminal = sourceOrTargetLayout;
           if (agent && terminal) {
             lines.push({
@@ -172,8 +174,8 @@ export function Canvas({
         }
 
         // Agent → Browser connection
-        if (layout.node_type === "browser" && p.parentAgentId) {
-          const agent = effectiveLayoutById.get(p.parentAgentId);
+        if (layout.node_type === "browser" && parentId) {
+          const agent = effectiveLayoutById.get(parentId);
           const browser = sourceOrTargetLayout;
           if (agent && browser) {
             lines.push({
@@ -182,6 +184,21 @@ export function Canvas({
               x2: browser.x + browser.w / 2,
               y2: browser.y,
               color: "#bb9af7",
+            });
+          }
+        }
+
+        // Agent → Worker / Validator (orchestration hierarchy)
+        if ((layout.node_type === "worker" || layout.node_type === "validator") && parentId) {
+          const agent = effectiveLayoutById.get(parentId);
+          const child = sourceOrTargetLayout;
+          if (agent && child) {
+            lines.push({
+              x1: agent.x + agent.w / 2,
+              y1: agent.y + agent.h,
+              x2: child.x + child.w / 2,
+              y2: child.y,
+              color: layout.node_type === "worker" ? "#e0af68" : "#7dcfff",
             });
           }
         }
@@ -285,7 +302,11 @@ export function Canvas({
             );
           }
 
-          const index = layouts.filter((l) => (l.node_type ?? "agent") === "agent").indexOf(layout);
+          // agent, worker, validator: SessionCard (worker/validator use smaller default size from layout)
+          const agentLike = ["agent", "worker", "validator"];
+          const index = layouts.filter((l) =>
+            agentLike.includes((l.node_type ?? "agent") as string)
+          ).indexOf(layout);
           return (
             <SessionCard
               key={layout.session_id}

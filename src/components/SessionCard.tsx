@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { SessionLayout } from "../types";
+import type { SessionLayout, AgentRole } from "../types";
 import {
   SESSION_CARD_MIN_W,
   SESSION_CARD_MIN_H,
@@ -9,6 +9,28 @@ import {
   GRID_STEP,
 } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
+
+const ROLE_LABELS: Record<AgentRole, string> = {
+  workforce_manager: "Workforce",
+  project_manager: "PM",
+  developer: "Developer",
+  worker: "Worker",
+  code_review_validator: "Code Review",
+  business_logic_validator: "Business Logic",
+  scope_validator: "Scope",
+};
+
+function parseRole(payload: string | undefined): AgentRole | null {
+  if (!payload) return null;
+  try {
+    const p = JSON.parse(payload) as { role?: string };
+    if (p.role && Object.prototype.hasOwnProperty.call(ROLE_LABELS, p.role))
+      return p.role as AgentRole;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
 
 interface SessionCardProps {
   layout: SessionLayout;
@@ -208,7 +230,9 @@ export function SessionCard({
         style={{ cursor: isDragging ? "grabbing" : "grab" }}
         onPointerDown={handlePointerDownDrag}
       >
-        <span className="session-card-title">Agent {index + 1}</span>
+        <span className="session-card-title">
+          {parseRole(layout.payload) ? ROLE_LABELS[parseRole(layout.payload)!] : `Agent ${index + 1}`}
+        </span>
         <button
           type="button"
           className="session-card-collapse"

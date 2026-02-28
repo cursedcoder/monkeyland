@@ -16,6 +16,23 @@ pub fn run() {
             app.manage(coalescing::CoalescingBus::new());
             app.manage(pty_pool::PtyPool::new());
             app.manage(browser_pool::BrowserPool::new());
+            app.manage(agent_registry::AgentRegistry::new());
+
+            // Orchestration loop: every 5 s, poll bd ready, spawn agents, claim tasks, kill expired
+            let handle_orch = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(5));
+                loop {
+                    interval.tick().await;
+                    if let (Some(meta_db), Some(registry), Some(pool)) = (
+                        handle_orch.try_state::<storage::MetaDb>(),
+                        handle_orch.try_state::<agent_registry::AgentRegistry>(),
+                        handle_orch.try_state::<pty_pool::PtyPool>(),
+                    ) {
+                        let _ = orchestration::tick(&handle_orch, &meta_db, &registry, &pool).await;
+                    }
+                }
+            });
 
             // Write batcher flush: every 100 ms
             let handle = app.handle().clone();
@@ -84,13 +101,29 @@ pub fn run() {
             crate::commands::terminal_resize,
             crate::commands::terminal_exec,
             crate::commands::browser_ensure_started,
+            crate::commands::beads_init,
+            crate::commands::beads_run,
+            crate::commands::get_beads_project_path,
+            crate::commands::set_beads_project_path,
+            crate::commands::beads_dolt_start,
+            crate::commands::agent_spawn,
+            crate::commands::agent_kill,
+            crate::commands::agent_status,
+            crate::commands::agent_quota,
+            crate::commands::agent_report_tokens,
+            crate::commands::agent_yield,
+            crate::commands::agent_message,
+            crate::commands::agent_poll_messages,
+            crate::commands::validation_submit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Monkeyland");
 }
 
+mod agent_registry;
 mod browser_pool;
 mod coalescing;
 mod commands;
+mod orchestration;
 mod pty_pool;
 mod storage;

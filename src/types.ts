@@ -1,4 +1,14 @@
-export type CanvasNodeType = "prompt" | "agent" | "terminal" | "browser";
+export type CanvasNodeType = "prompt" | "agent" | "terminal" | "browser" | "worker" | "validator";
+
+/** Agent roles from orchestration (plan §1.2). Used in layout payload for hierarchy and sizing. */
+export type AgentRole =
+  | "workforce_manager"
+  | "project_manager"
+  | "developer"
+  | "worker"
+  | "code_review_validator"
+  | "business_logic_validator"
+  | "scope_validator";
 
 export interface SessionLayout {
   session_id: string;
@@ -8,7 +18,8 @@ export interface SessionLayout {
   h: number;
   collapsed: boolean;
   node_type?: CanvasNodeType;
-  payload?: string; // JSON: e.g. { "promptText": "..." }
+  /** JSON: e.g. { "promptText": "..." } or { "role": "developer", "parent_agent_id": "…", "task_id": "bd-xxx" } */
+  payload?: string;
 }
 
 export interface CanvasLayoutPayload {
@@ -33,19 +44,40 @@ export const BROWSER_CARD_DEFAULT_W = 680;
 export const BROWSER_CARD_DEFAULT_H = 480;
 export const BROWSER_CARD_MIN_W = 400;
 export const BROWSER_CARD_MIN_H = 300;
+/** Mini cards for worker / validator nodes (plan §6). */
+export const WORKER_CARD_DEFAULT_W = 200;
+export const WORKER_CARD_DEFAULT_H = 80;
+export const WORKER_CARD_MIN_W = 120;
+export const WORKER_CARD_MIN_H = 48;
+export const VALIDATOR_CARD_DEFAULT_W = 240;
+export const VALIDATOR_CARD_DEFAULT_H = 100;
 export const GRID_STEP = 40;
 export const CULL_MARGIN = 100;
 
 export function getDefaultSize(nodeType: CanvasNodeType): { w: number; h: number } {
-  return nodeType === "prompt"
-    ? { w: PROMPT_CARD_DEFAULT_W, h: PROMPT_CARD_DEFAULT_H }
-    : { w: SESSION_CARD_DEFAULT_W, h: SESSION_CARD_DEFAULT_H };
+  switch (nodeType) {
+    case "prompt":
+      return { w: PROMPT_CARD_DEFAULT_W, h: PROMPT_CARD_DEFAULT_H };
+    case "worker":
+      return { w: WORKER_CARD_DEFAULT_W, h: WORKER_CARD_DEFAULT_H };
+    case "validator":
+      return { w: VALIDATOR_CARD_DEFAULT_W, h: VALIDATOR_CARD_DEFAULT_H };
+    default:
+      return { w: SESSION_CARD_DEFAULT_W, h: SESSION_CARD_DEFAULT_H };
+  }
 }
 
 export function getMinSize(nodeType: CanvasNodeType): { w: number; h: number } {
-  return nodeType === "prompt"
-    ? { w: PROMPT_CARD_MIN_W, h: PROMPT_CARD_MIN_H }
-    : { w: SESSION_CARD_MIN_W, h: SESSION_CARD_MIN_H };
+  switch (nodeType) {
+    case "prompt":
+      return { w: PROMPT_CARD_MIN_W, h: PROMPT_CARD_MIN_H };
+    case "worker":
+      return { w: WORKER_CARD_MIN_W, h: WORKER_CARD_MIN_H };
+    case "validator":
+      return { w: WORKER_CARD_MIN_W, h: WORKER_CARD_MIN_H };
+    default:
+      return { w: SESSION_CARD_MIN_W, h: SESSION_CARD_MIN_H };
+  }
 }
 
 export interface LlmSettings {
