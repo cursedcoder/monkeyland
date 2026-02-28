@@ -11,6 +11,7 @@ interface BrowserCardProps {
   layout: SessionLayout;
   onLayoutChange: (layout: SessionLayout) => void;
   onLayoutCommit: (layout: SessionLayout) => void;
+  onDragStart?: (nodeId: string, layout: SessionLayout) => void;
   scale?: number;
 }
 
@@ -58,6 +59,7 @@ export function BrowserCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
+  onDragStart,
   scale = 1,
 }: BrowserCardProps) {
   const [isDragging, setIsDragging] = useState(false);
@@ -150,6 +152,7 @@ export function BrowserCard({
       captureTargetRef.current = { el, pointerId: e.pointerId };
       setLiveLayout(layout);
       setIsDragging(true);
+      onDragStart?.(layout.session_id, layout);
       dragStart.current = {
         x: e.clientX,
         y: e.clientY,
@@ -157,7 +160,7 @@ export function BrowserCard({
         layoutY: layout.y,
       };
     },
-    [layout.x, layout.y],
+    [layout, onDragStart],
   );
 
   // --- Resize ---

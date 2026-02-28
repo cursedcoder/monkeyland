@@ -2,6 +2,10 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
 
+const stored = typeof localStorage !== "undefined" ? localStorage.getItem("monkeyland-theme") : null;
+const initialTheme = stored === "dark" || stored === "light" ? stored : "light";
+document.documentElement.setAttribute("data-theme", initialTheme);
+
 declare global {
   interface Window {
     __TAURI_VALIDATE__?: boolean;

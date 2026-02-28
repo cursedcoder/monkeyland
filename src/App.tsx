@@ -27,9 +27,18 @@ function generateNodeId(): string {
 
 const LAYOUT_DEBOUNCE_MS = 250;
 const PROMPT_DEBOUNCE_MS = 500;
+const THEME_STORAGE_KEY = "monkeyland-theme";
+type Theme = "light" | "dark";
+
+function getStoredTheme(): Theme {
+  if (typeof localStorage === "undefined") return "light";
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  return stored === "dark" || stored === "light" ? stored : "light";
+}
 
 export default function App() {
   const [layouts, setLayouts] = useState<SessionLayout[]>([]);
+  const [theme, setTheme] = useState<Theme>(getStoredTheme);
   const loaded = useRef(false);
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const promptSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -59,6 +68,15 @@ export default function App() {
 
   const persistLayoutsRef = useRef<(next: SessionLayout[]) => void>(() => {});
   persistLayoutsRef.current = persistLayouts;
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch (_) {
+      /* ignore */
+    }
+  }, [theme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -388,7 +406,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Monkeyland</h1>
+        <h1><span className="app-logo" aria-hidden>🍌</span> Monkeyland</h1>
         <span className="app-subtitle">Agent Canvas</span>
         <LlmSettings />
         <button
@@ -405,6 +423,15 @@ export default function App() {
           title="Remove all cards and reset canvas"
         >
           Clear canvas
+        </button>
+        <button
+          type="button"
+          className="app-theme-toggle"
+          onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
+          title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+          aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+        >
+          {theme === "light" ? "🌙" : "☀️"}
         </button>
       </header>
       <Canvas

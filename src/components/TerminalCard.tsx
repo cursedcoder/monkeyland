@@ -12,6 +12,7 @@ interface TerminalCardProps {
   layout: SessionLayout;
   onLayoutChange: (layout: SessionLayout) => void;
   onLayoutCommit: (layout: SessionLayout) => void;
+  onDragStart?: (nodeId: string, layout: SessionLayout) => void;
   scale?: number;
 }
 
@@ -23,6 +24,7 @@ export function TerminalCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
+  onDragStart,
   scale = 1,
 }: TerminalCardProps) {
   const [isDragging, setIsDragging] = useState(false);
@@ -58,6 +60,7 @@ export function TerminalCard({
       e.currentTarget.setPointerCapture(e.pointerId);
       setLiveLayout(layout);
       setIsDragging(true);
+      onDragStart?.(layout.session_id, layout);
       dragStart.current = {
         x: e.clientX,
         y: e.clientY,
@@ -65,7 +68,7 @@ export function TerminalCard({
         layoutY: layout.y,
       };
     },
-    [layout.x, layout.y]
+    [layout, onDragStart]
   );
 
   const handlePointerDownResize = useCallback(

@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "tauri:icon": "tauri icon public/favicon.svg",
     "validate:no-errors": "node scripts/validate-no-console-errors.mjs"
   },
   "dependencies": {

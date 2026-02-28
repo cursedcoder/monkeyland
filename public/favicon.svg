@@ -1,4 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2">
-  <circle cx="16" cy="16" r="12"/>
-  <path d="M10 16h12M16 10v12"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Banana silhouette: stem top-left, tip bottom-right, curved body -->
+  <path
+    d="M10 8 C4 12 4 22 10 26 C16 30 24 28 26 22 C28 16 24 10 18 8 C14 6 12 6 10 8 Z"
+    fill="#f1c40f"
+    stroke="#d4ac0d"
+    stroke-width="0.8"
+    stroke-linejoin="round"
+  />
 </svg>

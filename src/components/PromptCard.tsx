@@ -16,6 +16,7 @@ interface PromptCardProps {
   promptText: string;
   onLayoutChange: (layout: SessionLayout) => void;
   onLayoutCommit: (layout: SessionLayout) => void;
+  onDragStart?: (nodeId: string, layout: SessionLayout) => void;
   onPromptChange: (text: string) => void;
   onLaunch: () => void;
   /** Canvas scale (zoom); used so drag/resize deltas match cursor in screen space */
@@ -27,6 +28,7 @@ export function PromptCard({
   promptText,
   onLayoutChange,
   onLayoutCommit,
+  onDragStart,
   onPromptChange,
   onLaunch,
   scale = 1,
@@ -63,6 +65,7 @@ export function PromptCard({
       e.currentTarget.setPointerCapture(e.pointerId);
       setLiveLayout(layout);
       setIsDragging(true);
+      onDragStart?.(layout.session_id, layout);
       dragStart.current = {
         x: e.clientX,
         y: e.clientY,
@@ -70,7 +73,7 @@ export function PromptCard({
         layoutY: layout.y,
       };
     },
-    [layout.x, layout.y]
+    [layout, onDragStart]
   );
 
   const handlePointerDownResize = useCallback(
