@@ -108,7 +108,7 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
         new Message("system", systemPrompt),
         new Message("user", userMessage),
       ],
-      { tools: true, abortSignal: signal },
+      { tools: true, usage: true, abortSignal: signal },
     );
 
     for await (const chunk of stream as AsyncIterable<LlmChunk>) {
