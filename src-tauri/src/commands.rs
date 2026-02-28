@@ -686,3 +686,11 @@ pub async fn agent_gate_tool(
 ) -> Result<(), String> {
     registry.gate_tool(&agent_id, &tool_name)
 }
+
+/// Write text to the system clipboard. Used by the debug panel so copy works in the Tauri webview.
+#[tauri::command]
+pub fn write_clipboard_text(text: String) -> Result<(), String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(text).map_err(|e| e.to_string())?;
+    Ok(())
+}

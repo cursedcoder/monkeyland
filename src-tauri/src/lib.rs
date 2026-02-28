@@ -128,6 +128,7 @@ pub fn run() {
             crate::commands::validation_submit,
             crate::commands::agent_complete_task,
             crate::commands::agent_gate_tool,
+            crate::commands::write_clipboard_text,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Monkeyland");
