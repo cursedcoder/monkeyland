@@ -40,7 +40,7 @@ export class BeadsToolPlugin extends Plugin {
       "Open a project and set it up for Beads (git-backed task graph).",
       "Call this after creating a project directory to enable task tracking.",
       "If bd is not installed, this will gracefully skip — the project still works.",
-      "Parameters: project_path (required), init (optional, default true), start_dolt (optional, default false).",
+      "Parameters: project_path (required), init (optional, default true).",
     ].join(" ");
   }
 
@@ -68,7 +68,7 @@ export class BeadsToolPlugin extends Plugin {
       {
         name: "start_dolt",
         type: "boolean",
-        description: "Start bd dolt start in background for multi-agent (default false)",
+        description: "Deprecated, Dolt server is always started automatically.",
         required: false,
       },
     ];
@@ -92,24 +92,22 @@ export class BeadsToolPlugin extends Plugin {
     }
 
     const doInit = parameters.init !== false;
-    const doDolt = parameters.start_dolt === true;
 
     const steps: string[] = [];
 
     try {
-      await invoke("set_beads_project_path", { project_path: path, agent_id: this.agentNodeId });
+      // Dolt server must be running before bd init (Beads v0.56+ requirement)
+      await invoke("beads_dolt_start", { projectPath: path, agentId: this.agentNodeId });
+      steps.push("Dolt server ready.");
+
+      await invoke("set_beads_project_path", { projectPath: path, agentId: this.agentNodeId });
       steps.push("Project path set.");
 
       let initResult = "Project path set.";
 
       if (doInit) {
-        initResult = await invoke<string>("beads_init", { project_path: path, agent_id: this.agentNodeId });
+        initResult = await invoke<string>("beads_init", { projectPath: path, agentId: this.agentNodeId });
         steps.push(initResult);
-      }
-
-      if (doDolt) {
-        await invoke("beads_dolt_start", { project_path: path, agent_id: this.agentNodeId });
-        steps.push("Dolt server starting in background.");
       }
 
       this.updateStatus(this.beadsNodeId, {

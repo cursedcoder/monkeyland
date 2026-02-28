@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
-use tauri::State;
+use tauri::{Manager, State};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionLayout {
@@ -246,6 +246,22 @@ pub async fn beads_init(
     if !path.is_dir() {
         return Err(format!("Not a directory: {}", project_path));
     }
+    // Skip if already initialized
+    if path.join(".beads").exists() {
+        return Ok("Beads already initialized.".to_string());
+    }
+    // Beads requires a git repo; ensure one exists before bd init.
+    if !path.join(".git").exists() {
+        let git_out = Command::new("git")
+            .arg("init")
+            .current_dir(path)
+            .output()
+            .map_err(|e| format!("Failed to run git init: {e}"))?;
+        if !git_out.status.success() {
+            let stderr = String::from_utf8_lossy(&git_out.stderr);
+            return Err(format!("git init failed: {}", stderr.trim()));
+        }
+    }
     let out = match Command::new("bd")
         .args(["init", "--quiet"])
         .current_dir(path)
@@ -323,25 +339,74 @@ pub async fn set_beads_project_path(
 
 #[tauri::command]
 pub async fn beads_dolt_start(
+    app: tauri::AppHandle,
     registry: State<'_, AgentRegistry>,
     project_path: String,
     agent_id: Option<String>,
+    port: Option<u16>,
 ) -> Result<(), String> {
     if let Some(ref aid) = agent_id {
         registry.gate_tool(aid, "beads_dolt_start")?;
     }
-    let path = Path::new(&project_path);
-    if !path.is_dir() {
-        return Err(format!("Not a directory: {}", project_path));
+
+    let port = port.unwrap_or(3307);
+
+    // Check if a dolt server is already listening on the target port
+    if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+        return Ok(());
     }
-    Command::new("bd")
-        .args(["dolt", "start"])
-        .current_dir(path)
+
+    // Use a stable data directory inside the app's data dir
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {e}"))?
+        .join("dolt-data");
+
+    if !data_dir.exists() {
+        std::fs::create_dir_all(&data_dir)
+            .map_err(|e| format!("Failed to create dolt data dir: {e}"))?;
+    }
+
+    // Initialize dolt repo if not already done
+    if !data_dir.join(".dolt").exists() {
+        let out = Command::new("dolt")
+            .arg("init")
+            .current_dir(&data_dir)
+            .output()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    "dolt not found on PATH — install with: brew install dolt".to_string()
+                } else {
+                    format!("Failed to run dolt init: {e}")
+                }
+            })?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("dolt init failed: {}", stderr.trim()));
+        }
+    }
+
+    // Start dolt sql-server in the background
+    Command::new("dolt")
+        .args(["sql-server", "--port", &port.to_string()])
+        .current_dir(&data_dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("Failed to start bd dolt: {}", e))?;
+        .map_err(|e| format!("Failed to start dolt sql-server: {e}"))?;
+
+    // Wait for the server to become reachable (up to 5s)
+    for _ in 0..50 {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // Ignore the startup path — don't fail; it might be ready by the time bd init runs
+    let _ = project_path;
     Ok(())
 }
 

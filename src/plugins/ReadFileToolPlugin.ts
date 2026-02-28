@@ -55,7 +55,7 @@ export class ReadFileToolPlugin extends Plugin {
     }
 
     try {
-      const content = await invoke<string>("read_file", { path, agent_id: this.agentId });
+      const content = await invoke<string>("read_file", { path, agentId: this.agentId });
       return { content };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

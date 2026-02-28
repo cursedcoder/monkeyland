@@ -40,14 +40,14 @@ export class CompleteTaskPlugin extends Plugin {
     _context: PluginExecutionContext,
   ): Promise<{ result: string }> {
     try {
-      await invoke("agent_complete_task", { agent_id: this.agentId });
+      await invoke("agent_complete_task", { agentId: this.agentId });
 
       if (this.taskId) {
         try {
           const projectPath = await invoke<string | null>("get_beads_project_path");
           if (projectPath) {
             await invoke<string>("beads_run", {
-              project_path: projectPath,
+              projectPath,
               args: ["update", this.taskId, "--status", "done"],
             });
           }

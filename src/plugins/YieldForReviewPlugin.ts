@@ -62,7 +62,7 @@ export class YieldForReviewPlugin extends Plugin {
   ): Promise<{ result: string }> {
     try {
       await invoke("agent_yield", {
-        agent_id: this.agentId,
+        agentId: this.agentId,
         payload: {
           status: "yielded",
           git_branch: parameters.git_branch ?? null,

@@ -112,7 +112,7 @@ export class CreateBeadsTaskPlugin extends Plugin {
       return { result: "Error: No Beads project path set. Call open_project_with_beads first." };
     }
 
-    const args: string[] = ["add", title];
+    const args: string[] = ["create", title, "--silent"];
 
     const issueType = parameters.type || "task";
     args.push("--type", issueType);
@@ -124,33 +124,22 @@ export class CreateBeadsTaskPlugin extends Plugin {
       args.push("--parent", parameters.parent_id);
     }
 
+    if (parameters.description) {
+      args.push("--description", parameters.description);
+    }
+
     if (parameters.deps) {
-      for (const dep of parameters.deps.split(",").map(s => s.trim()).filter(Boolean)) {
-        args.push("--after", dep);
-      }
+      args.push("--deps", parameters.deps.split(",").map(s => s.trim()).filter(Boolean).join(","));
     }
 
     try {
       const stdout = await invoke<string>("beads_run", {
-        project_path: projectPath,
+        projectPath,
         args,
-        agent_id: this.agentId,
+        agentId: this.agentId,
       });
 
-      const idMatch = stdout.match(/([A-Z0-9]+-\d+|[a-z0-9-]+)/);
-      const taskId = idMatch ? idMatch[0] : stdout.trim().split("\n")[0];
-
-      if (parameters.description) {
-        try {
-          await invoke<string>("beads_run", {
-            project_path: projectPath,
-            args: ["update", taskId, "--body", parameters.description],
-            agent_id: this.agentId,
-          });
-        } catch {
-          /* body update is best-effort */
-        }
-      }
+      const taskId = stdout.trim();
 
       return { result: `Created ${issueType} "${title}" with ID: ${taskId}` };
     } catch (e) {

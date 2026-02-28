@@ -64,7 +64,7 @@ export class WriteFileToolPlugin extends Plugin {
       await invoke("write_file", {
         path,
         content: parameters.content ?? "",
-        agent_id: this.agentId,
+        agentId: this.agentId,
       });
       return { result: `File written: ${path}` };
     } catch (e) {

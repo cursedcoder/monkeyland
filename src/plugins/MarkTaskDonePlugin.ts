@@ -66,7 +66,7 @@ export class MarkTaskDonePlugin extends Plugin {
 
     try {
       await invoke<string>("beads_run", {
-        project_path: projectPath,
+        projectPath,
         args: ["update", taskId, "--status", "done"],
       });
       return { result: `Task ${taskId} marked as done.` };

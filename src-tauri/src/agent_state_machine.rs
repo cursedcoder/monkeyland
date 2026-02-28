@@ -3,7 +3,7 @@
 //! Every state change and every tool call must go through this module.
 //! If a transition or tool call is not explicitly listed here, it is rejected.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 /// Agent lifecycle states. Transitions are enforced by `try_transition`.
@@ -98,6 +98,37 @@ pub fn try_transition(current: State, event: Event, role: &str) -> Result<State,
             "Illegal transition: {current} + {event:?} for role {role}"
         )),
     }
+}
+
+/// Roles that MUST have a task_id to be spawned.
+const TASK_REQUIRED_ROLES: &[&str] = &["developer", "worker", "project_manager"];
+
+/// Validate whether a new agent is allowed to spawn.
+/// Called by `AgentRegistry::spawn()` before creating the entry.
+///
+/// Enforces:
+/// 1. Developers, workers, and PMs require a `task_id`.
+/// 2. Developers and workers require at least one active manager (WM or PM).
+pub fn validate_spawn(
+    role: &str,
+    task_id: &Option<String>,
+    active_role_counts: &HashMap<String, usize>,
+) -> Result<(), String> {
+    if TASK_REQUIRED_ROLES.contains(&role) && task_id.is_none() {
+        return Err(format!("Role {role} requires a task_id to spawn"));
+    }
+
+    if matches!(role, "developer" | "worker") {
+        let wm = active_role_counts.get("workforce_manager").copied().unwrap_or(0);
+        let pm = active_role_counts.get("project_manager").copied().unwrap_or(0);
+        if wm == 0 && pm == 0 {
+            return Err(format!(
+                "Cannot spawn {role}: no workforce_manager or project_manager is active"
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// Rust-side tool names that can be gated. These correspond to Tauri command names.
@@ -312,5 +343,49 @@ mod tests {
             Duration::from_secs(900),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn developer_spawn_without_task_rejected() {
+        let active = HashMap::from([("workforce_manager".to_string(), 1usize)]);
+        let result = validate_spawn("developer", &None, &active);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires a task_id"));
+    }
+
+    #[test]
+    fn developer_spawn_without_manager_rejected() {
+        let active = HashMap::new();
+        let result = validate_spawn("developer", &Some("bd-1".to_string()), &active);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no workforce_manager"));
+    }
+
+    #[test]
+    fn developer_spawn_with_task_and_manager_ok() {
+        let active = HashMap::from([("workforce_manager".to_string(), 1usize)]);
+        let result = validate_spawn("developer", &Some("bd-1".to_string()), &active);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn workforce_manager_spawn_without_task_ok() {
+        let active = HashMap::new();
+        let result = validate_spawn("workforce_manager", &None, &active);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn worker_spawn_requires_task() {
+        let active = HashMap::from([("project_manager".to_string(), 1usize)]);
+        assert!(validate_spawn("worker", &None, &active).is_err());
+        assert!(validate_spawn("worker", &Some("bd-2".to_string()), &active).is_ok());
+    }
+
+    #[test]
+    fn project_manager_spawn_requires_task() {
+        let active = HashMap::new();
+        assert!(validate_spawn("project_manager", &None, &active).is_err());
+        assert!(validate_spawn("project_manager", &Some("bd-3".to_string()), &active).is_ok());
     }
 }

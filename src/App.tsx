@@ -634,7 +634,7 @@ export default function App() {
           const projectPath = await invoke<string | null>("get_beads_project_path");
           if (projectPath) {
             const stdout = await invoke<string>("beads_run", {
-              project_path: projectPath,
+              projectPath,
               args: ["show", task_id],
             });
             taskDescription = stdout.trim() || taskDescription;
@@ -817,10 +817,15 @@ export default function App() {
     }
   }, []);
 
-  const handleStopAgent = useCallback((nodeId: string) => {
+  const handleStopAgent = useCallback(async (nodeId: string) => {
     const controller = abortControllers.current.get(nodeId);
     if (controller) {
       controller.abort();
+    }
+    try {
+      await invoke("agent_kill", { agentId: nodeId });
+    } catch {
+      // Frontend-spawned agents (WM) aren't in the Rust registry -- ignore
     }
   }, []);
 
@@ -832,6 +837,42 @@ export default function App() {
       return next;
     });
   }, [persistLayouts]);
+
+  const [debugCopied, setDebugCopied] = useState(false);
+  const handleCopyDebug = useCallback(async () => {
+    const snap = layoutsRef.current.map((l) => {
+      let parsed: Record<string, unknown> = {};
+      try { parsed = JSON.parse(l.payload ?? "{}"); } catch { /* */ }
+      return {
+        id: l.session_id,
+        type: l.node_type ?? "agent",
+        pos: { x: l.x, y: l.y, w: l.w, h: l.h },
+        collapsed: l.collapsed,
+        ...(parsed.role ? { role: parsed.role } : {}),
+        ...(parsed.status ? { status: parsed.status } : {}),
+        ...(parsed.answer ? { content: String(parsed.answer).slice(-800) } : {}),
+        ...(parsed.promptText ? { promptText: parsed.promptText } : {}),
+        ...(parsed.beadsStatus ? { beads: parsed.beadsStatus } : {}),
+        ...(parsed.toolActivity ? { toolActivity: parsed.toolActivity } : {}),
+        ...(parsed.parentAgentId ? { parent: parsed.parentAgentId } : {}),
+        ...(parsed.terminalLog ? { terminalLog: (parsed.terminalLog as Array<{command: string; output: string}>).slice(-3).map(e => ({ cmd: e.command, out: e.output?.slice(-300) })) } : {}),
+      };
+    });
+
+    let beadsProject = "";
+    try { beadsProject = await invoke<string>("get_beads_project_path") ?? ""; } catch { /* */ }
+
+    const debug = {
+      ts: new Date().toISOString(),
+      beadsProject,
+      nodeCount: snap.length,
+      nodes: snap,
+    };
+
+    await navigator.clipboard.writeText(JSON.stringify(debug, null, 2));
+    setDebugCopied(true);
+    setTimeout(() => setDebugCopied(false), 2000);
+  }, []);
 
   return (
     <div className="app">
@@ -880,6 +921,14 @@ export default function App() {
         onLaunch={handleLaunch}
         onStopAgent={handleStopAgent}
       />
+      <button
+        type="button"
+        className="debug-copy-btn"
+        onClick={handleCopyDebug}
+        title="Copy canvas debug data to clipboard (for bug reports)"
+      >
+        {debugCopied ? "Copied!" : "Copy debug data"}
+      </button>
     </div>
   );
 }

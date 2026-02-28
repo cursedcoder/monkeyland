@@ -84,7 +84,11 @@ pub async fn tick(
                     let mut out = Vec::new();
                     for item in arr {
                         if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                            let issue_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("task").to_string();
+                            let issue_type = item.get("issue_type")
+                                .or_else(|| item.get("type"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("task")
+                                .to_string();
                             let priority = item.get("priority").and_then(|v| v.as_u64()).unwrap_or(2) as u8;
                             out.push(BeadsIssue {
                                 id: id.to_string(),
@@ -196,7 +200,7 @@ pub async fn tick(
 #[derive(Debug, serde::Deserialize)]
 struct BeadsIssue {
     id: String,
-    #[serde(rename = "type", default)]
+    #[serde(alias = "type", alias = "issue_type", default)]
     issue_type: String,
     #[serde(default = "default_priority")]
     priority: u8,

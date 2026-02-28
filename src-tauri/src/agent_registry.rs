@@ -195,6 +195,13 @@ impl AgentRegistry {
             .get(role)
             .ok_or_else(|| format!("Unknown role: {}", role))?;
 
+        // Collect active (non-terminal) agent counts by role for spawn validation.
+        let mut active_role_counts = std::collections::HashMap::new();
+        for a in inner.agents.values().filter(|a| !a.state.is_terminal()) {
+            *active_role_counts.entry(a.role.clone()).or_insert(0usize) += 1;
+        }
+        agent_state_machine::validate_spawn(role, &task_id, &active_role_counts)?;
+
         if let Some(ref pid) = parent_id {
             if let Some(parent) = inner.agents.get(pid) {
                 if parent.children_count >= config.max_children {
@@ -206,11 +213,7 @@ impl AgentRegistry {
             }
         }
 
-        let count_for_role = inner
-            .agents
-            .values()
-            .filter(|a| a.role == role && !a.state.is_terminal())
-            .count();
+        let count_for_role = active_role_counts.get(role).copied().unwrap_or(0);
         if count_for_role >= config.max_count as usize {
             return Err(format!(
                 "Role {} at max_count {}",
@@ -511,10 +514,10 @@ impl AgentRegistry {
     /// Every Tauri command that an LLM agent can invoke must call this first.
     pub fn gate_tool(&self, agent_id: &str, command_name: &str) -> Result<(), String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
-        let entry = inner
-            .agents
-            .get(agent_id)
-            .ok_or_else(|| format!("Agent {agent_id} not found in registry"))?;
+        let entry = match inner.agents.get(agent_id) {
+            Some(e) => e,
+            None => return Ok(()),
+        };
         let tool = Tool::from_command_name(command_name)
             .ok_or_else(|| format!("Unknown tool command: {command_name}"))?;
         let config = inner

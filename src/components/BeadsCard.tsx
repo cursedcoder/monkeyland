@@ -91,8 +91,8 @@ export function BeadsCard({
     setRefreshing(true);
     try {
       const raw = await invoke<string>("beads_run", {
-        project_path: status.projectPath,
-        args: ["ls", "--json"],
+        projectPath: status.projectPath,
+        args: ["list", "--json"],
       });
       const parsed = JSON.parse(raw) as BeadsTask[];
       setTasks(Array.isArray(parsed) ? parsed : []);
