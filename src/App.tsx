@@ -608,6 +608,8 @@ export default function App() {
           },
           onDone: (fullText) => {
             updatePayload({ status: "done", answer: fullText, toolActivity: "" }, true);
+            // Notify backend that agent's LLM turn ended - triggers auto-yield for developers
+            invoke("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => {});
           },
           onError: (msg) => {
             updatePayload({ status: "error", errorMessage: msg }, true);

@@ -613,6 +613,50 @@ impl AgentRegistry {
         Ok(count < config.max_count as usize)
     }
 
+    /// Handle an agent's LLM turn ending without explicit completion/yield.
+    /// For developers: auto-yield for review (so validation can run).
+    /// For other roles: auto-complete.
+    /// Returns: "yielded", "completed", "already_done", or "not_found".
+    pub fn handle_turn_ended(&self, agent_id: &str, role: &str) -> Result<String, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = match inner.agents.get_mut(agent_id) {
+            Some(e) => e,
+            None => return Ok("not_found".to_string()),
+        };
+
+        // If already in a terminal or yielded state, nothing to do
+        if entry.state.is_terminal() || entry.state == State::Yielded || entry.state == State::InReview {
+            return Ok("already_done".to_string());
+        }
+
+        // Only handle Running state
+        if entry.state != State::Running {
+            return Ok("already_done".to_string());
+        }
+
+        if role == "developer" {
+            // Developers get auto-yielded for validation
+            match agent_state_machine::try_transition(entry.state, Event::Yield, &entry.role) {
+                Ok(new_state) => {
+                    entry.state = new_state;
+                    entry.yield_git_branch = None;
+                    entry.yield_diff_summary = Some("Auto-yielded: LLM turn ended without explicit yield".to_string());
+                    Ok("yielded".to_string())
+                }
+                Err(_) => Ok("already_done".to_string()),
+            }
+        } else {
+            // Non-developers get auto-completed
+            match agent_state_machine::try_transition(entry.state, Event::Complete, &entry.role) {
+                Ok(new_state) => {
+                    entry.state = new_state;
+                    Ok("completed".to_string())
+                }
+                Err(_) => Ok("already_done".to_string()),
+            }
+        }
+    }
+
     /// Get the project_path (sandbox directory) for an agent.
     pub fn get_project_path(&self, agent_id: &str) -> Result<Option<String>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;

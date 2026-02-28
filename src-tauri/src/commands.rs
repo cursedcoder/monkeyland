@@ -706,6 +706,19 @@ pub async fn agent_complete_task(
     registry.complete_task(&agent_id)
 }
 
+/// Called by frontend when an agent's LLM turn ends (onDone fired).
+/// For developers still in Running state, auto-yields them for review.
+/// For other roles still in Running, auto-completes them.
+/// Returns the action taken: "yielded", "completed", "already_done", or "not_found".
+#[tauri::command]
+pub async fn agent_turn_ended(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+    role: String,
+) -> Result<String, String> {
+    registry.handle_turn_ended(&agent_id, &role)
+}
+
 /// Explicit gate check. Frontend plugins can call this before executing any tool
 /// to get a clear error message if the agent is not allowed.
 #[tauri::command]
