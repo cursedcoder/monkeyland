@@ -2,7 +2,7 @@
 
 Desktop app for managing **20 concurrent AI agents** with terminals and browsers. Built with Tauri 2 (Rust) + React + TypeScript.
 
-## Architecture (from [monkeyland.md](./monkeyland.md))
+## Architecture
 
 - **PTYs in Rust** (portable-pty), never Node. One PTY pool (20 slots), 64 KB ring buffer per session.
 - **One Chromium instance** via shared Playwright server; browser context pool (max 20).
