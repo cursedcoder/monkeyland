@@ -146,7 +146,12 @@ export function createCostStore(): CostStore {
     },
 
     reset() {
-      state = createInitialState();
+      try { localStorage.removeItem(COST_STATE_STORAGE_KEY); } catch { /* ignore */ }
+      state = {
+        agents: new Map(),
+        totalCostUsd: 0,
+        costLimitUsd: state.costLimitUsd,
+      };
       emit();
     },
   };

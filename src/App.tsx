@@ -891,13 +891,29 @@ export default function App() {
   }, [persistLayouts]);
 
   const handleClearCanvas = useCallback(async () => {
+    // 1. Abort all running LLM streams
+    for (const [, controller] of abortControllers.current) {
+      controller.abort();
+    }
+    abortControllers.current.clear();
+    activeWmNodeId.current = null;
+
+    // 2. Clear frontend layouts + persist
     setLayouts([]);
     try {
       await invoke("save_canvas_layout", { payload: { layouts: [] } });
+    } catch { /* ignore */ }
+
+    // 3. Full backend reset: pause orchestration, kill all agents/PTYs, clear beads path
+    try {
+      await invoke("full_reset");
     } catch (e) {
-      console.warn("Failed to clear canvas layout", e);
+      console.warn("full_reset failed", e);
     }
-  }, []);
+
+    // 4. Clear cost/usage tracking (including localStorage)
+    costStore.reset();
+  }, [costStore]);
 
   const handleStopAgent = useCallback(async (nodeId: string) => {
     const controller = abortControllers.current.get(nodeId);

@@ -490,6 +490,23 @@ pub async fn orch_pause(state: State<'_, OrchestrationState>) -> Result<(), Stri
     Ok(())
 }
 
+/// Full reset: pause orchestration, clear all agents, clear beads project path.
+#[tauri::command]
+pub async fn full_reset(
+    orch_state: State<'_, OrchestrationState>,
+    registry: State<'_, AgentRegistry>,
+    pool: State<'_, PtyPool>,
+    meta_db: State<'_, MetaDb>,
+) -> Result<(), String> {
+    orch_state.set_paused();
+    let ids = registry.clear_all()?;
+    for id in &ids {
+        let _ = pool.kill(id);
+    }
+    meta_db.set_setting("beads_project_path", "")?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn agent_quota(
     registry: State<'_, AgentRegistry>,

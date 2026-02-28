@@ -283,6 +283,17 @@ impl AgentRegistry {
         Ok(true)
     }
 
+    /// Remove all agents, inboxes, and validation state. Used by "clear canvas".
+    pub fn clear_all(&self) -> Result<Vec<String>, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let ids: Vec<String> = inner.agents.keys().cloned().collect();
+        inner.agents.clear();
+        inner.inbox.clear();
+        inner.validation.clear();
+        inner.queue_depth = 0;
+        Ok(ids)
+    }
+
     pub fn status(&self) -> Result<AgentStatusResponse, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let mut by_role: HashMap<String, usize> = HashMap::new();
