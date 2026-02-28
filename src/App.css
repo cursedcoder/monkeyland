@@ -419,6 +419,8 @@
   border-radius: 10px;
   box-shadow: var(--ml-shadow-card);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .session-card-culled {
@@ -431,6 +433,7 @@
 }
 
 .session-card-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -492,9 +495,71 @@
   color: var(--ml-accent-dim);
 }
 
+/* --- Task brief (Jira-like compact card above chat) --- */
+.session-card-brief {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ml-border, #e0e0e0);
+  background: var(--ml-bg-hover, rgba(0,0,0,0.02));
+  font-size: 11px;
+  line-height: 1.45;
+}
+.session-card-brief__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+.session-card-brief__type {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: #fff;
+  background: #6c7a89;
+}
+.session-card-brief__type--task { background: #3b82f6; }
+.session-card-brief__type--feature { background: #8b5cf6; }
+.session-card-brief__type--bug { background: #ef4444; }
+.session-card-brief__type--epic { background: #f59e0b; color: #1a1a1a; }
+.session-card-brief__type--chore { background: #6b7280; }
+.session-card-brief__id {
+  font-family: var(--ml-font-mono, monospace);
+  color: var(--ml-text-muted, #888);
+  font-size: 10px;
+}
+.session-card-brief__priority {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: auto;
+}
+.session-card-brief__priority--p0 { background: #fee2e2; color: #dc2626; }
+.session-card-brief__priority--p1 { background: #ffedd5; color: #ea580c; }
+.session-card-brief__priority--p2 { background: #e0f2fe; color: #0284c7; }
+.session-card-brief__priority--p3 { background: #f0fdf4; color: #16a34a; }
+.session-card-brief__priority--p4 { background: #f5f5f5; color: #737373; }
+.session-card-brief__title {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ml-text-main, #222);
+  margin-bottom: 2px;
+}
+.session-card-brief__desc {
+  color: var(--ml-text-muted, #666);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .session-card-body {
   position: relative;
-  height: calc(100% - 48px);
+  flex: 1 1 0;
+  min-height: 0;
   padding: 12px;
   overflow: auto;
   -webkit-user-select: text !important;

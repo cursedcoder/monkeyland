@@ -36,3 +36,6 @@ pnpm-debug.log*
 
 # Tauri (installer artifacts; main build output is in target/)
 src-tauri/WixTools/
+
+# Dolt runtime data (beads database)
+.dolt-data/

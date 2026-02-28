@@ -269,6 +269,41 @@ export function SessionCard({
       </div>
       {!layout.collapsed && (
         <>
+          {(() => {
+            try {
+              const p = JSON.parse(layout.payload ?? "{}") as {
+                task_id?: string; taskTitle?: string; taskType?: string;
+                taskPriority?: number; taskDescription?: string; role?: string;
+              };
+              const showBrief = p.task_id && (p.taskTitle || p.taskDescription);
+              if (showBrief) {
+                return (
+                  <div className="session-card-brief">
+                    <div className="session-card-brief__header">
+                      {p.taskType && (
+                        <span className={`session-card-brief__type session-card-brief__type--${p.taskType}`}>
+                          {p.taskType}
+                        </span>
+                      )}
+                      <span className="session-card-brief__id">{p.task_id}</span>
+                      {p.taskPriority != null && (
+                        <span className={`session-card-brief__priority session-card-brief__priority--p${p.taskPriority}`}>
+                          P{p.taskPriority}
+                        </span>
+                      )}
+                    </div>
+                    {p.taskTitle && (
+                      <div className="session-card-brief__title">{p.taskTitle}</div>
+                    )}
+                    {p.taskDescription && (
+                      <div className="session-card-brief__desc">{p.taskDescription.length > 200 ? p.taskDescription.slice(0, 200) + "..." : p.taskDescription}</div>
+                    )}
+                  </div>
+                );
+              }
+            } catch { /* */ }
+            return null;
+          })()}
           <div
             ref={bodyScrollRef}
             className="session-card-body"

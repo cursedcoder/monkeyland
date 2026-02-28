@@ -503,8 +503,9 @@ export default function App() {
       parentAgentId?: string;
       preferredX: number;
       preferredY: number;
+      taskMeta?: { title?: string; type?: string; priority?: number; description?: string };
     }) => {
-      const { agentNodeId, role, userMessage, taskId, sourcePromptId, parentAgentId, preferredX, preferredY } = params;
+      const { agentNodeId, role, userMessage, taskId, sourcePromptId, parentAgentId, preferredX, preferredY, taskMeta } = params;
       const size = getDefaultSize(role === "worker" ? "worker" : role.includes("validator") ? "validator" : "agent");
 
       setLayouts((prev) => {
@@ -522,6 +523,10 @@ export default function App() {
             sourcePromptId: sourcePromptId ?? undefined,
             parent_agent_id: parentAgentId ?? undefined,
             task_id: taskId ?? undefined,
+            taskTitle: taskMeta?.title ?? undefined,
+            taskType: taskMeta?.type ?? undefined,
+            taskPriority: taskMeta?.priority ?? undefined,
+            taskDescription: taskMeta?.description ?? undefined,
             status: "loading",
             answer: "",
           }),
@@ -651,15 +656,29 @@ export default function App() {
       const { agent_id, role, task_id, parent_agent_id } = event.payload;
 
       let taskDescription = `Execute task ${task_id ?? "unknown"}.`;
+      let taskMeta: { title?: string; type?: string; priority?: number; description?: string } | undefined;
       if (task_id) {
         try {
           const projectPath = await invoke<string | null>("get_beads_project_path");
           if (projectPath) {
-            const stdout = await invoke<string>("beads_run", {
+            const jsonOut = await invoke<string>("beads_run", {
               projectPath,
-              args: ["show", task_id],
+              args: ["show", task_id, "--json"],
             });
-            taskDescription = stdout.trim() || taskDescription;
+            try {
+              const parsed = JSON.parse(jsonOut.trim()) as {
+                title?: string; type?: string; priority?: number; description?: string;
+              };
+              taskMeta = {
+                title: parsed.title,
+                type: parsed.type,
+                priority: parsed.priority,
+                description: parsed.description,
+              };
+              taskDescription = parsed.description || parsed.title || taskDescription;
+            } catch {
+              taskDescription = jsonOut.trim() || taskDescription;
+            }
           }
         } catch {
           /* use default description */
@@ -684,6 +703,7 @@ export default function App() {
         role: role as AgentRole,
         userMessage: taskDescription,
         taskId: task_id,
+        taskMeta,
         parentAgentId: parentRef,
         preferredX,
         preferredY,
