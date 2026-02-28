@@ -1,30 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { loadModels, igniteModel, Message } from "multi-llm-ts";
-import type { LlmChunk } from "multi-llm-ts";
+import { listen } from "@tauri-apps/api/event";
+import type { Plugin } from "multi-llm-ts";
 import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
 import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
 import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
 import { BeadsToolPlugin } from "./plugins/BeadsToolPlugin";
+import { CreateBeadsTaskPlugin } from "./plugins/CreateBeadsTaskPlugin";
+import { MarkTaskDonePlugin } from "./plugins/MarkTaskDonePlugin";
 import { WriteFileToolPlugin } from "./plugins/WriteFileToolPlugin";
 import { ReadFileToolPlugin } from "./plugins/ReadFileToolPlugin";
-import { ORCHESTRATOR_SYSTEM_PROMPT } from "./orchestratorPrompt";
+import { runAgent } from "./agentRunner";
+import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
+import type { ToolName } from "./agentPrompts";
 import "./App.css";
-import type { SessionLayout, CanvasLayoutPayload, CanvasNodeType } from "./types";
-import type { LlmProviderId } from "./types";
+import type { SessionLayout, CanvasLayoutPayload, CanvasNodeType, AgentRole } from "./types";
 import {
   PROMPT_CARD_DEFAULT_W,
   PROMPT_CARD_DEFAULT_H,
   GRID_STEP,
-  SESSION_CARD_DEFAULT_W,
-  SESSION_CARD_DEFAULT_H,
   BROWSER_CARD_DEFAULT_W,
   BROWSER_CARD_DEFAULT_H,
   TERMINAL_LOG_DEFAULT_W,
   TERMINAL_LOG_DEFAULT_H,
   BEADS_CARD_DEFAULT_W,
   BEADS_CARD_DEFAULT_H,
+  getDefaultSize,
 } from "./types";
 
 const REPOSITION_ORIGIN = { x: 80, y: 80 };
@@ -158,6 +160,7 @@ export default function App() {
   layoutsRef.current = layouts;
 
   const abortControllers = useRef(new Map<string, AbortController>());
+  const activeWmNodeId = useRef<string | null>(null);
 
   const persistLayouts = useCallback((next: SessionLayout[]) => {
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
@@ -441,6 +444,142 @@ export default function App() {
     [],
   );
 
+  /**
+   * Build the plugin array for a given agent role.
+   * Only includes tools the role is permitted to use (per ROLE_TOOLS).
+   */
+  const buildPlugins = useCallback(
+    (role: AgentRole, agentNodeId: string, taskId: string | null): Plugin[] => {
+      const allowed = new Set<ToolName>(ROLE_TOOLS[role] ?? []);
+      const plugins: Plugin[] = [];
+
+      if (allowed.has("open_project_with_beads")) {
+        plugins.push(new BeadsToolPlugin(agentNodeId, addBeadsNode, updateBeadsStatus));
+      }
+      if (allowed.has("create_beads_task")) {
+        plugins.push(new CreateBeadsTaskPlugin());
+      }
+      if (allowed.has("run_terminal_command")) {
+        plugins.push(new TerminalToolPlugin(agentNodeId, addTerminalLogNode, updateTerminalLog));
+      }
+      if (allowed.has("browser_action")) {
+        plugins.push(new BrowserToolPlugin(agentNodeId, addBrowserNode));
+      }
+      if (allowed.has("write_file")) {
+        plugins.push(new WriteFileToolPlugin());
+      }
+      if (allowed.has("read_file")) {
+        plugins.push(new ReadFileToolPlugin());
+      }
+      if (allowed.has("mark_task_done")) {
+        plugins.push(new MarkTaskDonePlugin(taskId));
+      }
+
+      return plugins;
+    },
+    [addBeadsNode, updateBeadsStatus, addTerminalLogNode, updateTerminalLog, addBrowserNode],
+  );
+
+  /**
+   * Create an agent card on the canvas and start an LLM conversation.
+   * Used both by handleLaunch (WM) and the agent_spawned listener (Developers, Workers, etc).
+   */
+  const startAgentConversation = useCallback(
+    async (params: {
+      agentNodeId: string;
+      role: AgentRole;
+      userMessage: string;
+      taskId: string | null;
+      sourcePromptId?: string;
+      parentAgentId?: string;
+      preferredX: number;
+      preferredY: number;
+    }) => {
+      const { agentNodeId, role, userMessage, taskId, sourcePromptId, parentAgentId, preferredX, preferredY } = params;
+      const size = getDefaultSize(role === "worker" ? "worker" : role.includes("validator") ? "validator" : "agent");
+
+      setLayouts((prev) => {
+        const { x, y } = findNonOverlappingPosition(prev, preferredX, preferredY, size.w, size.h);
+        const newAgentLayout: SessionLayout = {
+          session_id: agentNodeId,
+          x,
+          y,
+          w: size.w,
+          h: size.h,
+          collapsed: false,
+          node_type: role === "worker" ? "worker" : role.includes("validator") ? "validator" : "agent",
+          payload: JSON.stringify({
+            role,
+            sourcePromptId: sourcePromptId ?? undefined,
+            parent_agent_id: parentAgentId ?? undefined,
+            task_id: taskId ?? undefined,
+            status: "loading",
+            answer: "",
+          }),
+        };
+        const next = [...prev, newAgentLayout];
+        if (loaded.current) persistLayouts(next);
+        return next;
+      });
+
+      const updatePayload = (update: Record<string, unknown>, persist?: boolean) => {
+        setLayouts((prev) => {
+          const next = prev.map((l) => {
+            if (l.session_id !== agentNodeId) return l;
+            try {
+              const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+              return { ...l, payload: JSON.stringify({ ...p, ...update }) };
+            } catch {
+              return l;
+            }
+          });
+          if (persist && loaded.current) persistLayouts(next);
+          return next;
+        });
+      };
+
+      const controller = new AbortController();
+      abortControllers.current.set(agentNodeId, controller);
+
+      const plugins = buildPlugins(role, agentNodeId, taskId);
+      let accumulatedText = "";
+
+      await runAgent({
+        systemPrompt: getPromptForRole(role),
+        userMessage: userMessage || "Hello, respond briefly.",
+        plugins,
+        signal: controller.signal,
+        callbacks: {
+          onChunk: (c) => {
+            if ((c.type === "content" || c.type === "reasoning") && c.text) {
+              accumulatedText += c.text;
+              updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "" });
+            }
+            if (c.type === "tool") {
+              const statusText =
+                c.state === "running" ? (c.status || `Running ${c.name}...`) :
+                c.state === "preparing" ? `Calling ${c.name}...` :
+                c.state === "completed" ? "" : "";
+              if (statusText) updatePayload({ status: "loading", toolActivity: statusText });
+            }
+          },
+          onDone: (fullText) => {
+            updatePayload({ status: "done", answer: fullText, toolActivity: "" }, true);
+          },
+          onError: (msg) => {
+            updatePayload({ status: "error", errorMessage: msg }, true);
+          },
+          onStopped: (fullText) => {
+            updatePayload({ status: "stopped", answer: fullText, toolActivity: "" }, true);
+          },
+        },
+      });
+
+      abortControllers.current.delete(agentNodeId);
+    },
+    [persistLayouts, buildPlugins],
+  );
+
   const handleLaunch = useCallback(
     async (nodeId: string) => {
       const promptLayout = layoutsRef.current.find(
@@ -456,133 +595,105 @@ export default function App() {
         /* ignore */
       }
 
-      const newAgentId = generateNodeId();
-      const preferredY = promptLayout.y + promptLayout.h + GRID_STEP;
+      const wmNodeId = generateNodeId();
+      activeWmNodeId.current = wmNodeId;
 
-      setLayouts((prev) => {
-        const { x, y } = findNonOverlappingPosition(
-          prev,
-          promptLayout.x,
-          preferredY,
-          SESSION_CARD_DEFAULT_W,
-          SESSION_CARD_DEFAULT_H
-        );
-        const newAgentLayout: SessionLayout = {
-          session_id: newAgentId,
-          x,
-          y,
-          w: SESSION_CARD_DEFAULT_W,
-          h: SESSION_CARD_DEFAULT_H,
-          collapsed: false,
-          node_type: "agent",
-          payload: JSON.stringify({
-            sourcePromptId: nodeId,
-            status: "loading",
-            answer: "",
-          }),
-        };
-        const next = [...prev, newAgentLayout];
-        if (loaded.current) persistLayouts(next);
-        return next;
+      await startAgentConversation({
+        agentNodeId: wmNodeId,
+        role: "workforce_manager",
+        userMessage: promptText,
+        taskId: null,
+        sourcePromptId: nodeId,
+        preferredX: promptLayout.x,
+        preferredY: promptLayout.y + promptLayout.h + GRID_STEP,
       });
-
-      const updateAgentPayload = (
-        update: Record<string, unknown>,
-        persistWhenFinal?: boolean
-      ) => {
-        setLayouts((prev) => {
-          const next = prev.map((l) => {
-            if (l.session_id !== newAgentId) return l;
-            try {
-              const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
-              return { ...l, payload: JSON.stringify({ ...p, ...update }) };
-            } catch {
-              return l;
-            }
-          });
-          if (persistWhenFinal && loaded.current) persistLayouts(next);
-          return next;
-        });
-      };
-
-      let fullText = "";
-      try {
-        const settings = await invoke<{ provider: string; model: string }>("load_llm_settings");
-        const apiKey = await invoke<string | null>("get_llm_api_key", {
-          provider: settings.provider,
-        });
-        if (!apiKey?.trim()) {
-          updateAgentPayload({ status: "error", errorMessage: "LLM not configured. Set up API key in settings." });
-          return;
-        }
-
-        const modelsResult = await loadModels(settings.provider as LlmProviderId, {
-          apiKey: apiKey.trim(),
-        });
-        const model = modelsResult?.chat?.find((m) => m.id === settings.model) ?? modelsResult?.chat?.[0];
-        if (!model) {
-          updateAgentPayload({ status: "error", errorMessage: "No model available." });
-          return;
-        }
-
-        const llmModel = igniteModel(settings.provider, model, { apiKey: apiKey.trim() });
-
-        const terminalPlugin = new TerminalToolPlugin(newAgentId, addTerminalLogNode, updateTerminalLog);
-        llmModel.addPlugin(terminalPlugin);
-        const browserPlugin = new BrowserToolPlugin(newAgentId, addBrowserNode);
-        llmModel.addPlugin(browserPlugin);
-        const beadsPlugin = new BeadsToolPlugin(newAgentId, addBeadsNode, updateBeadsStatus);
-        llmModel.addPlugin(beadsPlugin);
-        const writeFilePlugin = new WriteFileToolPlugin();
-        llmModel.addPlugin(writeFilePlugin);
-        const readFilePlugin = new ReadFileToolPlugin();
-        llmModel.addPlugin(readFilePlugin);
-
-        const controller = new AbortController();
-        abortControllers.current.set(newAgentId, controller);
-
-        const stream = llmModel.generate(
-          [
-            new Message("system", ORCHESTRATOR_SYSTEM_PROMPT),
-            new Message("user", promptText || "Hello, respond briefly."),
-          ],
-          { tools: true, abortSignal: controller.signal },
-        );
-
-        for await (const chunk of stream as AsyncIterable<LlmChunk>) {
-          if (!chunk || typeof chunk !== "object" || !("type" in chunk)) continue;
-          const c = chunk as { type: string; text?: string; name?: string; state?: string; status?: string };
-
-          if ((c.type === "content" || c.type === "reasoning") && c.text) {
-            fullText += c.text;
-            updateAgentPayload({ status: "loading", answer: fullText, toolActivity: "" });
-          }
-
-          if (c.type === "tool") {
-            const statusText =
-              c.state === "running" ? (c.status || `Running ${c.name}...`) :
-              c.state === "preparing" ? `Calling ${c.name}...` :
-              c.state === "completed" ? "" : "";
-            if (statusText) {
-              updateAgentPayload({ status: "loading", toolActivity: statusText });
-            }
-          }
-        }
-
-        updateAgentPayload({ status: "done", answer: fullText, toolActivity: "" }, true);
-      } catch (e) {
-        if (e instanceof DOMException && e.name === "AbortError") {
-          updateAgentPayload({ status: "stopped", answer: fullText, toolActivity: "" }, true);
-        } else {
-          const msg = e instanceof Error ? e.message : String(e);
-          updateAgentPayload({ status: "error", errorMessage: msg }, true);
-        }
-      } finally {
-        abortControllers.current.delete(newAgentId);
-      }
     },
-    [persistLayouts, addBrowserNode, addTerminalLogNode, updateTerminalLog, addBeadsNode, updateBeadsStatus]
+    [startAgentConversation],
   );
+
+  // Listen for agent_spawned events from the Rust orchestration loop
+  const startAgentConversationRef = useRef(startAgentConversation);
+  startAgentConversationRef.current = startAgentConversation;
+
+  useEffect(() => {
+    const unlisten = listen<{
+      agent_id: string;
+      role: string;
+      task_id: string | null;
+      parent_agent_id: string | null;
+    }>("agent_spawned", async (event) => {
+      const { agent_id, role, task_id, parent_agent_id } = event.payload;
+
+      let taskDescription = `Execute task ${task_id ?? "unknown"}.`;
+      if (task_id) {
+        try {
+          const projectPath = await invoke<string | null>("get_beads_project_path");
+          if (projectPath) {
+            const stdout = await invoke<string>("beads_run", {
+              project_path: projectPath,
+              args: ["show", task_id],
+            });
+            taskDescription = stdout.trim() || taskDescription;
+          }
+        } catch {
+          /* use default description */
+        }
+      }
+
+      const wmId = activeWmNodeId.current;
+      const parentRef = parent_agent_id ?? wmId ?? undefined;
+      let preferredX = REPOSITION_ORIGIN.x;
+      let preferredY = REPOSITION_ORIGIN.y;
+
+      if (parentRef) {
+        const parentLayout = layoutsRef.current.find((l) => l.session_id === parentRef);
+        if (parentLayout) {
+          preferredX = parentLayout.x;
+          preferredY = parentLayout.y + parentLayout.h + GRID_STEP;
+        }
+      }
+
+      startAgentConversationRef.current({
+        agentNodeId: agent_id,
+        role: role as AgentRole,
+        userMessage: taskDescription,
+        taskId: task_id,
+        parentAgentId: parentRef,
+        preferredX,
+        preferredY,
+      });
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Listen for agent_killed events to mark cards as stopped
+  useEffect(() => {
+    const unlisten = listen<{ agent_id: string; reason: string }>("agent_killed", (event) => {
+      const { agent_id } = event.payload;
+      const controller = abortControllers.current.get(agent_id);
+      if (controller) {
+        controller.abort();
+      }
+      setLayouts((prev) =>
+        prev.map((l) => {
+          if (l.session_id !== agent_id) return l;
+          try {
+            const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+            return { ...l, payload: JSON.stringify({ ...p, status: "stopped", toolActivity: "TTL expired" }) };
+          } catch {
+            return l;
+          }
+        }),
+      );
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   const handleAddPrompt = useCallback(() => {
     setLayouts((prev) => {

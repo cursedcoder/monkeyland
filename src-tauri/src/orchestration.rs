@@ -29,6 +29,20 @@ pub fn run_bd_sync(project_path: &Path, args: &[String]) -> Result<String, Strin
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AgentSpawnedPayload {
+    pub agent_id: String,
+    pub role: String,
+    pub task_id: Option<String>,
+    pub parent_agent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentKilledPayload {
+    pub agent_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ValidationRequestedPayload {
     pub developer_agent_id: String,
     pub task_id: Option<String>,
@@ -119,6 +133,16 @@ pub async fn tick(
         ];
         let path_claim = path_for_claim.clone();
         let _ = tokio::task::spawn_blocking(move || run_bd_sync(&path_claim, &claim_args)).await;
+
+        let _ = app_handle.emit(
+            "agent_spawned",
+            AgentSpawnedPayload {
+                agent_id: agent_id.clone(),
+                role: role.clone(),
+                task_id: Some(task.id.clone()),
+                parent_agent_id: None,
+            },
+        );
     }
 
     // 3. Kill expired agents
@@ -126,6 +150,13 @@ pub async fn tick(
     for id in expired {
         let _ = registry.kill(&id);
         let _ = pool.kill(&id);
+        let _ = app_handle.emit(
+            "agent_killed",
+            AgentKilledPayload {
+                agent_id: id.clone(),
+                reason: "ttl_expired".to_string(),
+            },
+        );
     }
 
     // 4. Process yield queue: agents in InReview get validation started and frontend is notified
