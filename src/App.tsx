@@ -24,6 +24,79 @@ import {
 const REPOSITION_ORIGIN = { x: 80, y: 80 };
 const REPOSITION_ROW_WIDTH = 2400;
 
+function layoutToRect(layout: SessionLayout): { left: number; top: number; right: number; bottom: number } {
+  const h = layout.collapsed ? 48 : layout.h;
+  return {
+    left: layout.x,
+    top: layout.y,
+    right: layout.x + layout.w,
+    bottom: layout.y + h,
+  };
+}
+
+function rectsOverlap(
+  a: { left: number; top: number; right: number; bottom: number },
+  b: { left: number; top: number; right: number; bottom: number },
+  gap: number
+): boolean {
+  return (
+    a.left - gap < b.right &&
+    a.right + gap > b.left &&
+    a.top - gap < b.bottom &&
+    a.bottom + gap > b.top
+  );
+}
+
+/**
+ * Find (x, y) for a new card of size (w, h) that does not overlap existing layouts.
+ * Tries preferred position first, then searches in a spiral around it.
+ * @param existingLayouts - current layouts (can exclude one by id via excludeId)
+ * @param excludeId - if set, layouts with this session_id are ignored (e.g. when placing relative to a card we're replacing or moving)
+ */
+function findNonOverlappingPosition(
+  existingLayouts: SessionLayout[],
+  preferredX: number,
+  preferredY: number,
+  w: number,
+  h: number,
+  excludeId?: string
+): { x: number; y: number } {
+  const gap = GRID_STEP;
+  const existingRects = existingLayouts
+    .filter((l) => l.session_id !== excludeId)
+    .map(layoutToRect);
+
+  const candidateRect = (x: number, y: number) => ({
+    left: x,
+    top: y,
+    right: x + w,
+    bottom: y + h,
+  });
+
+  const overlapsAny = (rect: { left: number; top: number; right: number; bottom: number }) =>
+    existingRects.some((r) => rectsOverlap(rect, r, gap));
+
+  if (!overlapsAny(candidateRect(preferredX, preferredY))) {
+    return { x: preferredX, y: preferredY };
+  }
+
+  const step = GRID_STEP;
+  let radius = 1;
+  const maxRadius = 50;
+  while (radius <= maxRadius) {
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
+        const x = preferredX + dx * step;
+        const y = preferredY + dy * step;
+        if (!overlapsAny(candidateRect(x, y))) return { x, y };
+      }
+    }
+    radius++;
+  }
+  return { x: preferredX, y: preferredY };
+}
+
 /** Returns new layouts with x,y reset to a clean grid: prompts → agents → terminals → browsers. */
 function repositionLayouts(layouts: SessionLayout[]): SessionLayout[] {
   const typeOrder: CanvasNodeType[] = ["prompt", "agent", "terminal", "browser"];
@@ -225,9 +298,15 @@ export default function App() {
     const terminalId = generateNodeId();
     setLayouts((prev) => {
       const agent = prev.find((l) => l.session_id === agentNodeId);
-      const x = agent ? agent.x + agent.w + GRID_STEP : 400;
-      const y = agent ? agent.y : 200;
-
+      const preferredX = agent ? agent.x + agent.w + GRID_STEP : REPOSITION_ORIGIN.x;
+      const preferredY = agent ? agent.y : REPOSITION_ORIGIN.y;
+      const { x, y } = findNonOverlappingPosition(
+        prev,
+        preferredX,
+        preferredY,
+        TERMINAL_CARD_DEFAULT_W,
+        TERMINAL_CARD_DEFAULT_H
+      );
       const terminalLayout: SessionLayout = {
         session_id: terminalId,
         x,
@@ -260,17 +339,24 @@ export default function App() {
           }
         });
 
-        let x: number, y: number;
+        let preferredX: number, preferredY: number;
         if (terminal) {
-          x = terminal.x;
-          y = terminal.y + terminal.h + GRID_STEP;
+          preferredX = terminal.x;
+          preferredY = terminal.y + terminal.h + GRID_STEP;
         } else if (agent) {
-          x = agent.x + agent.w + GRID_STEP;
-          y = agent.y;
+          preferredX = agent.x + agent.w + GRID_STEP;
+          preferredY = agent.y;
         } else {
-          x = 400;
-          y = 400;
+          preferredX = REPOSITION_ORIGIN.x;
+          preferredY = REPOSITION_ORIGIN.y;
         }
+        const { x, y } = findNonOverlappingPosition(
+          prev,
+          preferredX,
+          preferredY,
+          BROWSER_CARD_DEFAULT_W,
+          BROWSER_CARD_DEFAULT_H
+        );
 
         const browserLayout: SessionLayout = {
           session_id: browserId,
@@ -307,22 +393,30 @@ export default function App() {
       }
 
       const newAgentId = generateNodeId();
-      const newAgentLayout: SessionLayout = {
-        session_id: newAgentId,
-        x: promptLayout.x,
-        y: promptLayout.y + promptLayout.h + GRID_STEP,
-        w: SESSION_CARD_DEFAULT_W,
-        h: SESSION_CARD_DEFAULT_H,
-        collapsed: false,
-        node_type: "agent",
-        payload: JSON.stringify({
-          sourcePromptId: nodeId,
-          status: "loading",
-          answer: "",
-        }),
-      };
+      const preferredY = promptLayout.y + promptLayout.h + GRID_STEP;
 
       setLayouts((prev) => {
+        const { x, y } = findNonOverlappingPosition(
+          prev,
+          promptLayout.x,
+          preferredY,
+          SESSION_CARD_DEFAULT_W,
+          SESSION_CARD_DEFAULT_H
+        );
+        const newAgentLayout: SessionLayout = {
+          session_id: newAgentId,
+          x,
+          y,
+          w: SESSION_CARD_DEFAULT_W,
+          h: SESSION_CARD_DEFAULT_H,
+          collapsed: false,
+          node_type: "agent",
+          payload: JSON.stringify({
+            sourcePromptId: nodeId,
+            status: "loading",
+            answer: "",
+          }),
+        };
         const next = [...prev, newAgentLayout];
         if (loaded.current) persistLayouts(next);
         return next;
@@ -409,22 +503,29 @@ export default function App() {
   );
 
   const handleAddPrompt = useCallback(() => {
-    const newLayout: SessionLayout = {
-      session_id: generateNodeId(),
-      x: 80 + (layouts.length * GRID_STEP) % 400,
-      y: 80 + Math.floor(layouts.length / 4) * (PROMPT_CARD_DEFAULT_H + GRID_STEP),
-      w: PROMPT_CARD_DEFAULT_W,
-      h: PROMPT_CARD_DEFAULT_H,
-      collapsed: false,
-      node_type: "prompt",
-      payload: JSON.stringify({ promptText: "" }),
-    };
     setLayouts((prev) => {
+      const { x, y } = findNonOverlappingPosition(
+        prev,
+        REPOSITION_ORIGIN.x,
+        REPOSITION_ORIGIN.y,
+        PROMPT_CARD_DEFAULT_W,
+        PROMPT_CARD_DEFAULT_H
+      );
+      const newLayout: SessionLayout = {
+        session_id: generateNodeId(),
+        x,
+        y,
+        w: PROMPT_CARD_DEFAULT_W,
+        h: PROMPT_CARD_DEFAULT_H,
+        collapsed: false,
+        node_type: "prompt",
+        payload: JSON.stringify({ promptText: "" }),
+      };
       const next = [...prev, newLayout];
       if (loaded.current) persistLayouts(next);
       return next;
     });
-  }, [layouts.length, persistLayouts]);
+  }, [persistLayouts]);
 
   const handleClearCanvas = useCallback(async () => {
     setLayouts([]);
