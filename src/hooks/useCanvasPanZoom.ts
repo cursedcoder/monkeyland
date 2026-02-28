@@ -24,6 +24,10 @@ export function useCanvasPanZoom(containerRef: React.RefObject<HTMLElement | nul
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0) return;
+      // Don't start panning when click originates inside a card — allow
+      // native text selection and card-internal interactions instead.
+      const target = e.target as HTMLElement;
+      if (target.closest(".session-card, .prompt-card, .terminal-card, .browser-card")) return;
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
       isPanning.current = true;
       lastPointer.current = { x: e.clientX, y: e.clientY };
@@ -43,18 +47,43 @@ export function useCanvasPanZoom(containerRef: React.RefObject<HTMLElement | nul
   );
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
-    if (e.button === 0) {
-      isPanning.current = false;
+    if (e.button !== 0) return;
+    if (!isPanning.current) return;
+    isPanning.current = false;
+    try {
       (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // Pointer was not captured (e.g. event bubbled from a card)
     }
   }, []);
 
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      // If the wheel happened over a scrollable element (e.g. Agent text area),
+      // do not zoom the canvas — let the element scroll instead.
+      let node: HTMLElement | null = e.target as HTMLElement;
+      while (node && node !== container) {
+        const style = getComputedStyle(node);
+        const oy = style.overflowY;
+        const ox = style.overflowX;
+        const o = style.overflow;
+        const scrollableY =
+          (oy === "auto" || oy === "scroll" || o === "auto" || o === "scroll") &&
+          node.scrollHeight > node.clientHeight;
+        const scrollableX =
+          (ox === "auto" || ox === "scroll" || o === "auto" || o === "scroll") &&
+          node.scrollWidth > node.clientWidth;
+        if (scrollableY || scrollableX) {
+          return;
+        }
+        node = node.parentElement;
+      }
+
       e.preventDefault();
-      const el = containerRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
+      const rect = container.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
       const cy = rect.top + rect.height / 2;
       const mouseX = e.clientX - cx;

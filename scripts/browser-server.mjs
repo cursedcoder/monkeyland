@@ -33,9 +33,11 @@ async function createSession(sessionId) {
   const page = await context.newPage();
 
   let currentUrl = 'about:blank';
+  let currentTitle = '';
   page.on('framenavigated', (frame) => {
     if (frame === page.mainFrame()) {
       currentUrl = page.url();
+      page.title().then(t => { currentTitle = t; }).catch(() => {});
     }
   });
 
@@ -51,7 +53,7 @@ async function createSession(sessionId) {
     });
     cdpSession.on('Page.screencastFrame', (frame) => {
       cdpSession.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {});
-      const eventData = JSON.stringify({ data: frame.data, url: currentUrl });
+      const eventData = JSON.stringify({ data: frame.data, url: currentUrl, title: currentTitle });
       lastFrames.set(sessionId, eventData);
       const clients = screencastClients.get(sessionId);
       if (clients && clients.size > 0) {
@@ -64,14 +66,14 @@ async function createSession(sessionId) {
     process.stderr.write(`CDP screencast init failed: ${err.message}\n`);
   }
 
-  const session = { context, page, cdpSession, currentUrl: () => currentUrl };
+  const session = { context, page, cdpSession, currentUrl: () => currentUrl, currentTitle: () => currentTitle };
   sessions.set(sessionId, session);
   return sessionId;
 }
 
 async function pushScreenshotFrame(sessionId, session) {
   const buffer = await session.page.screenshot({ type: 'jpeg', quality: 50 });
-  const eventData = JSON.stringify({ data: buffer.toString('base64'), url: session.currentUrl() });
+  const eventData = JSON.stringify({ data: buffer.toString('base64'), url: session.currentUrl(), title: session.currentTitle() });
   lastFrames.set(sessionId, eventData);
   const clients = screencastClients.get(sessionId);
   if (clients && clients.size > 0) {
@@ -196,6 +198,63 @@ async function handleRequest(req, res) {
           );
           const title = await page.title();
           sendJson(res, { content: text, title, url: page.url() });
+          break;
+        }
+        case 'mouse-event': {
+          const { type: evType, x, y, button: btn } = body;
+          const mouseBtn = btn === 2 ? 'right' : btn === 1 ? 'middle' : 'left';
+          if (evType === 'click') {
+            await page.mouse.click(x, y, { button: mouseBtn });
+          } else if (evType === 'dblclick') {
+            await page.mouse.dblclick(x, y, { button: mouseBtn });
+          } else if (evType === 'mousedown') {
+            await page.mouse.move(x, y);
+            await page.mouse.down({ button: mouseBtn });
+          } else if (evType === 'mouseup') {
+            await page.mouse.up({ button: mouseBtn });
+          } else if (evType === 'mousemove') {
+            await page.mouse.move(x, y);
+          } else if (evType === 'wheel') {
+            await page.mouse.move(x, y);
+            await page.mouse.wheel(body.deltaX || 0, body.deltaY || 0);
+          }
+          sendJson(res, { ok: true });
+          break;
+        }
+        case 'key-event': {
+          const { type: kType, key } = body;
+          if (kType === 'keydown') {
+            await page.keyboard.down(key);
+          } else if (kType === 'keyup') {
+            await page.keyboard.up(key);
+          } else if (kType === 'keypress') {
+            await page.keyboard.press(key);
+          } else if (kType === 'type') {
+            await page.keyboard.type(key);
+          }
+          sendJson(res, { ok: true });
+          break;
+        }
+        case 'go-back': {
+          await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+          pushScreenshotFrame(sessionId, session).catch(() => {});
+          sendJson(res, { ok: true, url: page.url(), title: await page.title() });
+          break;
+        }
+        case 'go-forward': {
+          await page.goForward({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {});
+          pushScreenshotFrame(sessionId, session).catch(() => {});
+          sendJson(res, { ok: true, url: page.url(), title: await page.title() });
+          break;
+        }
+        case 'reload': {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
+          pushScreenshotFrame(sessionId, session).catch(() => {});
+          sendJson(res, { ok: true, url: page.url(), title: await page.title() });
+          break;
+        }
+        case 'info': {
+          sendJson(res, { url: page.url(), title: await page.title() });
           break;
         }
         case 'evaluate': {

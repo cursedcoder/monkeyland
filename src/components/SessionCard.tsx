@@ -1,8 +1,11 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { SessionLayout } from "../types";
 import {
   SESSION_CARD_MIN_W,
   SESSION_CARD_MIN_H,
+  SESSION_CARD_MAX_H,
   GRID_STEP,
 } from "../types";
 
@@ -28,6 +31,7 @@ export function SessionCard({
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
+  const bodyScrollRef = useRef<HTMLDivElement>(null);
   const lastEmittedLayout = useRef<SessionLayout>(layout);
   const dragStart = useRef({ x: 0, y: 0, layoutX: 0, layoutY: 0 });
   const resizeStart = useRef({
@@ -45,7 +49,6 @@ export function SessionCard({
       e.preventDefault();
       e.stopPropagation();
       e.currentTarget.setPointerCapture(e.pointerId);
-      if (cardRef.current) cardRef.current.style.userSelect = "none";
       setIsDragging(true);
       dragStart.current = {
         x: e.clientX,
@@ -59,6 +62,7 @@ export function SessionCard({
 
   const handlePointerDownResize = useCallback(
     (e: React.PointerEvent, edge: string) => {
+      e.preventDefault();
       e.stopPropagation();
       if (e.button !== 0) return;
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -76,6 +80,7 @@ export function SessionCard({
 
   React.useEffect(() => {
     if (!isDragging && !isResizing) return;
+    document.body.style.userSelect = "none";
 
     const onMove = (e: PointerEvent) => {
       const s = scale;
@@ -106,7 +111,6 @@ export function SessionCard({
     };
 
     const onUp = () => {
-      if (cardRef.current) cardRef.current.style.userSelect = "";
       setIsDragging(false);
       setIsResizing(false);
       onLayoutCommit(lastEmittedLayout.current);
@@ -116,6 +120,7 @@ export function SessionCard({
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
     return () => {
+      document.body.style.userSelect = "";
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
@@ -126,6 +131,41 @@ export function SessionCard({
     onLayoutChange({ ...layout, collapsed: !layout.collapsed });
     onLayoutCommit({ ...layout, collapsed: !layout.collapsed });
   }, [layout, onLayoutChange, onLayoutCommit]);
+
+  // Auto-scroll to bottom and auto-grow height when LLM content updates
+  useEffect(() => {
+    const el = bodyScrollRef.current;
+    if (!el) return;
+    try {
+      const p = JSON.parse(layout.payload ?? "{}") as {
+        status?: string;
+        answer?: string;
+      };
+      if (p.status === "loading" || p.status === "done") {
+        el.scrollTop = el.scrollHeight;
+        // Auto-grow card height when content overflows (up to SESSION_CARD_MAX_H)
+        const rafId = requestAnimationFrame(() => {
+          if (!bodyScrollRef.current || layout.collapsed) return;
+          const { scrollHeight, clientHeight } = bodyScrollRef.current;
+          if (scrollHeight > clientHeight && layout.h < SESSION_CARD_MAX_H) {
+            const overflow = scrollHeight - clientHeight;
+            const newH = Math.min(
+              layout.h + overflow,
+              SESSION_CARD_MAX_H
+            );
+            if (newH > layout.h) {
+              const next = { ...layout, h: Math.round(newH / GRID_STEP) * GRID_STEP };
+              onLayoutChange(next);
+              onLayoutCommit(next);
+            }
+          }
+        });
+        return () => cancelAnimationFrame(rafId);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [layout.payload, layout.collapsed, layout.h, layout, onLayoutChange, onLayoutCommit]);
 
   return (
     <div
@@ -138,7 +178,6 @@ export function SessionCard({
         width: layout.w,
         height: layout.collapsed ? 48 : layout.h,
         cursor: "default",
-        userSelect: isDragging ? "none" : "auto",
       }}
     >
       <div
@@ -151,13 +190,23 @@ export function SessionCard({
           type="button"
           className="session-card-collapse"
           onClick={handleToggleCollapse}
+          onPointerDown={(e) => e.stopPropagation()}
           aria-label={layout.collapsed ? "Expand" : "Collapse"}
         >
           {layout.collapsed ? "▶" : "▼"}
         </button>
       </div>
       {!layout.collapsed && (
-        <div className="session-card-body">
+        <div
+          ref={bodyScrollRef}
+          className="session-card-body"
+          onPointerDown={(e) => {
+            if (!(e.target as HTMLElement).closest("[data-resize-handle]"))
+              e.stopPropagation();
+          }}
+          onPointerUp={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
           {(() => {
             try {
               const p = JSON.parse(layout.payload ?? "{}") as {
@@ -174,7 +223,11 @@ export function SessionCard({
                       {p.toolActivity || "Thinking\u2026"}
                     </p>
                     {p.answer ? (
-                      <div className="session-card-response-text">{p.answer}</div>
+                      <div className="session-card-response-text session-card-markdown">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {p.answer}
+                        </ReactMarkdown>
+                      </div>
                     ) : null}
                   </div>
                 );
@@ -191,7 +244,11 @@ export function SessionCard({
               if (p.status === "done" && p.answer != null) {
                 return (
                   <div className="session-card-response">
-                    <div className="session-card-response-text">{p.answer}</div>
+                    <div className="session-card-response-text session-card-markdown">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {p.answer}
+                      </ReactMarkdown>
+                    </div>
                   </div>
                 );
               }

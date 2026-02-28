@@ -19,8 +19,10 @@ export const PROMPT_CARD_MIN_W = 320;
 export const PROMPT_CARD_MIN_H = 180;
 export const SESSION_CARD_MIN_W = 280;
 export const SESSION_CARD_MIN_H = 200;
-export const SESSION_CARD_DEFAULT_W = 400;
-export const SESSION_CARD_DEFAULT_H = 300;
+export const SESSION_CARD_DEFAULT_W = 520;
+export const SESSION_CARD_DEFAULT_H = 420;
+/** Max height for agent cards when auto-growing with content */
+export const SESSION_CARD_MAX_H = 720;
 export const PROMPT_CARD_DEFAULT_W = 480;
 export const PROMPT_CARD_DEFAULT_H = 220;
 export const TERMINAL_CARD_DEFAULT_W = 560;

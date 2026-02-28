@@ -49,7 +49,6 @@ export function PromptCard({
       e.preventDefault(); // prevent text selection / default drag behavior
       e.stopPropagation(); // so canvas pan does not start
       e.currentTarget.setPointerCapture(e.pointerId);
-      if (cardRef.current) cardRef.current.style.userSelect = "none";
       setIsDragging(true);
       dragStart.current = {
         x: e.clientX,
@@ -63,6 +62,7 @@ export function PromptCard({
 
   const handlePointerDownResize = useCallback(
     (e: React.PointerEvent, edge: string) => {
+      e.preventDefault();
       e.stopPropagation();
       if (e.button !== 0) return;
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -80,6 +80,7 @@ export function PromptCard({
 
   useEffect(() => {
     if (!isDragging && !isResizing) return;
+    document.body.style.userSelect = "none";
 
     const onMove = (e: PointerEvent) => {
       const s = scale;
@@ -110,7 +111,6 @@ export function PromptCard({
     };
 
     const onUp = () => {
-      if (cardRef.current) cardRef.current.style.userSelect = "";
       setIsDragging(false);
       setIsResizing(false);
       onLayoutCommit(lastEmittedLayout.current);
@@ -120,6 +120,7 @@ export function PromptCard({
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
     return () => {
+      document.body.style.userSelect = "";
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
