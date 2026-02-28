@@ -84,7 +84,18 @@ export function Terminal({ sessionId }: TerminalProps) {
       } catch {
         // container may not have dimensions yet
       }
-      spawnTerminal(xterm.cols, xterm.rows);
+      
+      // Restore buffer before spawning
+      invoke<string>("terminal_get_buffer", { sessionId })
+        .then((buffer) => {
+          if (buffer && xtermRef.current) {
+            xtermRef.current.write(buffer);
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          spawnTerminal(xterm.cols, xterm.rows);
+        });
     });
 
     xtermRef.current = xterm;

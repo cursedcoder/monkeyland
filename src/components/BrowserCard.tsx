@@ -78,6 +78,8 @@ export function BrowserCard({
   const captureTargetRef = useRef<{ el: HTMLElement; pointerId: number } | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const addressInputRef = useRef<HTMLInputElement>(null);
+  /** Server viewport size; must match what we send via set-viewport so click/hover coords are correct. */
+  const viewportSizeRef = useRef({ w: 1280, h: 720 });
   const layoutRef = useRef(layout);
   const onLayoutChangeRef = useRef(onLayoutChange);
   const onLayoutCommitRef = useRef(onLayoutCommit);
@@ -128,6 +130,25 @@ export function BrowserCard({
       if (retryTimer) clearTimeout(retryTimer);
     };
   }, [browserPort, layout.session_id, layout.collapsed]);
+
+  // Sync server viewport once per session so coordinate mapping matches card size (e.g. restored layout)
+  const syncedSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!browserPort || layout.collapsed || syncedSessionRef.current === layout.session_id) return;
+    syncedSessionRef.current = layout.session_id;
+    const contentH = Math.round(Math.max(200, layout.h - 68));
+    const width = Math.min(1920, Math.max(320, Math.round(layout.w)));
+    const height = Math.min(1080, contentH);
+    viewportSizeRef.current = { w: width, h: height };
+    fetch(
+      `http://127.0.0.1:${browserPort}/session/${layout.session_id}/set-viewport`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ width, height }),
+      }
+    ).catch((err) => console.warn("[BrowserCard] set-viewport sync failed:", err));
+  }, [browserPort, layout.session_id, layout.w, layout.h, layout.collapsed]);
 
   // Keep address bar in sync when not being edited
   useEffect(() => {
@@ -236,6 +257,7 @@ export function BrowserCard({
         const contentH = Math.round(Math.max(200, committed.h - 68));
         const width = Math.min(1920, Math.max(320, Math.round(committed.w)));
         const height = Math.min(1080, contentH);
+        viewportSizeRef.current = { w: width, h: height };
         fetch(`http://127.0.0.1:${browserPortRef.current}/session/${sessionIdRef.current}/set-viewport`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -271,8 +293,7 @@ export function BrowserCard({
     const imgW = rect.width;
     const imgH = rect.height;
     if (imgW === 0 || imgH === 0) return null;
-    const vpW = 1280;
-    const vpH = 720;
+    const { w: vpW, h: vpH } = viewportSizeRef.current;
     const scaleX = imgW / vpW;
     const scaleY = imgH / vpH;
     const s = Math.min(scaleX, scaleY);

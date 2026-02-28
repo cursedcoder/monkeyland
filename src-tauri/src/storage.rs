@@ -1,6 +1,7 @@
 //! Per-session SQLite storage and meta DB.
 //! Rule 3: Each session gets its own .db file. Never a single shared database.
 
+use crate::pty_pool::PtyPool;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -426,7 +427,7 @@ impl WriteBatcher {
     }
 
     /// Flush all buffered events (one transaction per session) and run snapshot manager.
-    pub fn flush(&self, meta_db: &MetaDb) -> Result<(), String> {
+    pub fn flush(&self, meta_db: &MetaDb, pty_pool: Option<&PtyPool>) -> Result<(), String> {
         let now_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
@@ -465,10 +466,16 @@ impl WriteBatcher {
             let need = (max_seq - *last_seq) >= FLUSH_INTERVAL_EVENTS
                 || (now_us - *last_ts) >= SNAPSHOT_INTERVAL_US;
             if need && max_seq > 0 {
+                let terminal_buffer = if let Some(pool) = pty_pool {
+                    pool.get_buffer(session_id).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+
                 let row = SnapshotRow {
                     seq_at: max_seq,
                     ts_us: now_us,
-                    terminal_buffer: String::new(),
+                    terminal_buffer,
                     browser_url: String::new(),
                     browser_screenshot_path: String::new(),
                     agent_phase: "idle".to_string(),
@@ -492,5 +499,24 @@ impl WriteBatcher {
         let mut snapshot_state = self.snapshot_state.lock().map_err(|e| e.to_string())?;
         snapshot_state.remove(session_id);
         Ok(())
+    }
+
+    pub fn get_terminal_buffer(&self, session_id: &str) -> Result<String, String> {
+        let mut session_dbs = self.session_dbs.lock().map_err(|e| e.to_string())?;
+        let db = match session_dbs.get_mut(session_id) {
+            Some(d) => d,
+            None => {
+                let path = self.config_dir.join("sessions").join(format!("{}.db", session_id));
+                if !path.exists() {
+                    return Ok(String::new());
+                }
+                let db = SessionDb::open(&path)?;
+                session_dbs.insert(session_id.to_string(), db);
+                session_dbs.get_mut(session_id).unwrap()
+            }
+        };
+        let max_seq = db.max_seq()?;
+        let snap = db.get_snapshot_at(max_seq)?;
+        Ok(snap.map(|s| s.terminal_buffer).unwrap_or_default())
     }
 }

@@ -177,6 +177,14 @@ pub async fn terminal_resize(
     pool.resize(&payload.session_id, payload.cols, payload.rows)
 }
 
+#[tauri::command]
+pub async fn terminal_get_buffer(
+    batcher: State<'_, crate::storage::WriteBatcher>,
+    session_id: String,
+) -> Result<String, String> {
+    batcher.get_terminal_buffer(&session_id)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerminalExecPayload {
     pub session_id: String,

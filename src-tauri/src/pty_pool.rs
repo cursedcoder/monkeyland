@@ -33,6 +33,10 @@ impl RingBuffer {
     pub fn drain(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.buf)
     }
+
+    pub fn peek(&self) -> Vec<u8> {
+        self.buf.clone()
+    }
 }
 
 struct PtySession {
@@ -180,6 +184,16 @@ impl PtyPool {
         let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         sessions.remove(session_id);
         Ok(())
+    }
+
+    pub fn get_buffer(&self, session_id: &str) -> Result<String, String> {
+        let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        let session = sessions
+            .get(session_id)
+            .ok_or_else(|| format!("No PTY for session {session_id}"))?;
+        let mut ring = session.ring.lock().map_err(|e| e.to_string())?;
+        let data = ring.peek();
+        Ok(String::from_utf8_lossy(&data).into_owned())
     }
 }
 

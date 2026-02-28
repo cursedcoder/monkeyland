@@ -27,7 +27,8 @@ pub fn run() {
                         handle.try_state::<storage::WriteBatcher>(),
                         handle.try_state::<storage::MetaDb>(),
                     ) {
-                        let _ = batcher.flush(&meta_db);
+                        let pool = handle.try_state::<pty_pool::PtyPool>();
+                        let _ = batcher.flush(&meta_db, pool.as_deref());
                     }
                 }
             });
