@@ -643,14 +643,25 @@ export default function App() {
                           delta: usage.prompt_tokens + usage.completion_tokens,
                         }).catch(() => {});
                       },
-                      onDone: () => {
+                      onDone: async () => {
                         updatePayload({ status: "done", answer: accumulatedText, toolActivity: "" }, true);
+                        // If the nudge also failed to yield, force-yield as last resort
+                        await new Promise((r) => setTimeout(r, 500));
+                        try {
+                          await invoke("agent_force_yield", { agentId: agentNodeId });
+                        } catch { /* already yielded or done - expected */ }
                       },
-                      onError: () => {
+                      onError: async () => {
                         updatePayload({ status: "done", answer: accumulatedText, toolActivity: "" }, true);
+                        try {
+                          await invoke("agent_force_yield", { agentId: agentNodeId });
+                        } catch { /* best effort */ }
                       },
-                      onStopped: () => {
+                      onStopped: async () => {
                         updatePayload({ status: "stopped", answer: accumulatedText, toolActivity: "" }, true);
+                        try {
+                          await invoke("agent_force_yield", { agentId: agentNodeId });
+                        } catch { /* best effort */ }
                       },
                     },
                   });

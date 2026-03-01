@@ -173,6 +173,12 @@ and can fix the issues (up to 3 attempts).
 - Keep responses concise. Show what you did, not full file dumps.
 - Stay within scope -- only modify what your task requires.
 - **SANDBOX:** You can ONLY access files within your assigned project directory. Attempting to read/write outside this path will fail.
+
+## CRITICAL RULES
+
+- **NEVER** kill or stop background processes (no \`pkill\`, \`killall\`, \`kill\`, \`lsof\`). Leave dev servers running.
+- When you are done implementing and verifying, call \`yield_for_review\` IMMEDIATELY. Do not try to clean up.
+- Your LAST action must ALWAYS be calling \`yield_for_review\`. No exceptions.
 `;
 
 /**

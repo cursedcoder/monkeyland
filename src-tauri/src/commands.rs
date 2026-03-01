@@ -600,10 +600,10 @@ fn is_dangerous_command(cmd: &str) -> Option<&'static str> {
     
     // Process killing commands (can kill dev server, system processes)
     if cmd_lower.contains("pkill") || cmd_lower.contains("killall") {
-        return Some("pkill/killall commands are blocked - they can kill system processes");
+        return Some("pkill/killall commands are blocked. Do NOT clean up processes. If you are done, call yield_for_review NOW");
     }
     if cmd_lower.contains("kill -9") || cmd_lower.contains("kill -kill") || cmd_lower.contains("kill -sigkill") {
-        return Some("kill -9 is blocked - use gentler termination signals");
+        return Some("kill commands are blocked. Do NOT clean up processes. If you are done, call yield_for_review NOW");
     }
     
     // Destructive file operations outside project
@@ -766,6 +766,16 @@ pub async fn agent_turn_ended(
     role: String,
 ) -> Result<String, String> {
     registry.handle_turn_ended(&agent_id, &role)
+}
+
+/// Force-yield a developer agent. Used by the frontend as a safety net when the
+/// nudge mechanism fails to get the LLM to call yield_for_review.
+#[tauri::command]
+pub async fn agent_force_yield(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+) -> Result<(), String> {
+    registry.force_yield(&agent_id)
 }
 
 /// Explicit gate check. Frontend plugins can call this before executing any tool

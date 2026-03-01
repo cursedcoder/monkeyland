@@ -704,6 +704,45 @@ impl AgentRegistry {
         }
     }
 
+    /// Force-yield an agent. Transitions Running/Spawned → Yielded.
+    /// No-op if the agent is already Yielded, InReview, or in a terminal state.
+    /// Used as a safety net when LLM turns end without calling yield_for_review.
+    pub fn force_yield(&self, agent_id: &str) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = inner
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+
+        match entry.state {
+            State::Yielded | State::InReview | State::Done | State::Blocked | State::Stopped => {
+                Ok(())
+            }
+            State::Running | State::Spawned => {
+                entry.state = State::Yielded;
+                eprintln!("[registry] force_yield: {} transitioned to Yielded", agent_id);
+                Ok(())
+            }
+        }
+    }
+
+    /// Returns developers stuck in Running state longer than `max_running_secs`.
+    /// The orchestration loop uses this as an ultimate safety net.
+    pub fn stuck_running_developers(&self, max_running_secs: u64) -> Result<Vec<String>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let cutoff = Duration::from_secs(max_running_secs);
+        let mut out = Vec::new();
+        for (id, entry) in inner.agents.iter() {
+            if entry.role != "developer" || entry.state != State::Running {
+                continue;
+            }
+            if entry.spawned_at.elapsed() > cutoff {
+                out.push(id.clone());
+            }
+        }
+        Ok(out)
+    }
+
     /// Get the project_path (sandbox directory) for an agent.
     pub fn get_project_path(&self, agent_id: &str) -> Result<Option<String>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;

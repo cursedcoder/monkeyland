@@ -128,6 +128,7 @@ pub fn run() {
             crate::commands::validation_submit,
             crate::commands::agent_complete_task,
             crate::commands::agent_turn_ended,
+            crate::commands::agent_force_yield,
             crate::commands::agent_gate_tool,
             crate::commands::write_clipboard_text,
             crate::commands::full_reset,

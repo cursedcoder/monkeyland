@@ -216,9 +216,15 @@ pub async fn tick(
             eprintln!("[orch] FAILED to emit validation_requested: {}", e);
         }
     }
-    // NOTE: Removed watchdog re-emit - it was causing infinite validator spawns.
-    // The yield_queue mechanism already handles this correctly by only returning
-    // agents without a validation entry, and start_validation creates that entry.
+    // 4b. SAFETY NET: Force-yield developers stuck in Running state for > 5 minutes.
+    // This catches ALL cases: nudge failed, frontend crashed, LLM looped forever, etc.
+    // After force_yield, the agent goes to Yielded without a validation entry,
+    // so the NEXT tick's yield_queue (step 4) will pick it up normally.
+    let stuck = registry.stuck_running_developers(300)?;
+    for agent_id in stuck {
+        eprintln!("[orch] SAFETY NET: Force-yielding developer {} stuck in Running for >5min", agent_id);
+        let _ = registry.force_yield(&agent_id);
+    }
 
     // 5. Mark completed tasks in Beads (agents in Done state with a task_id)
     let done_agents = registry.done_agents_with_tasks()?;
