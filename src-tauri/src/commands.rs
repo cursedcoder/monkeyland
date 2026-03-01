@@ -1,4 +1,4 @@
-use crate::agent_registry::{AgentQuota, AgentRegistry, AgentStatusResponse, YieldPayload};
+use crate::agent_registry::{AgentQuota, AgentRegistry, AgentStatusResponse, ValidationOutcome, YieldPayload};
 use crate::browser_pool::BrowserPool;
 use crate::orchestration::OrchestrationState;
 use crate::pty_pool::PtyPool;
@@ -565,7 +565,7 @@ pub struct ValidationSubmitPayload {
 pub async fn validation_submit(
     registry: State<'_, AgentRegistry>,
     payload: ValidationSubmitPayload,
-) -> Result<Option<bool>, String> {
+) -> Result<Option<ValidationOutcome>, String> {
     registry.validation_submit(
         &payload.developer_agent_id,
         &payload.validator_role,

@@ -521,6 +521,21 @@ export default function App() {
       const size = getDefaultSize(role === "worker" ? "worker" : role.includes("validator") ? "validator" : "agent");
 
       setLayouts((prev) => {
+        const existing = prev.find((l) => l.session_id === agentNodeId);
+        if (existing) {
+          // Card already exists (validation retry) — reset status, keep metadata
+          const next = prev.map((l) => {
+            if (l.session_id !== agentNodeId) return l;
+            try {
+              const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+              return { ...l, payload: JSON.stringify({ ...p, status: "loading", answer: "", toolActivity: "" }) };
+            } catch {
+              return l;
+            }
+          });
+          if (loaded.current) persistLayouts(next);
+          return next;
+        }
         const { x, y } = findNonOverlappingPosition(prev, preferredX, preferredY, size.w, size.h);
         const newAgentLayout: SessionLayout = {
           session_id: agentNodeId,
@@ -930,7 +945,12 @@ export default function App() {
             }
           }
           try {
-            await invoke("validation_submit", {
+            const outcome = await invoke<{
+              all_passed: boolean;
+              retry_count: number;
+              max_retries: number;
+              failures: { role: string; reasons: string[] }[];
+            } | null>("validation_submit", {
               payload: {
                 developer_agent_id,
                 validator_role: role,
@@ -938,6 +958,47 @@ export default function App() {
                 reasons,
               },
             });
+
+            // When all 3 validators are in and at least one failed, restart the developer with feedback
+            if (outcome && !outcome.all_passed && outcome.retry_count < outcome.max_retries) {
+              const feedbackParts = [
+                `## Validation Failed (attempt ${outcome.retry_count}/${outcome.max_retries})`,
+                "",
+              ];
+              for (const f of outcome.failures) {
+                feedbackParts.push(`### ${f.role}`);
+                for (const r of f.reasons) {
+                  feedbackParts.push(`- ${r}`);
+                }
+                feedbackParts.push("");
+              }
+              feedbackParts.push("Fix ONLY the issues listed above. Stay within task scope. Then call yield_for_review again.");
+
+              // Include original task description so the developer has context
+              const devLayout = layoutsRef.current.find((l) => l.session_id === developer_agent_id);
+              let taskDesc = "";
+              if (devLayout?.payload) {
+                try {
+                  const dp = JSON.parse(devLayout.payload) as { taskDescription?: string };
+                  taskDesc = dp.taskDescription ?? "";
+                } catch { /* */ }
+              }
+
+              const retryMessage = taskDesc
+                ? `## Original Task\n${taskDesc}\n\n${feedbackParts.join("\n")}`
+                : feedbackParts.join("\n");
+
+              // Restart the developer's LLM conversation on the same card
+              startAgentConversationRef.current({
+                agentNodeId: developer_agent_id,
+                role: "developer",
+                userMessage: retryMessage,
+                taskId: task_id,
+                preferredX: devLayout?.x ?? REPOSITION_ORIGIN.x,
+                preferredY: devLayout?.y ?? REPOSITION_ORIGIN.y,
+                projectPath: resolvedProjectPath,
+              });
+            }
           } catch {
             /* best effort */
           }

@@ -160,6 +160,21 @@ pub struct ValidatorResult {
     pub reasons: Vec<String>,
 }
 
+/// Returned by validation_submit when all 3 validators have reported.
+#[derive(Debug, Clone, Serialize)]
+pub struct ValidationOutcome {
+    pub all_passed: bool,
+    pub retry_count: u32,
+    pub max_retries: u32,
+    pub failures: Vec<ValidatorFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ValidatorFailure {
+    pub role: String,
+    pub reasons: Vec<String>,
+}
+
 struct ValidationState {
     developer_agent_id: String,
     task_id: Option<String>,
@@ -480,7 +495,7 @@ impl AgentRegistry {
         Ok(())
     }
 
-    /// Submit a validator result. Returns Some(true) if all 3 passed, Some(false) if any failed, None if still waiting.
+    /// Submit a validator result. Returns the outcome once all 3 validators have reported.
     /// Uses the state machine for InReview → Done / Running / Blocked transitions.
     pub fn validation_submit(
         &self,
@@ -488,7 +503,7 @@ impl AgentRegistry {
         role: &str,
         pass: bool,
         reasons: Vec<String>,
-    ) -> Result<Option<bool>, String> {
+    ) -> Result<Option<ValidationOutcome>, String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         let vstate = match inner.validation.get_mut(developer_agent_id) {
             Some(s) => s,
@@ -506,7 +521,18 @@ impl AgentRegistry {
             return Ok(None);
         }
         let all_passed = vstate.results.iter().all(|r| r.pass);
+        let failures: Vec<ValidatorFailure> = vstate
+            .results
+            .iter()
+            .filter(|r| !r.pass)
+            .map(|r| ValidatorFailure {
+                role: r.role.clone(),
+                reasons: r.reasons.clone(),
+            })
+            .collect();
+
         inner.validation.remove(developer_agent_id);
+        let mut retry_count = 0u32;
         if let Some(e) = inner.agents.get_mut(developer_agent_id) {
             if all_passed {
                 let new_state = agent_state_machine::try_transition(
@@ -515,6 +541,7 @@ impl AgentRegistry {
                 e.state = new_state;
             } else {
                 e.validation_retry_count += 1;
+                retry_count = e.validation_retry_count;
                 let event = if e.validation_retry_count >= 3 {
                     Event::ValidationBlock
                 } else {
@@ -524,7 +551,12 @@ impl AgentRegistry {
                 e.state = new_state;
             }
         }
-        Ok(Some(all_passed))
+        Ok(Some(ValidationOutcome {
+            all_passed,
+            retry_count,
+            max_retries: 3,
+            failures,
+        }))
     }
 
     /// Returns (task_id, git_branch, diff_summary) for agents in Yielded state that have not yet had validation started.
