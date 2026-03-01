@@ -149,6 +149,25 @@ impl PtyPool {
         Ok(())
     }
 
+    /// Kill the session: signal the PTY's process group (so all child processes
+    /// like dev servers are terminated), then remove the session and drop the master.
+    /// On non-Unix we only remove the session (closing the master may still tear down the shell).
+    pub fn kill(&self, session_id: &str) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        let session = sessions.remove(session_id);
+        if let Some(session) = session {
+            if let Ok(master) = session._master.lock() {
+                #[cfg(unix)]
+                if let Some(pgid) = master.process_group_leader() {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-9", &format!("-{}", pgid)])
+                        .status();
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Clear the output accumulator and write a command, returning the
     /// accumulator Arc so the caller can poll it across await points.
     pub fn exec_command(
@@ -191,12 +210,6 @@ impl PtyPool {
             }
         }
         Ok(out)
-    }
-
-    pub fn kill(&self, session_id: &str) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.remove(session_id);
-        Ok(())
     }
 
     pub fn get_buffer(&self, session_id: &str) -> Result<String, String> {
