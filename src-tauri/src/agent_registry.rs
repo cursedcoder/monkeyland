@@ -104,6 +104,9 @@ pub struct AgentEntry {
     pub validation_retry_count: u32,
     /// Project directory this agent is sandboxed to. File operations outside this path are rejected.
     pub project_path: Option<String>,
+    /// Isolated worktree directory for this agent (developer agents only).
+    /// When set, file operations are sandboxed to this path instead of project_path.
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +150,7 @@ pub struct DebugAgentEntry {
     pub children: u32,
     pub retry_count: u32,
     pub project_path: Option<String>,
+    pub worktree_path: Option<String>,
     pub yield_summary: Option<String>,
 }
 
@@ -297,6 +301,7 @@ impl AgentRegistry {
             yield_diff_summary: None,
             validation_retry_count: 0,
             project_path,
+            worktree_path: None,
         };
         inner.agents.insert(id.clone(), entry);
 
@@ -361,6 +366,7 @@ impl AgentRegistry {
                 children: e.children_count,
                 retry_count: e.validation_retry_count,
                 project_path: e.project_path.clone(),
+                worktree_path: e.worktree_path.clone(),
                 yield_summary: e.yield_diff_summary.clone(),
             }
         }).collect();
@@ -876,8 +882,34 @@ impl AgentRegistry {
         Ok(inner.agents.get(agent_id).and_then(|e| e.project_path.clone()))
     }
 
+    /// Set the worktree path for a developer agent (called after worktree creation).
+    pub fn set_worktree_path(&self, agent_id: &str, path: &str) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = inner
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("Agent {agent_id} not found"))?;
+        entry.worktree_path = Some(path.to_string());
+        Ok(())
+    }
+
+    /// Get the worktree path for an agent, if set.
+    pub fn get_worktree_path(&self, agent_id: &str) -> Result<Option<String>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        Ok(inner.agents.get(agent_id).and_then(|e| e.worktree_path.clone()))
+    }
+
+    /// Returns the effective sandbox directory: worktree_path if set, otherwise project_path.
+    pub fn get_effective_cwd(&self, agent_id: &str) -> Result<Option<String>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        Ok(inner.agents.get(agent_id).and_then(|e| {
+            e.worktree_path.clone().or_else(|| e.project_path.clone())
+        }))
+    }
+
     /// Validate that a cwd is valid for terminal commands.
     /// More lenient than validate_path - allows the parent directory for scaffolding tools.
+    /// Uses worktree_path as sandbox when set, falling back to project_path.
     pub fn validate_path_for_terminal(&self, agent_id: &str, cwd: &str) -> Result<(), String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = match inner.agents.get(agent_id) {
@@ -885,7 +917,7 @@ impl AgentRegistry {
             None => return Ok(()),
         };
 
-        let project_path = match &entry.project_path {
+        let project_path = match entry.worktree_path.as_ref().or(entry.project_path.as_ref()) {
             Some(p) => p,
             None => return Ok(()),
         };
@@ -916,9 +948,10 @@ impl AgentRegistry {
         ))
     }
 
-    /// Validate that a path is within the agent's sandbox (project_path).
+    /// Validate that a path is within the agent's sandbox.
+    /// Uses worktree_path as sandbox when set, falling back to project_path.
     /// Returns Ok(()) if allowed, Err with reason if not.
-    /// If agent has no project_path set, all paths are allowed (for WM, operators, etc).
+    /// If agent has no sandbox set, all paths are allowed (for WM, operators, etc).
     pub fn validate_path(&self, agent_id: &str, path: &str) -> Result<(), String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = match inner.agents.get(agent_id) {
@@ -926,7 +959,7 @@ impl AgentRegistry {
             None => return Ok(()), // Unknown agent, let it through (shouldn't happen)
         };
 
-        let project_path = match &entry.project_path {
+        let project_path = match entry.worktree_path.as_ref().or(entry.project_path.as_ref()) {
             Some(p) => p,
             None => return Ok(()), // No sandbox, allow all (WM, operators)
         };
@@ -993,5 +1026,64 @@ impl AgentRegistry {
 impl Default for AgentRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_path_uses_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        let worktree = dir.path().join("worktree");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn(
+                "developer",
+                Some("bd-1".to_string()),
+                None,
+                Some(project.to_str().unwrap().to_string()),
+            )
+            .unwrap();
+        registry
+            .set_worktree_path(&id, worktree.to_str().unwrap())
+            .unwrap();
+
+        // Path inside worktree should be allowed
+        let inside = worktree.join("src/main.rs");
+        assert!(registry.validate_path(&id, inside.to_str().unwrap()).is_ok());
+
+        // Path inside original project_path (but outside worktree) should be rejected
+        let outside = project.join("src/main.rs");
+        assert!(registry.validate_path(&id, outside.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_validate_path_falls_back_to_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn(
+                "developer",
+                Some("bd-2".to_string()),
+                None,
+                Some(project.to_str().unwrap().to_string()),
+            )
+            .unwrap();
+        // No worktree_path set — should fall back to project_path
+
+        let inside = project.join("src/main.rs");
+        assert!(registry.validate_path(&id, inside.to_str().unwrap()).is_ok());
+
+        let outside = dir.path().join("other/file.txt");
+        assert!(registry.validate_path(&id, outside.to_str().unwrap()).is_err());
     }
 }

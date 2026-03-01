@@ -30,6 +30,9 @@ axum = "0.7.9"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

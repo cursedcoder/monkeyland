@@ -28,6 +28,18 @@ pub fn run() {
             app.manage(agent_registry::AgentRegistry::new());
             app.manage(orchestration::OrchestrationState::new());
 
+            // Prune stale git worktrees from any previous session
+            if let Some(db) = app.try_state::<storage::MetaDb>() {
+                if let Ok(Some(pp)) = db.get_setting("beads_project_path") {
+                    if !pp.is_empty() {
+                        let path = std::path::Path::new(&pp).to_path_buf();
+                        if path.join(".git").exists() {
+                            let _ = worktree::prune(&path);
+                        }
+                    }
+                }
+            }
+
             // Orchestration loop: every 5 s, poll bd ready, spawn agents, claim tasks, kill expired
             let handle_orch = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -144,6 +156,9 @@ pub fn run() {
             crate::commands::fetch_json,
             crate::commands::get_kilo_proxy_url,
             crate::commands::full_reset,
+            crate::commands::worktree_create,
+            crate::commands::worktree_remove,
+            crate::commands::worktree_diff,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Monkeyland");
@@ -158,3 +173,4 @@ mod local_proxy;
 mod orchestration;
 mod pty_pool;
 mod storage;
+mod worktree;

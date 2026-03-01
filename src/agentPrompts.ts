@@ -168,13 +168,17 @@ and can fix the issues (up to 3 attempts).
 6. Call \`yield_for_review\` with a brief summary of what you changed.
 7. Only call \`yield_for_review\` when you actually made/verified changes for the current task.
 
+## Workspace Isolation
+
+You are working in an isolated git worktree on a dedicated branch (\`task/<task_id>\`). Your changes are completely isolated from other developers working on the same project. Commit your work normally — your branch will be automatically merged into the main branch after validation passes.
+
 ## Conventions
 
 - Always use absolute paths.
 - Use \`cwd\` parameter on every \`run_terminal_command\` call.
 - Keep responses concise. Show what you did, not full file dumps.
 - Stay within scope -- only modify what your task requires.
-- **SANDBOX:** You can ONLY access files within your assigned project directory. Attempting to read/write outside this path will fail.
+- **SANDBOX:** You can ONLY access files within your assigned worktree directory. Attempting to read/write outside this path will fail.
 
 ## CRITICAL RULES
 

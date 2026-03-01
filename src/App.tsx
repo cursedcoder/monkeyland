@@ -1161,15 +1161,36 @@ export default function App() {
           } catch { /* skip unreadable */ }
         }
 
-        try {
-          gitDiff = await invoke<string>("terminal_exec", {
-            payload: {
-              session_id: "ctx-gather",
-              command: "git diff HEAD 2>/dev/null || git diff 2>/dev/null || echo ''",
-              cwd: resolvedProjectPath,
-            },
-          });
-        } catch { /* no commits yet */ }
+        // Use worktree-scoped diff when a task_id is available (agent has its own branch),
+        // falling back to plain git diff for non-worktree scenarios.
+        if (task_id) {
+          try {
+            gitDiff = await invoke<string>("worktree_diff", {
+              projectPath: resolvedProjectPath,
+              taskId: task_id,
+            });
+          } catch {
+            try {
+              gitDiff = await invoke<string>("terminal_exec", {
+                payload: {
+                  session_id: "ctx-gather",
+                  command: "git diff HEAD 2>/dev/null || git diff 2>/dev/null || echo ''",
+                  cwd: resolvedProjectPath,
+                },
+              });
+            } catch { /* no commits yet */ }
+          }
+        } else {
+          try {
+            gitDiff = await invoke<string>("terminal_exec", {
+              payload: {
+                session_id: "ctx-gather",
+                command: "git diff HEAD 2>/dev/null || git diff 2>/dev/null || echo ''",
+                cwd: resolvedProjectPath,
+              },
+            });
+          } catch { /* no commits yet */ }
+        }
       }
 
       // ── 4. Detect frontend project and capture screenshot ──

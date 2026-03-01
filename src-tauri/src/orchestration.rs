@@ -149,7 +149,32 @@ pub async fn tick(
             Ok(id) => id,
             Err(_) => continue,
         };
-        if pool.spawn(&agent_id, 80, 24, Some(path)).is_err() {
+
+        // For developer agents, create an isolated git worktree so concurrent
+        // agents don't stomp on each other's files.
+        let agent_cwd = if role == "developer" && path.join(".git").exists() {
+            let wt_path_buf = path.to_path_buf();
+            let wt_agent_id = agent_id.clone();
+            let wt_task_id = task.id.clone();
+            match tokio::task::spawn_blocking(move || {
+                crate::worktree::create(&wt_path_buf, &wt_agent_id, &wt_task_id)
+            })
+            .await
+            {
+                Ok(Ok(wt)) => {
+                    let _ = registry.set_worktree_path(&agent_id, wt.to_str().unwrap_or_default());
+                    wt
+                }
+                _ => {
+                    eprintln!("[orch] worktree creation failed for {agent_id}, using project dir");
+                    path.to_path_buf()
+                }
+            }
+        } else {
+            path.to_path_buf()
+        };
+
+        if pool.spawn(&agent_id, 80, 24, Some(agent_cwd.as_path())).is_err() {
             let _ = registry.kill(&agent_id);
             continue;
         }
@@ -175,9 +200,17 @@ pub async fn tick(
         );
     }
 
-    // 3. Kill expired agents
+    // 3. Kill expired agents (clean up worktree without merging)
     let expired = registry.expired_agent_ids()?;
     for id in expired {
+        if let Ok(Some(_wt)) = registry.get_worktree_path(&id) {
+            let wt_path = path.to_path_buf();
+            let wt_id = id.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::worktree::remove(&wt_path, &wt_id)
+            })
+            .await;
+        }
         let _ = registry.kill(&id);
         let _ = pool.kill(&id);
         let _ = app_handle.emit(
@@ -237,6 +270,39 @@ pub async fn tick(
     // 5. Mark completed tasks in Beads (agents in Done state with a task_id)
     let done_agents = registry.done_agents_with_tasks()?;
     for (agent_id, task_id) in done_agents {
+        // Merge worktree branch into base before marking done, then remove worktree
+        if let Ok(Some(_wt)) = registry.get_worktree_path(&agent_id) {
+            let merge_path = path.to_path_buf();
+            let merge_agent = agent_id.clone();
+            let merge_task = task_id.clone();
+            let _ = tokio::task::spawn_blocking({
+                let merge_path = merge_path.clone();
+                let merge_agent = merge_agent.clone();
+                move || crate::worktree::remove(&merge_path, &merge_agent)
+            })
+            .await;
+            match tokio::task::spawn_blocking({
+                let merge_path = merge_path.clone();
+                let merge_task = merge_task.clone();
+                move || crate::worktree::merge_to_base(&merge_path, &merge_task)
+            })
+            .await
+            {
+                Ok(Ok(crate::worktree::MergeOutcome::Clean)) => {
+                    eprintln!("[orch] worktree merge clean for task {task_id}");
+                }
+                Ok(Ok(crate::worktree::MergeOutcome::Conflict(detail))) => {
+                    eprintln!("[orch] worktree merge CONFLICT for task {task_id}: {detail}");
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[orch] worktree merge error for task {task_id}: {e}");
+                }
+                Err(e) => {
+                    eprintln!("[orch] worktree merge join error for task {task_id}: {e}");
+                }
+            }
+        }
+
         let done_args = vec![
             "update".to_string(),
             task_id.clone(),
@@ -245,7 +311,6 @@ pub async fn tick(
         ];
         let path_done = path.to_path_buf();
         let _ = tokio::task::spawn_blocking(move || run_bd_sync(&path_done, &done_args)).await;
-        // Clean up the agent from registry now that it's fully done.
         let _ = registry.kill(&agent_id);
         let _ = pool.kill(&agent_id);
     }

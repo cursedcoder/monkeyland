@@ -496,7 +496,7 @@ pub async fn orch_pause(state: State<'_, OrchestrationState>) -> Result<(), Stri
     Ok(())
 }
 
-/// Full reset: pause orchestration, clear all agents, clear beads project path.
+/// Full reset: pause orchestration, clear all agents, remove worktrees, clear beads project path.
 #[tauri::command]
 pub async fn full_reset(
     orch_state: State<'_, OrchestrationState>,
@@ -505,6 +505,13 @@ pub async fn full_reset(
     meta_db: State<'_, MetaDb>,
 ) -> Result<(), String> {
     orch_state.set_paused();
+    // Remove all worktrees before clearing agents
+    if let Ok(Some(pp)) = meta_db.get_setting("beads_project_path") {
+        if !pp.is_empty() {
+            let path = std::path::Path::new(&pp).to_path_buf();
+            let _ = tokio::task::spawn_blocking(move || crate::worktree::remove_all(&path)).await;
+        }
+    }
     let ids = registry.clear_all()?;
     for id in &ids {
         let _ = pool.kill(id);
@@ -898,4 +905,51 @@ pub fn write_clipboard_text(text: String) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(text).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// --- Git worktree commands ---
+
+#[tauri::command]
+pub async fn worktree_create(
+    registry: State<'_, AgentRegistry>,
+    project_path: String,
+    agent_id: String,
+    task_id: String,
+) -> Result<String, String> {
+    let path = std::path::Path::new(&project_path).to_path_buf();
+    let wt = tokio::task::spawn_blocking(move || {
+        crate::worktree::create(&path, &agent_id, &task_id)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let wt_str = wt.to_str().unwrap_or_default().to_string();
+    // Store on the agent entry if it exists (agent_id from the outer scope is moved,
+    // so we extract it from the returned path).
+    if let Some(name) = wt.file_name().and_then(|n| n.to_str()) {
+        let _ = registry.set_worktree_path(name, &wt_str);
+    }
+    Ok(wt_str)
+}
+
+#[tauri::command]
+pub async fn worktree_remove(
+    project_path: String,
+    agent_id: String,
+) -> Result<(), String> {
+    let path = std::path::Path::new(&project_path).to_path_buf();
+    tokio::task::spawn_blocking(move || crate::worktree::remove(&path, &agent_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn worktree_diff(
+    project_path: String,
+    task_id: String,
+) -> Result<String, String> {
+    let path = std::path::Path::new(&project_path).to_path_buf();
+    tokio::task::spawn_blocking(move || crate::worktree::diff_against_base(&path, &task_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
