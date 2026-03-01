@@ -147,6 +147,7 @@ Runs via \`/bin/bash -c\`. Returns stdout+stderr.
 - Use \`--yes\` flags for interactive installers.
 - 2-minute timeout.
 - Background servers: \`nohup cmd > /tmp/out.log 2>&1 & sleep 2 && cat /tmp/out.log\`
+- If a terminal command times out or errors, DO NOT claim missing context or a fresh session. Recover by retrying with non-interactive flags, split the command into smaller steps, and continue.
 
 ### browser_action
 Test web pages. Actions: navigate, click, type, screenshot, content, evaluate.
@@ -165,6 +166,7 @@ and can fix the issues (up to 3 attempts).
 4. Run necessary commands (install, build, test) using \`run_terminal_command\` with \`cwd\`.
 5. Verify your work compiles/runs correctly.
 6. Call \`yield_for_review\` with a brief summary of what you changed.
+7. Only call \`yield_for_review\` when you actually made/verified changes for the current task.
 
 ## Conventions
 

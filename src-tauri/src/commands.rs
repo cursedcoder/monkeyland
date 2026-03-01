@@ -666,6 +666,44 @@ fn is_destructive_command(cmd: &str) -> Option<&'static str> {
     None
 }
 
+/// Commands that are likely to prompt for input and hang in our non-interactive executor.
+/// We reject these unless they include explicit non-interactive flags.
+fn is_likely_interactive_without_flags(cmd: &str) -> Option<&'static str> {
+    let lower = cmd.to_lowercase();
+    let has_non_interactive_flag = [
+        "--yes",
+        " -y",
+        "--non-interactive",
+        "--no-interactive",
+        "yes |",
+    ]
+    .iter()
+    .any(|f| lower.contains(f));
+
+    if has_non_interactive_flag {
+        return None;
+    }
+
+    // Project scaffolding / init commands that commonly ask for prompts.
+    let likely_interactive_scaffold = lower.contains("npm create")
+        || lower.contains("npx create-")
+        || lower.contains("pnpm create")
+        || lower.contains("yarn create")
+        || lower.contains("bun create")
+        || lower.contains("npm init")
+        || lower.contains("pnpm init")
+        || lower.contains("yarn init")
+        || lower.contains("bun init");
+
+    if likely_interactive_scaffold {
+        return Some(
+            "Likely interactive command blocked. Re-run with non-interactive flags (for example --yes/-y or --non-interactive).",
+        );
+    }
+
+    None
+}
+
 /// Execute a command via `bash -c` as a subprocess, capturing clean stdout+stderr.
 /// If payload.agent_id is set, gated by the state machine and cwd is validated against sandbox.
 #[tauri::command]
@@ -681,6 +719,10 @@ pub async fn terminal_exec(
     }
     // Truly destructive commands → hard block with error.
     if let Some(reason) = is_destructive_command(&payload.command) {
+        return Err(format!("Blocked: {}", reason));
+    }
+    // Likely interactive commands can hang with stdin closed. Require explicit non-interactive flags.
+    if let Some(reason) = is_likely_interactive_without_flags(&payload.command) {
         return Err(format!("Blocked: {}", reason));
     }
     
@@ -741,7 +783,11 @@ pub async fn terminal_exec(
     let output = match result {
         Ok(Ok(s)) => s?,
         Ok(Err(e)) => return Err(format!("Task join error: {e}")),
-        Err(_) => return Err("Command timed out".to_string()),
+        Err(_) => {
+            return Err(
+                "Command timed out (120s). Use non-interactive flags (for example --yes/-y), split work into shorter commands, and run long-lived servers in background (for example: nohup <cmd> > /tmp/server.log 2>&1 &).".to_string(),
+            )
+        }
     };
 
     const MAX_OUTPUT: usize = 16_000;
