@@ -41,5 +41,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust format check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Rust clippy (warning baseline)
+        run: >
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --
+          -D warnings
+          -A dead_code
+          -A unused_imports
+          -A unused_mut
+          -A dropping_references
+          -A clippy::let_unit_value
+          -A clippy::type_complexity
+          -A clippy::len_zero
+          -A clippy::needless_question_mark
+          -A clippy::unnecessary_map_or
+          -A clippy::redundant_guards
+          -A clippy::too_many_arguments
+
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

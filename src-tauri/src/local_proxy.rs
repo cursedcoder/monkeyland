@@ -1,7 +1,14 @@
 /// Starts a local HTTP proxy on a random port that forwards all requests to
 /// `target_base`, injecting CORS headers so the Tauri WebView can reach APIs
 /// that don't allow browser origins (e.g. api.kilo.ai).
-use axum::{body::Body, extract::{Request, State}, http::HeaderValue, response::Response, routing::any, Router};
+use axum::{
+    body::Body,
+    extract::{Request, State},
+    http::HeaderValue,
+    response::Response,
+    routing::any,
+    Router,
+};
 use reqwest::Client;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -24,7 +31,11 @@ async fn handle(State(state): State<Arc<ProxyState>>, req: Request) -> Response 
             .unwrap();
     }
 
-    let path = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let path = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or("/");
     let target_url = format!("{}{}", state.target_base, path);
 
     let method: reqwest::Method = match req.method().as_str().parse() {
@@ -35,7 +46,10 @@ async fn handle(State(state): State<Arc<ProxyState>>, req: Request) -> Response 
     let mut fwd_headers = reqwest::header::HeaderMap::new();
     for (k, v) in req.headers() {
         // Drop hop-by-hop and browser-identifying headers
-        if matches!(k.as_str(), "host" | "connection" | "transfer-encoding" | "origin" | "referer") {
+        if matches!(
+            k.as_str(),
+            "host" | "connection" | "transfer-encoding" | "origin" | "referer"
+        ) {
             continue;
         }
         if let (Ok(k2), Ok(v2)) = (
@@ -81,9 +95,17 @@ async fn handle(State(state): State<Arc<ProxyState>>, req: Request) -> Response 
     }
 
     // Inject CORS headers so the WebView can consume the response
-    response.headers_mut().insert("access-control-allow-origin", HeaderValue::from_static("*"));
-    response.headers_mut().insert("access-control-allow-headers", HeaderValue::from_static("*"));
-    response.headers_mut().insert("access-control-allow-methods", HeaderValue::from_static("*"));
+    response
+        .headers_mut()
+        .insert("access-control-allow-origin", HeaderValue::from_static("*"));
+    response.headers_mut().insert(
+        "access-control-allow-headers",
+        HeaderValue::from_static("*"),
+    );
+    response.headers_mut().insert(
+        "access-control-allow-methods",
+        HeaderValue::from_static("*"),
+    );
 
     response
 }

@@ -75,8 +75,14 @@ impl MetaDb {
             )
             .unwrap_or(0);
         if has_node_type == 0 {
-            let _ = conn.execute("ALTER TABLE canvas_layout ADD COLUMN node_type TEXT DEFAULT 'agent'", []);
-            let _ = conn.execute("ALTER TABLE canvas_layout ADD COLUMN payload TEXT DEFAULT '{}'", []);
+            let _ = conn.execute(
+                "ALTER TABLE canvas_layout ADD COLUMN node_type TEXT DEFAULT 'agent'",
+                [],
+            );
+            let _ = conn.execute(
+                "ALTER TABLE canvas_layout ADD COLUMN payload TEXT DEFAULT '{}'",
+                [],
+            );
         }
         Ok(Self {
             conn: Mutex::new(conn),
@@ -86,7 +92,8 @@ impl MetaDb {
     pub fn save_canvas_layouts(&self, layouts: &[SessionLayoutRow]) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM canvas_layout", []).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM canvas_layout", [])
+            .map_err(|e| e.to_string())?;
         for l in layouts {
             tx.execute(
                 "INSERT INTO canvas_layout (session_id, x, y, w, h, collapsed, node_type, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -443,8 +450,15 @@ impl WriteBatcher {
             let db = match session_dbs.get_mut(&session_id) {
                 Some(d) => d,
                 None => {
-                    meta_db.create_session_if_missing(&self.config_dir, &session_id, &session_id)?;
-                    let path = self.config_dir.join("sessions").join(format!("{}.db", session_id));
+                    meta_db.create_session_if_missing(
+                        &self.config_dir,
+                        &session_id,
+                        &session_id,
+                    )?;
+                    let path = self
+                        .config_dir
+                        .join("sessions")
+                        .join(format!("{}.db", session_id));
                     let db = SessionDb::open(&path)?;
                     session_dbs.insert(session_id.clone(), db);
                     session_dbs.get_mut(&session_id).unwrap()
@@ -460,9 +474,7 @@ impl WriteBatcher {
         let mut snapshot_state = self.snapshot_state.lock().map_err(|e| e.to_string())?;
         for (session_id, db) in session_dbs.iter_mut() {
             let max_seq = db.max_seq()?;
-            let (last_seq, last_ts) = snapshot_state
-                .entry(session_id.clone())
-                .or_insert((0, 0));
+            let (last_seq, last_ts) = snapshot_state.entry(session_id.clone()).or_insert((0, 0));
             let need = (max_seq - *last_seq) >= FLUSH_INTERVAL_EVENTS
                 || (now_us - *last_ts) >= SNAPSHOT_INTERVAL_US;
             if need && max_seq > 0 {
@@ -506,7 +518,10 @@ impl WriteBatcher {
         let db = match session_dbs.get_mut(session_id) {
             Some(d) => d,
             None => {
-                let path = self.config_dir.join("sessions").join(format!("{}.db", session_id));
+                let path = self
+                    .config_dir
+                    .join("sessions")
+                    .join(format!("{}.db", session_id));
                 if !path.exists() {
                     return Ok(String::new());
                 }

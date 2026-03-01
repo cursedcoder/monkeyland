@@ -204,6 +204,36 @@ export function TerminalLogCard({
     onLayoutCommit({ ...layout, collapsed: !layout.collapsed });
   }, [layout, onLayoutChange, onLayoutCommit]);
 
+  const handleClearLogs = useCallback(() => {
+    let payloadObj: Record<string, unknown> = {};
+    try {
+      payloadObj = JSON.parse(layout.payload ?? "{}") as Record<string, unknown>;
+    } catch {
+      payloadObj = {};
+    }
+    const next = { ...layout, payload: JSON.stringify({ ...payloadObj, entries: [] }) };
+    onLayoutChange(next);
+    onLayoutCommit(next);
+    setShowFullHistory(false);
+  }, [layout, onLayoutChange, onLayoutCommit]);
+
+  const handleExportLogs = useCallback(() => {
+    const lines = entries.flatMap((entry) => {
+      const ts = new Date(entry.ts).toISOString();
+      const cwd = entry.cwd ? ` (${entry.cwd})` : "";
+      return [`[${ts}] $ ${entry.command}${cwd}`, entry.output ?? "", ""];
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `terminal-log-${layout.session_id}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [entries, layout.session_id]);
+
   return (
     <div
       ref={cardRef}
@@ -227,6 +257,26 @@ export function TerminalLogCard({
       >
         <span className="terminal-log-card-title">Terminal Log</span>
         <span className="terminal-log-card-count">{entries.length} cmd{entries.length !== 1 ? "s" : ""}</span>
+        <button
+          type="button"
+          className="terminal-log-card-collapse"
+          onClick={(e) => { e.stopPropagation(); handleExportLogs(); }}
+          onPointerDown={(e) => e.stopPropagation()}
+          aria-label="Export logs"
+          title="Export logs"
+        >
+          Export
+        </button>
+        <button
+          type="button"
+          className="terminal-log-card-collapse"
+          onClick={(e) => { e.stopPropagation(); handleClearLogs(); }}
+          onPointerDown={(e) => e.stopPropagation()}
+          aria-label="Clear logs"
+          title="Clear logs"
+        >
+          Clear
+        </button>
         <button
           type="button"
           className="terminal-log-card-collapse"

@@ -210,16 +210,12 @@ pub fn gate_tool_call(
 
     // 2. Role permission check.
     if !allowed_tools(role).contains(&tool) {
-        return Err(format!(
-            "Role {role} is not permitted to use {tool:?}"
-        ));
+        return Err(format!("Role {role} is not permitted to use {tool:?}"));
     }
 
     // 3. Token quota hard limit.
     if token_used >= token_quota {
-        return Err(format!(
-            "Token quota exceeded ({token_used}/{token_quota})"
-        ));
+        return Err(format!("Token quota exceeded ({token_used}/{token_quota})"));
     }
 
     // 4. TTL hard limit.
@@ -271,8 +267,16 @@ mod tests {
 
     #[test]
     fn kill_from_any_non_terminal() {
-        for state in [State::Spawned, State::Running, State::Yielded, State::InReview] {
-            assert_eq!(try_transition(state, Event::Kill, "developer").unwrap(), State::Stopped);
+        for state in [
+            State::Spawned,
+            State::Running,
+            State::Yielded,
+            State::InReview,
+        ] {
+            assert_eq!(
+                try_transition(state, Event::Kill, "developer").unwrap(),
+                State::Stopped
+            );
         }
     }
 

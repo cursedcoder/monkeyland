@@ -7,10 +7,10 @@ use serde::Serialize;
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
-use tokio::sync::Mutex as TokioMutex;
 use tauri::Emitter;
+use tokio::sync::Mutex as TokioMutex;
 
 const BEADS_PROJECT_PATH_KEY: &str = "beads_project_path";
 
@@ -100,7 +100,7 @@ pub struct EpicProgressPayload {
 #[derive(Debug, Clone, Serialize)]
 pub struct MergeStatusPayload {
     pub task_id: String,
-    pub status: String,      // "merging" | "conflict" | "done" | "failed"
+    pub status: String, // "merging" | "conflict" | "done" | "failed"
     pub detail: Option<String>,
 }
 
@@ -153,6 +153,56 @@ impl MergeQueue {
     pub fn is_empty(&self) -> bool {
         self.queue.lock().unwrap().is_empty()
     }
+
+    pub fn depth(&self) -> usize {
+        self.queue.lock().unwrap().len()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OrchestrationMetricsSnapshot {
+    pub merge_queue_depth: u64,
+    pub merge_retry_count: u64,
+    pub validation_timeout_blocks: u64,
+    pub safety_mode_enabled: bool,
+}
+
+pub struct OrchestrationMetrics {
+    merge_retry_count: AtomicU64,
+    validation_timeout_blocks: AtomicU64,
+    safety_mode_enabled: AtomicBool,
+}
+
+impl OrchestrationMetrics {
+    pub fn new() -> Self {
+        Self {
+            merge_retry_count: AtomicU64::new(0),
+            validation_timeout_blocks: AtomicU64::new(0),
+            safety_mode_enabled: AtomicBool::new(false),
+        }
+    }
+
+    pub fn inc_merge_retry(&self) {
+        self.merge_retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_validation_timeout_block(&self) {
+        self.validation_timeout_blocks
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn set_safety_mode_enabled(&self, enabled: bool) {
+        self.safety_mode_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn snapshot(&self, merge_queue_depth: u64) -> OrchestrationMetricsSnapshot {
+        OrchestrationMetricsSnapshot {
+            merge_queue_depth,
+            merge_retry_count: self.merge_retry_count.load(Ordering::Relaxed),
+            validation_timeout_blocks: self.validation_timeout_blocks.load(Ordering::Relaxed),
+            safety_mode_enabled: self.safety_mode_enabled.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// One tick: get ready tasks, spawn agents, claim in Beads, kill expired, process yield queue.
@@ -162,6 +212,7 @@ pub async fn tick(
     registry: &AgentRegistry,
     pool: &PtyPool,
     merge_queue: &MergeQueue,
+    metrics: &OrchestrationMetrics,
 ) -> Result<(), String> {
     let project_path = match meta_db.get_setting(BEADS_PROJECT_PATH_KEY)? {
         Some(p) if !p.is_empty() => p,
@@ -171,6 +222,18 @@ pub async fn tick(
     if !path.is_dir() {
         return Ok(());
     }
+
+    let safety_mode_enabled = meta_db
+        .get_setting("safety_mode_enabled")?
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    metrics.set_safety_mode_enabled(safety_mode_enabled);
+    let max_new_agents_per_tick = if safety_mode_enabled {
+        2usize
+    } else {
+        usize::MAX
+    };
+    let max_merges_per_tick = if safety_mode_enabled { 1usize } else { 3usize };
 
     // 1. bd ready --json
     let args = vec!["ready".to_string(), "--json".to_string()];
@@ -190,12 +253,14 @@ pub async fn tick(
                     let mut out = Vec::new();
                     for item in arr {
                         if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                            let issue_type = item.get("issue_type")
+                            let issue_type = item
+                                .get("issue_type")
                                 .or_else(|| item.get("type"))
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("task")
                                 .to_string();
-                            let priority = item.get("priority").and_then(|v| v.as_u64()).unwrap_or(2) as u8;
+                            let priority =
+                                item.get("priority").and_then(|v| v.as_u64()).unwrap_or(2) as u8;
                             out.push(BeadsIssue {
                                 id: id.to_string(),
                                 issue_type,
@@ -217,7 +282,11 @@ pub async fn tick(
 
     // 2. For each task, try to spawn and claim (skip if already claimed by an agent we track)
     let claimed_task_ids = registry.claimed_task_ids()?;
+    let mut spawned_this_tick = 0usize;
     for task in tasks {
+        if spawned_this_tick >= max_new_agents_per_tick {
+            break;
+        }
         if claimed_task_ids.contains(&task.id) {
             continue;
         }
@@ -225,7 +294,12 @@ pub async fn tick(
         if !registry.can_spawn_role(&role)? {
             continue;
         }
-        let agent_id = match registry.spawn(&role, Some(task.id.clone()), None, Some(project_path.clone())) {
+        let agent_id = match registry.spawn(
+            &role,
+            Some(task.id.clone()),
+            None,
+            Some(project_path.clone()),
+        ) {
             Ok(id) => id,
             Err(_) => continue,
         };
@@ -254,7 +328,10 @@ pub async fn tick(
             path.to_path_buf()
         };
 
-        if pool.spawn(&agent_id, 80, 24, Some(agent_cwd.as_path())).is_err() {
+        if pool
+            .spawn(&agent_id, 80, 24, Some(agent_cwd.as_path()))
+            .is_err()
+        {
             let _ = registry.kill(&agent_id);
             continue;
         }
@@ -279,6 +356,7 @@ pub async fn tick(
                 merge_context: None,
             },
         );
+        spawned_this_tick += 1;
     }
 
     // 3. Kill expired agents (clean up worktree without merging)
@@ -287,10 +365,8 @@ pub async fn tick(
         if let Ok(Some(_wt)) = registry.get_worktree_path(&id) {
             let wt_path = path.to_path_buf();
             let wt_id = id.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                crate::worktree::remove(&wt_path, &wt_id)
-            })
-            .await;
+            let _ = tokio::task::spawn_blocking(move || crate::worktree::remove(&wt_path, &wt_id))
+                .await;
         }
         let _ = registry.kill(&id);
         let _ = pool.kill(&id);
@@ -308,16 +384,28 @@ pub async fn tick(
     // so this naturally runs only once per yielded developer.
     let yield_queue = registry.yield_queue()?;
     for (developer_agent_id, task_id, git_branch, diff_summary) in yield_queue {
-        eprintln!("[orch] Processing yield queue: developer {} in Yielded state", developer_agent_id);
+        eprintln!(
+            "[orch] Processing yield queue: developer {} in Yielded state",
+            developer_agent_id
+        );
         match registry.start_validation(&developer_agent_id, task_id.clone()) {
-            Ok(_) => eprintln!("[orch] start_validation succeeded for {}", developer_agent_id),
+            Ok(_) => eprintln!(
+                "[orch] start_validation succeeded for {}",
+                developer_agent_id
+            ),
             Err(e) => {
-                eprintln!("[orch] start_validation FAILED for {}: {}", developer_agent_id, e);
+                eprintln!(
+                    "[orch] start_validation FAILED for {}: {}",
+                    developer_agent_id, e
+                );
                 // Force it anyway
                 let _ = registry.force_start_validation(&developer_agent_id);
             }
         }
-        eprintln!("[orch] Emitting validation_requested for developer {}", developer_agent_id);
+        eprintln!(
+            "[orch] Emitting validation_requested for developer {}",
+            developer_agent_id
+        );
         if let Err(e) = app_handle.emit(
             "validation_requested",
             ValidationRequestedPayload {
@@ -336,7 +424,10 @@ pub async fn tick(
     // so the NEXT tick's yield_queue (step 4) will pick it up normally.
     let stuck_running = registry.stuck_running_developers(300)?;
     for agent_id in stuck_running {
-        eprintln!("[orch] SAFETY NET: Force-yielding developer {} stuck in Running for >5min", agent_id);
+        eprintln!(
+            "[orch] SAFETY NET: Force-yielding developer {} stuck in Running for >5min",
+            agent_id
+        );
         let _ = registry.force_yield(&agent_id);
     }
 
@@ -344,7 +435,11 @@ pub async fn tick(
     // Validators may have failed to spawn/complete without submitting results.
     let stuck_review = registry.stuck_in_review_developers(300)?;
     for agent_id in stuck_review {
-        eprintln!("[orch] SAFETY NET: Force-blocking developer {} stuck in InReview for >5min", agent_id);
+        eprintln!(
+            "[orch] SAFETY NET: Force-blocking developer {} stuck in InReview for >5min",
+            agent_id
+        );
+        metrics.inc_validation_timeout_block();
         let _ = registry.force_block_validation(&agent_id);
     }
 
@@ -379,10 +474,9 @@ pub async fn tick(
         if let Ok(Some(_wt)) = registry.get_worktree_path(&agent_id) {
             let rm_path = path.to_path_buf();
             let rm_agent = agent_id.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                crate::worktree::remove(&rm_path, &rm_agent)
-            })
-            .await;
+            let _ =
+                tokio::task::spawn_blocking(move || crate::worktree::remove(&rm_path, &rm_agent))
+                    .await;
         }
 
         eprintln!("[orch] enqueuing task {task_id} (agent {agent_id}) for merge");
@@ -404,111 +498,127 @@ pub async fn tick(
 
     // 5b. Merge train: process multiple queued entries per tick to reduce backlog latency.
     //     git_lock still ensures merges execute serially for correctness.
-    const MAX_MERGES_PER_TICK: usize = 3;
-    for _ in 0..MAX_MERGES_PER_TICK {
+    for _ in 0..max_merges_per_tick {
         let Some(entry) = merge_queue.pop_front() else {
             break;
         };
-            let _git_guard = merge_queue.git_lock.lock().await;
-            let task_id = entry.task_id.clone();
-            let agent_id = entry.agent_id.clone();
+        let _git_guard = merge_queue.git_lock.lock().await;
+        let task_id = entry.task_id.clone();
+        let agent_id = entry.agent_id.clone();
 
-            // Step 1: Rebase task branch onto base
-            let rebase_path = path.to_path_buf();
-            let rebase_task = task_id.clone();
-            let rebase_ok = tokio::task::spawn_blocking(move || {
-                crate::worktree::rebase_onto_base(&rebase_path, &rebase_task)
+        // Step 1: Rebase task branch onto base
+        let rebase_path = path.to_path_buf();
+        let rebase_task = task_id.clone();
+        let rebase_ok = tokio::task::spawn_blocking(move || {
+            crate::worktree::rebase_onto_base(&rebase_path, &rebase_task)
+        })
+        .await;
+
+        let rebase_clean = match rebase_ok {
+            Ok(Ok(true)) => true,
+            Ok(Ok(false)) => {
+                eprintln!("[orch] rebase conflict for task {task_id}");
+                false
+            }
+            Ok(Err(e)) => {
+                eprintln!("[orch] rebase error for task {task_id}: {e}");
+                false
+            }
+            Err(e) => {
+                eprintln!("[orch] rebase join error for task {task_id}: {e}");
+                false
+            }
+        };
+
+        if rebase_clean {
+            // Step 2: Merge (--no-ff) into base
+            let merge_path = path.to_path_buf();
+            let merge_task = task_id.clone();
+            let merge_result = tokio::task::spawn_blocking(move || {
+                crate::worktree::merge_to_base(&merge_path, &merge_task)
             })
             .await;
 
-            let rebase_clean = match rebase_ok {
-                Ok(Ok(true)) => true,
-                Ok(Ok(false)) => {
-                    eprintln!("[orch] rebase conflict for task {task_id}");
-                    false
+            match merge_result {
+                Ok(Ok(crate::worktree::MergeOutcome::Clean)) => {
+                    eprintln!("[orch] merge clean for task {task_id}");
+                    // Mark done in Beads
+                    let done_args = vec![
+                        "update".to_string(),
+                        task_id.clone(),
+                        "--status".to_string(),
+                        "done".to_string(),
+                    ];
+                    let path_done = path.to_path_buf();
+                    let _ =
+                        tokio::task::spawn_blocking(move || run_bd_sync(&path_done, &done_args))
+                            .await;
+                    // Clean up branch
+                    let del_path = path.to_path_buf();
+                    let del_task = task_id.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        crate::worktree::delete_task_branch(&del_path, &del_task)
+                    })
+                    .await;
+                    // Kill agent
+                    let _ = registry.kill(&agent_id);
+                    let _ = pool.kill(&agent_id);
+                    let _ = app_handle.emit(
+                        "merge_status",
+                        MergeStatusPayload {
+                            task_id,
+                            status: "done".to_string(),
+                            detail: None,
+                        },
+                    );
+                }
+                Ok(Ok(crate::worktree::MergeOutcome::Conflict(detail))) => {
+                    handle_merge_conflict(
+                        app_handle,
+                        path,
+                        registry,
+                        pool,
+                        merge_queue,
+                        metrics,
+                        entry,
+                        &detail,
+                    )
+                    .await;
                 }
                 Ok(Err(e)) => {
-                    eprintln!("[orch] rebase error for task {task_id}: {e}");
-                    false
+                    eprintln!("[orch] merge error for task {task_id}: {e}");
+                    handle_merge_conflict(
+                        app_handle,
+                        path,
+                        registry,
+                        pool,
+                        merge_queue,
+                        metrics,
+                        entry,
+                        &e,
+                    )
+                    .await;
                 }
                 Err(e) => {
-                    eprintln!("[orch] rebase join error for task {task_id}: {e}");
-                    false
+                    eprintln!("[orch] merge join error for task {task_id}: {e}");
+                    let _ = registry.kill(&agent_id);
+                    let _ = pool.kill(&agent_id);
                 }
-            };
-
-            if rebase_clean {
-                // Step 2: Merge (--no-ff) into base
-                let merge_path = path.to_path_buf();
-                let merge_task = task_id.clone();
-                let merge_result = tokio::task::spawn_blocking(move || {
-                    crate::worktree::merge_to_base(&merge_path, &merge_task)
-                })
-                .await;
-
-                match merge_result {
-                    Ok(Ok(crate::worktree::MergeOutcome::Clean)) => {
-                        eprintln!("[orch] merge clean for task {task_id}");
-                        // Mark done in Beads
-                        let done_args = vec![
-                            "update".to_string(),
-                            task_id.clone(),
-                            "--status".to_string(),
-                            "done".to_string(),
-                        ];
-                        let path_done = path.to_path_buf();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            run_bd_sync(&path_done, &done_args)
-                        })
-                        .await;
-                        // Clean up branch
-                        let del_path = path.to_path_buf();
-                        let del_task = task_id.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            crate::worktree::delete_task_branch(&del_path, &del_task)
-                        })
-                        .await;
-                        // Kill agent
-                        let _ = registry.kill(&agent_id);
-                        let _ = pool.kill(&agent_id);
-                        let _ = app_handle.emit(
-                            "merge_status",
-                            MergeStatusPayload {
-                                task_id,
-                                status: "done".to_string(),
-                                detail: None,
-                            },
-                        );
-                    }
-                    Ok(Ok(crate::worktree::MergeOutcome::Conflict(detail))) => {
-                        handle_merge_conflict(
-                            app_handle, path, registry, pool, merge_queue,
-                            entry, &detail,
-                        )
-                        .await;
-                    }
-                    Ok(Err(e)) => {
-                        eprintln!("[orch] merge error for task {task_id}: {e}");
-                        handle_merge_conflict(
-                            app_handle, path, registry, pool, merge_queue,
-                            entry, &e,
-                        )
-                        .await;
-                    }
-                    Err(e) => {
-                        eprintln!("[orch] merge join error for task {task_id}: {e}");
-                        let _ = registry.kill(&agent_id);
-                        let _ = pool.kill(&agent_id);
-                    }
-                }
-            } else {
-                // Rebase failed -- treat as conflict
-                handle_merge_conflict(
-                    app_handle, path, registry, pool, merge_queue,
-                    entry, "rebase conflict",
-                )
-                .await;
             }
+        } else {
+            // Rebase failed -- treat as conflict
+            handle_merge_conflict(
+                app_handle,
+                path,
+                registry,
+                pool,
+                merge_queue,
+                metrics,
+                entry,
+                "rebase conflict",
+            )
+            .await;
+        }
     }
 
     // 6. Auto-close epics whose children are ALL done (and have at least 1 child)
@@ -539,7 +649,11 @@ pub async fn tick(
                                     "--json".to_string(),
                                 ];
                                 let check_path = path_epic.clone();
-                                match tokio::task::spawn_blocking(move || run_bd_sync(&check_path, &check_args)).await {
+                                match tokio::task::spawn_blocking(move || {
+                                    run_bd_sync(&check_path, &check_args)
+                                })
+                                .await
+                                {
                                     Ok(Ok(children_stdout)) => {
                                         serde_json::from_str::<serde_json::Value>(&children_stdout)
                                             .ok()
@@ -550,20 +664,23 @@ pub async fn tick(
                                 }
                             };
                             if children_count == 0 {
-                                eprintln!("[orch] skipping auto-close for epic {} (no children yet)", epic_id);
+                                eprintln!(
+                                    "[orch] skipping auto-close for epic {} (no children yet)",
+                                    epic_id
+                                );
                                 continue;
                             }
 
                             let close_id = epic_id.to_string();
                             let path_close = path_epic.clone();
                             let _ = tokio::task::spawn_blocking(move || {
-                                run_bd_sync(&path_close, &[
-                                    "close".to_string(),
-                                    close_id,
-                                ])
+                                run_bd_sync(&path_close, &["close".to_string(), close_id])
                             })
                             .await;
-                            eprintln!("[orch] auto-closed epic {} ({} children all done)", epic_id, children_count);
+                            eprintln!(
+                                "[orch] auto-closed epic {} ({} children all done)",
+                                epic_id, children_count
+                            );
                         }
                     }
                 }
@@ -597,10 +714,15 @@ pub async fn tick(
                         continue;
                     }
                     let total = epic.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let done = epic.get("done").and_then(|v| v.as_u64())
+                    let done = epic
+                        .get("done")
+                        .and_then(|v| v.as_u64())
                         .or_else(|| epic.get("closed").and_then(|v| v.as_u64()))
                         .unwrap_or(0);
-                    let in_progress = epic.get("in_progress").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let in_progress = epic
+                        .get("in_progress")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     let open = epic.get("open").and_then(|v| v.as_u64()).unwrap_or(0);
 
                     let _ = app_handle.emit(
@@ -650,6 +772,7 @@ async fn handle_merge_conflict(
     registry: &AgentRegistry,
     pool: &PtyPool,
     merge_queue: &MergeQueue,
+    metrics: &OrchestrationMetrics,
     entry: MergeEntry,
     detail: &str,
 ) {
@@ -692,25 +815,27 @@ async fn handle_merge_conflict(
     // Get conflict context for the merge agent
     let diff_path = project_path.to_path_buf();
     let diff_task = task_id.clone();
-    let conflict_context = tokio::task::spawn_blocking(move || {
-        crate::worktree::conflict_diff(&diff_path, &diff_task)
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()))
-    .unwrap_or_else(|e| format!("(failed to get diff: {e})"));
+    let conflict_context =
+        tokio::task::spawn_blocking(move || crate::worktree::conflict_diff(&diff_path, &diff_task))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+            .unwrap_or_else(|e| format!("(failed to get diff: {e})"));
 
     // Get task description from Beads
     let show_args = vec!["show".to_string(), task_id.clone(), "--json".to_string()];
     let show_path = project_path.to_path_buf();
-    let task_desc = match tokio::task::spawn_blocking(move || run_bd_sync(&show_path, &show_args)).await {
-        Ok(Ok(stdout)) => {
-            serde_json::from_str::<serde_json::Value>(&stdout)
+    let task_desc =
+        match tokio::task::spawn_blocking(move || run_bd_sync(&show_path, &show_args)).await {
+            Ok(Ok(stdout)) => serde_json::from_str::<serde_json::Value>(&stdout)
                 .ok()
-                .and_then(|v| v.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()))
-                .unwrap_or_default()
-        }
-        _ => String::new(),
-    };
+                .and_then(|v| {
+                    v.get("description")
+                        .and_then(|d| d.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
 
     let base_branch = {
         let pp = project_path.to_path_buf();
@@ -730,6 +855,7 @@ async fn handle_merge_conflict(
         Err(e) => {
             eprintln!("[orch] failed to spawn merge agent for {task_id}: {e}");
             // Re-queue with incremented retry count
+            metrics.inc_merge_retry();
             let _ = merge_queue.push(MergeEntry {
                 agent_id,
                 task_id: task_id.clone(),
@@ -758,9 +884,13 @@ async fn handle_merge_conflict(
         }
     };
 
-    if pool.spawn(&merge_agent_id, 80, 24, Some(agent_cwd.as_path())).is_err() {
+    if pool
+        .spawn(&merge_agent_id, 80, 24, Some(agent_cwd.as_path()))
+        .is_err()
+    {
         eprintln!("[orch] failed to spawn pty for merge agent {merge_agent_id}");
         let _ = registry.kill(&merge_agent_id);
+        metrics.inc_merge_retry();
         let _ = merge_queue.push(MergeEntry {
             agent_id,
             task_id: task_id.clone(),
@@ -801,9 +931,50 @@ async fn handle_merge_conflict(
     // Re-queue the original entry with incremented retry count.
     // When the merge agent completes (enters Done), the next tick will pick it up
     // via done_agents_with_tasks and re-enqueue for merge.
+    metrics.inc_merge_retry();
     let _ = merge_queue.push(MergeEntry {
         agent_id,
         task_id,
         retry_count: entry.retry_count + 1,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_queue_dedupes_by_task_id() {
+        let q = MergeQueue::new();
+        assert!(q.push(MergeEntry {
+            agent_id: "a1".to_string(),
+            task_id: "bd-1".to_string(),
+            retry_count: 0,
+        }));
+        assert!(!q.push(MergeEntry {
+            agent_id: "a2".to_string(),
+            task_id: "bd-1".to_string(),
+            retry_count: 1,
+        }));
+        assert_eq!(q.depth(), 1);
+    }
+
+    #[test]
+    fn merge_queue_handles_burst_push_pop_order() {
+        let q = MergeQueue::new();
+        for i in 0..50 {
+            let _ = q.push(MergeEntry {
+                agent_id: format!("agent-{i}"),
+                task_id: format!("bd-{i}"),
+                retry_count: 0,
+            });
+        }
+        assert_eq!(q.depth(), 50);
+
+        for i in 0..50 {
+            let entry = q.pop_front().expect("missing entry");
+            assert_eq!(entry.task_id, format!("bd-{i}"));
+        }
+        assert_eq!(q.depth(), 0);
+    }
 }

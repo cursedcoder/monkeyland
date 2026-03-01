@@ -19,15 +19,17 @@ pub fn run() {
             app.manage(batcher);
             app.manage(coalescing::CoalescingBus::new());
             // Start local CORS proxy for Kilo AI (whose API doesn't allow browser origins)
-            let kilo_port = tauri::async_runtime::block_on(
-                local_proxy::start("https://api.kilo.ai/api/gateway".to_string())
-            ).unwrap_or(0);
+            let kilo_port = tauri::async_runtime::block_on(local_proxy::start(
+                "https://api.kilo.ai/api/gateway".to_string(),
+            ))
+            .unwrap_or(0);
             app.manage(KiloProxyPort(AtomicU16::new(kilo_port)));
             app.manage(pty_pool::PtyPool::new());
             app.manage(browser_pool::BrowserPool::new());
             app.manage(agent_registry::AgentRegistry::new());
             app.manage(orchestration::OrchestrationState::new());
             app.manage(orchestration::MergeQueue::new());
+            app.manage(orchestration::OrchestrationMetrics::new());
 
             // Prune stale git worktrees from any previous session
             if let Some(db) = app.try_state::<storage::MetaDb>() {
@@ -51,13 +53,28 @@ pub fn run() {
                     if orch_state.as_deref().map_or(true, |s| !s.is_running()) {
                         continue;
                     }
-                    if let (Some(meta_db), Some(registry), Some(pool), Some(merge_q)) = (
+                    if let (
+                        Some(meta_db),
+                        Some(registry),
+                        Some(pool),
+                        Some(merge_q),
+                        Some(metrics),
+                    ) = (
                         handle_orch.try_state::<storage::MetaDb>(),
                         handle_orch.try_state::<agent_registry::AgentRegistry>(),
                         handle_orch.try_state::<pty_pool::PtyPool>(),
                         handle_orch.try_state::<orchestration::MergeQueue>(),
+                        handle_orch.try_state::<orchestration::OrchestrationMetrics>(),
                     ) {
-                        let _ = orchestration::tick(&handle_orch, &meta_db, &registry, &pool, &merge_q).await;
+                        let _ = orchestration::tick(
+                            &handle_orch,
+                            &meta_db,
+                            &registry,
+                            &pool,
+                            &merge_q,
+                            &metrics,
+                        )
+                        .await;
                     }
                 }
             });
@@ -128,6 +145,7 @@ pub fn run() {
             crate::commands::terminal_write,
             crate::commands::terminal_resize,
             crate::commands::terminal_exec,
+            crate::commands::validator_cleanup_process_tree,
             crate::commands::write_file,
             crate::commands::read_file,
             crate::commands::browser_ensure_started,
@@ -142,6 +160,9 @@ pub fn run() {
             crate::commands::debug_snapshot,
             crate::commands::set_role_config,
             crate::commands::orch_get_state,
+            crate::commands::orch_get_metrics,
+            crate::commands::get_safety_mode,
+            crate::commands::set_safety_mode,
             crate::commands::orch_start,
             crate::commands::orch_pause,
             crate::commands::agent_quota,

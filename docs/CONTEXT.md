@@ -58,6 +58,10 @@ npm run validate:no-errors
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+### Pre-release gate
+
+Use `docs/LAUNCH_CHECKLIST.md` for a formal go/no-go pass before beta/demo launches.
+
 ### If UI appears stale or cards look inconsistent
 
 1. Restart the app.

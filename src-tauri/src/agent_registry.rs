@@ -276,7 +276,11 @@ impl AgentRegistry {
         if let Some(ref pid) = parent_id {
             if let Some(parent) = inner.agents.get(pid) {
                 // Use the PARENT's config for max_children check, not the child's
-                let parent_config = inner.role_config.get(&parent.role).cloned().unwrap_or_default();
+                let parent_config = inner
+                    .role_config
+                    .get(&parent.role)
+                    .cloned()
+                    .unwrap_or_default();
                 if parent.children_count >= parent_config.max_children {
                     return Err(format!(
                         "Parent {} at max_children {}",
@@ -288,10 +292,7 @@ impl AgentRegistry {
 
         let count_for_role = active_role_counts.get(role).copied().unwrap_or(0);
         if count_for_role >= config.max_count as usize {
-            return Err(format!(
-                "Role {} at max_count {}",
-                role, config.max_count
-            ));
+            return Err(format!("Role {} at max_count {}", role, config.max_count));
         }
 
         let id = ulid::Ulid::new().to_string();
@@ -363,8 +364,10 @@ impl AgentRegistry {
     /// Detailed snapshot for the "Copy debug data" button.
     pub fn debug_snapshot(&self) -> Result<DebugSnapshot, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
-        let agents: Vec<DebugAgentEntry> = inner.agents.values().map(|e| {
-            DebugAgentEntry {
+        let agents: Vec<DebugAgentEntry> = inner
+            .agents
+            .values()
+            .map(|e| DebugAgentEntry {
                 id: e.id.clone(),
                 role: e.role.clone(),
                 state: format!("{:?}", e.state),
@@ -377,21 +380,27 @@ impl AgentRegistry {
                 project_path: e.project_path.clone(),
                 worktree_path: e.worktree_path.clone(),
                 yield_summary: e.yield_diff_summary.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
-        let pending_validations: Vec<DebugValidationEntry> = inner.validation.iter().map(|(dev_id, vs)| {
-            DebugValidationEntry {
+        let pending_validations: Vec<DebugValidationEntry> = inner
+            .validation
+            .iter()
+            .map(|(dev_id, vs)| DebugValidationEntry {
                 developer_agent_id: dev_id.clone(),
                 task_id: vs.task_id.clone(),
                 results_received: vs.results.len(),
-                results: vs.results.iter().map(|r| DebugValidatorResult {
-                    role: r.role.clone(),
-                    pass: r.pass,
-                    reasons: r.reasons.clone(),
-                }).collect(),
-            }
-        }).collect();
+                results: vs
+                    .results
+                    .iter()
+                    .map(|r| DebugValidatorResult {
+                        role: r.role.clone(),
+                        pass: r.pass,
+                        reasons: r.reasons.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
 
         Ok(DebugSnapshot {
             agents,
@@ -428,8 +437,8 @@ impl AgentRegistry {
             Some(c) => c,
             None => return Ok(None),
         };
-        let ttl_remaining = config.ttl_secs as i64 * 1000
-            - entry.spawned_at.elapsed().as_millis() as i64;
+        let ttl_remaining =
+            config.ttl_secs as i64 * 1000 - entry.spawned_at.elapsed().as_millis() as i64;
         let ttl_remaining_ms = ttl_remaining.max(0);
         let tokens_remaining = config.token_quota.saturating_sub(entry.token_used);
         Ok(Some(AgentQuota {
@@ -446,7 +455,11 @@ impl AgentRegistry {
             Some(e) => (e.role.clone(), e.token_used.saturating_add(delta)),
             None => return Ok(()),
         };
-        let quota = inner.role_config.get(&role).map(|c| c.token_quota).unwrap_or(u64::MAX);
+        let quota = inner
+            .role_config
+            .get(&role)
+            .map(|c| c.token_quota)
+            .unwrap_or(u64::MAX);
         // Now mutate.
         if let Some(e) = inner.agents.get_mut(agent_id) {
             e.token_used = new_total;
@@ -457,11 +470,7 @@ impl AgentRegistry {
         Ok(())
     }
 
-    pub fn yield_for_review(
-        &self,
-        agent_id: &str,
-        payload: YieldPayload,
-    ) -> Result<(), String> {
+    pub fn yield_for_review(&self, agent_id: &str, payload: YieldPayload) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         let e = inner
             .agents
@@ -549,14 +558,19 @@ impl AgentRegistry {
 
     /// Start validation for a developer that yielded.
     /// Transitions Yielded → InReview via the state machine.
-    pub fn start_validation(&self, developer_agent_id: &str, task_id: Option<String>) -> Result<(), String> {
+    pub fn start_validation(
+        &self,
+        developer_agent_id: &str,
+        task_id: Option<String>,
+    ) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         if inner.validation.contains_key(developer_agent_id) {
             return Ok(());
         }
         // Transition via state machine.
         if let Some(e) = inner.agents.get_mut(developer_agent_id) {
-            let new_state = agent_state_machine::try_transition(e.state, Event::StartReview, &e.role)?;
+            let new_state =
+                agent_state_machine::try_transition(e.state, Event::StartReview, &e.role)?;
             e.state = new_state;
         }
         inner.validation.insert(
@@ -610,9 +624,8 @@ impl AgentRegistry {
         let mut retry_count = 0u32;
         if let Some(e) = inner.agents.get_mut(developer_agent_id) {
             if all_passed {
-                let new_state = agent_state_machine::try_transition(
-                    e.state, Event::ValidationPass, &e.role,
-                )?;
+                let new_state =
+                    agent_state_machine::try_transition(e.state, Event::ValidationPass, &e.role)?;
                 e.state = new_state;
             } else {
                 e.validation_retry_count += 1;
@@ -635,7 +648,9 @@ impl AgentRegistry {
     }
 
     /// Returns (task_id, git_branch, diff_summary) for agents in Yielded state that have not yet had validation started.
-    pub fn yield_queue(&self) -> Result<Vec<(String, Option<String>, Option<String>, Option<String>)>, String> {
+    pub fn yield_queue(
+        &self,
+    ) -> Result<Vec<(String, Option<String>, Option<String>, Option<String>)>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for (id, entry) in inner.agents.iter() {
@@ -657,7 +672,9 @@ impl AgentRegistry {
 
     /// Returns agents in InReview state that have validation started but no validator results yet.
     /// Used by the watchdog to re-emit validation_requested for stuck agents.
-    pub fn agents_in_review_without_validators(&self) -> Result<Vec<(String, Option<String>)>, String> {
+    pub fn agents_in_review_without_validators(
+        &self,
+    ) -> Result<Vec<(String, Option<String>)>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for (id, entry) in inner.agents.iter() {
@@ -678,10 +695,10 @@ impl AgentRegistry {
     /// Returns true if the agent was unstuck.
     pub fn force_start_validation(&self, agent_id: &str) -> Result<bool, String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        
+
         // Get task_id first to avoid borrow issues
         let task_id = inner.agents.get(agent_id).and_then(|e| e.task_id.clone());
-        
+
         let entry = match inner.agents.get_mut(agent_id) {
             Some(e) => e,
             None => return Ok(false),
@@ -691,10 +708,10 @@ impl AgentRegistry {
         }
         // Force transition
         entry.state = State::InReview;
-        
+
         // Drop the mutable borrow before inserting into validation
         drop(entry);
-        
+
         if !inner.validation.contains_key(agent_id) {
             inner.validation.insert(
                 agent_id.to_string(),
@@ -743,7 +760,8 @@ impl AgentRegistry {
             .agents
             .get_mut(agent_id)
             .ok_or_else(|| format!("Agent {agent_id} not found"))?;
-        let new_state = agent_state_machine::try_transition(entry.state, Event::Complete, &entry.role)?;
+        let new_state =
+            agent_state_machine::try_transition(entry.state, Event::Complete, &entry.role)?;
         entry.state = new_state;
         Ok(())
     }
@@ -787,7 +805,10 @@ impl AgentRegistry {
         };
 
         // If already in a terminal or yielded state, nothing to do
-        if entry.state.is_terminal() || entry.state == State::Yielded || entry.state == State::InReview {
+        if entry.state.is_terminal()
+            || entry.state == State::Yielded
+            || entry.state == State::InReview
+        {
             return Ok("already_done".to_string());
         }
 
@@ -827,7 +848,10 @@ impl AgentRegistry {
             }
             State::Running | State::Spawned => {
                 entry.state = State::Yielded;
-                eprintln!("[registry] force_yield: {} transitioned to Yielded", agent_id);
+                eprintln!(
+                    "[registry] force_yield: {} transitioned to Yielded",
+                    agent_id
+                );
                 Ok(())
             }
         }
@@ -889,17 +913,24 @@ impl AgentRegistry {
         if entry.state != State::InReview {
             return Ok(());
         }
-        let new_state = agent_state_machine::try_transition(entry.state, Event::ValidationBlock, &entry.role)?;
+        let new_state =
+            agent_state_machine::try_transition(entry.state, Event::ValidationBlock, &entry.role)?;
         entry.state = new_state;
         inner.validation.remove(agent_id);
-        eprintln!("[registry] force_block_validation: {} → Blocked (validators timed out)", agent_id);
+        eprintln!(
+            "[registry] force_block_validation: {} → Blocked (validators timed out)",
+            agent_id
+        );
         Ok(())
     }
 
     /// Get the project_path (sandbox directory) for an agent.
     pub fn get_project_path(&self, agent_id: &str) -> Result<Option<String>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
-        Ok(inner.agents.get(agent_id).and_then(|e| e.project_path.clone()))
+        Ok(inner
+            .agents
+            .get(agent_id)
+            .and_then(|e| e.project_path.clone()))
     }
 
     /// Set the worktree path for a developer agent (called after worktree creation).
@@ -916,15 +947,19 @@ impl AgentRegistry {
     /// Get the worktree path for an agent, if set.
     pub fn get_worktree_path(&self, agent_id: &str) -> Result<Option<String>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
-        Ok(inner.agents.get(agent_id).and_then(|e| e.worktree_path.clone()))
+        Ok(inner
+            .agents
+            .get(agent_id)
+            .and_then(|e| e.worktree_path.clone()))
     }
 
     /// Returns the effective sandbox directory: worktree_path if set, otherwise project_path.
     pub fn get_effective_cwd(&self, agent_id: &str) -> Result<Option<String>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
-        Ok(inner.agents.get(agent_id).and_then(|e| {
-            e.worktree_path.clone().or_else(|| e.project_path.clone())
-        }))
+        Ok(inner
+            .agents
+            .get(agent_id)
+            .and_then(|e| e.worktree_path.clone().or_else(|| e.project_path.clone())))
     }
 
     /// Validate that a cwd is valid for terminal commands.
@@ -1076,11 +1111,15 @@ mod tests {
 
         // Path inside worktree should be allowed
         let inside = worktree.join("src/main.rs");
-        assert!(registry.validate_path(&id, inside.to_str().unwrap()).is_ok());
+        assert!(registry
+            .validate_path(&id, inside.to_str().unwrap())
+            .is_ok());
 
         // Path inside original project_path (but outside worktree) should be rejected
         let outside = project.join("src/main.rs");
-        assert!(registry.validate_path(&id, outside.to_str().unwrap()).is_err());
+        assert!(registry
+            .validate_path(&id, outside.to_str().unwrap())
+            .is_err());
     }
 
     #[test]
@@ -1101,9 +1140,20 @@ mod tests {
         // No worktree_path set — should fall back to project_path
 
         let inside = project.join("src/main.rs");
-        assert!(registry.validate_path(&id, inside.to_str().unwrap()).is_ok());
+        assert!(registry
+            .validate_path(&id, inside.to_str().unwrap())
+            .is_ok());
 
         let outside = dir.path().join("other/file.txt");
-        assert!(registry.validate_path(&id, outside.to_str().unwrap()).is_err());
+        assert!(registry
+            .validate_path(&id, outside.to_str().unwrap())
+            .is_err());
+    }
+
+    #[test]
+    fn test_unknown_agent_gate_tool_fails_closed() {
+        let registry = AgentRegistry::new();
+        let result = registry.gate_tool("missing-agent", "terminal_exec");
+        assert!(result.is_err());
     }
 }

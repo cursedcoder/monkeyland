@@ -20,6 +20,7 @@ import { runAgent, type Attachment } from "./agentRunner";
 import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
 import type { ToolName } from "./agentPrompts";
 import { createCostStore, CostStoreContext } from "./costStore";
+import { getValidatorSpawnFailureSubmissions, normalizeValidatorOutput } from "./validatorSafety";
 import "./App.css";
 import type { SessionLayout, CanvasLayoutPayload, CanvasNodeType, AgentRole } from "./types";
 import {
@@ -38,7 +39,7 @@ import {
 } from "./types";
 
 const REPOSITION_ORIGIN = { x: 80, y: 80 };
-const STREAM_PAYLOAD_FLUSH_MS = 80;
+const STREAM_PAYLOAD_FLUSH_MS = 60;
 
 
 
@@ -1253,9 +1254,10 @@ export default function App() {
         validatorId = result.agent_id;
       } catch (e) {
         console.error("Failed to spawn validator:", e);
-        for (const r of ["code_review", "business_logic", "scope"]) {
+        const submissions = getValidatorSpawnFailureSubmissions(developer_agent_id);
+        for (const payload of submissions) {
           invoke("validation_submit", {
-            payload: { developer_agent_id, validator_role: r, pass: false, reasons: ["Validator failed to spawn"] },
+            payload,
           }).catch(() => {});
         }
         return;
@@ -1475,12 +1477,11 @@ export default function App() {
           console.warn("Visual validator screenshot failed:", e);
         } finally {
           if (devServerPid) {
-            invoke<string>("terminal_exec", {
+            invoke("validator_cleanup_process_tree", {
               payload: {
                 session_id: `validator-dev-${validatorId}`,
-                command: `kill ${devServerPid} >/dev/null 2>&1 || true; pkill -TERM -P ${devServerPid} >/dev/null 2>&1 || true`,
+                pid: Number(devServerPid),
                 cwd: resolvedProjectPath,
-                timeout_ms: 5_000,
               },
             }).catch(() => {});
           }
@@ -1565,37 +1566,14 @@ export default function App() {
 
       // ── 7. Parse LLM JSON output → submit validation results ──
       type CheckResult = { status: "pass" | "fail"; reasons: string[]; out_of_scope_files?: string[] };
-      type ParsedResults = {
-        code_review?: CheckResult;
-        business_logic?: CheckResult;
-        scope?: CheckResult;
-        visual?: CheckResult;
-      };
-
-      let parsed: ParsedResults = {};
-      try {
-        const cleaned = accumulatedText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-        parsed = JSON.parse(cleaned) as ParsedResults;
-      } catch {
-        // Fail closed when validator output is malformed.
-        parsed = {
-          code_review: { status: "fail", reasons: ["Could not parse validator output"] },
-          business_logic: { status: "fail", reasons: ["Could not parse validator output"] },
-          scope: { status: "fail", reasons: ["Could not parse validator output"] },
-        };
-      }
-
-      // Normalize missing keys to fail.
+      const parsed = normalizeValidatorOutput(accumulatedText);
       const checkKeys = ["code_review", "business_logic", "scope"] as const;
-      for (const k of checkKeys) {
-        if (!parsed[k]) parsed[k] = { status: "fail", reasons: [`Missing validator result for ${k}`] };
-      }
 
       // Update the card with final results
       const finalResults: Record<string, CheckResult> = {
-        code_review: parsed.code_review!,
-        business_logic: parsed.business_logic!,
-        scope: parsed.scope!,
+        code_review: parsed.code_review,
+        business_logic: parsed.business_logic,
+        scope: parsed.scope,
       };
       if (parsed.visual) finalResults.visual = parsed.visual;
 
@@ -1617,7 +1595,7 @@ export default function App() {
       let lastOutcome: ValidationOutcome = null;
 
       for (const k of checkKeys) {
-        const check = parsed[k]!;
+        const check = parsed[k];
         let pass = check.status === "pass";
         if (k === "scope" && parsed.visual && parsed.visual.status === "fail") {
           pass = false;
@@ -1821,11 +1799,17 @@ export default function App() {
 
     let orchState: unknown = null;
     try { orchState = await invoke("orch_get_state"); } catch { /* */ }
+    let orchMetrics: unknown = null;
+    try { orchMetrics = await invoke("orch_get_metrics"); } catch { /* */ }
+    let safetyMode: boolean | null = null;
+    try { safetyMode = await invoke<boolean>("get_safety_mode"); } catch { /* */ }
 
     const debug = {
       ts: new Date().toISOString(),
       beadsProject,
       orchState,
+      orchMetrics,
+      safetyMode,
       totalCostUsd: costStore.getState().totalCostUsd,
       costLimitUsd: costStore.getState().costLimitUsd,
       nodeCount: snap.length,

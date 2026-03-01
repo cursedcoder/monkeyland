@@ -1,6 +1,10 @@
-use crate::agent_registry::{AgentQuota, AgentRegistry, AgentStatusResponse, DebugSnapshot, ValidationOutcome, YieldPayload};
+use crate::agent_registry::{
+    AgentQuota, AgentRegistry, AgentStatusResponse, DebugSnapshot, ValidationOutcome, YieldPayload,
+};
 use crate::browser_pool::BrowserPool;
-use crate::orchestration::OrchestrationState;
+use crate::orchestration::{
+    MergeQueue, OrchestrationMetrics, OrchestrationMetricsSnapshot, OrchestrationState,
+};
 use crate::pty_pool::PtyPool;
 use crate::storage::{MetaDb, SessionLayoutRow};
 use serde::{Deserialize, Serialize};
@@ -102,7 +106,10 @@ pub async fn save_llm_settings(
 }
 
 #[tauri::command]
-pub async fn get_llm_api_key(meta_db: State<'_, MetaDb>, provider: String) -> Result<Option<String>, String> {
+pub async fn get_llm_api_key(
+    meta_db: State<'_, MetaDb>,
+    provider: String,
+) -> Result<Option<String>, String> {
     let key = format!("llm_api_key_{}", provider);
     meta_db.get_setting(&key)
 }
@@ -460,7 +467,9 @@ pub async fn agent_kill(
 }
 
 #[tauri::command]
-pub async fn agent_status(registry: State<'_, AgentRegistry>) -> Result<AgentStatusResponse, String> {
+pub async fn agent_status(
+    registry: State<'_, AgentRegistry>,
+) -> Result<AgentStatusResponse, String> {
     registry.status()
 }
 
@@ -482,6 +491,24 @@ pub async fn set_role_config(
 #[tauri::command]
 pub async fn orch_get_state(state: State<'_, OrchestrationState>) -> Result<u8, String> {
     Ok(state.get())
+}
+
+#[tauri::command]
+pub async fn orch_get_metrics(
+    metrics: State<'_, OrchestrationMetrics>,
+    merge_queue: State<'_, MergeQueue>,
+) -> Result<OrchestrationMetricsSnapshot, String> {
+    Ok(metrics.snapshot(merge_queue.depth() as u64))
+}
+
+#[tauri::command]
+pub async fn get_safety_mode(meta_db: State<'_, MetaDb>) -> Result<bool, String> {
+    Ok(meta_db.get_setting("safety_mode_enabled")?.as_deref() == Some("1"))
+}
+
+#[tauri::command]
+pub async fn set_safety_mode(meta_db: State<'_, MetaDb>, enabled: bool) -> Result<(), String> {
+    meta_db.set_setting("safety_mode_enabled", if enabled { "1" } else { "0" })
 }
 
 #[tauri::command]
@@ -613,12 +640,21 @@ fn is_process_kill_command(cmd: &str) -> Option<&'static str> {
     if cmd_lower.contains("pkill") || cmd_lower.contains("killall") {
         return Some("NOT NEEDED. All background processes you started (dev servers, watchers, etc.) are automatically cleaned up when your task completes. Do not manage processes yourself. If you are done with your task, call yield_for_review now.");
     }
-    if cmd_lower.contains("kill -9") || cmd_lower.contains("kill -kill") || cmd_lower.contains("kill -sigkill") {
+    if cmd_lower.contains("kill -9")
+        || cmd_lower.contains("kill -kill")
+        || cmd_lower.contains("kill -sigkill")
+    {
         return Some("NOT NEEDED. All background processes are automatically cleaned up when your task completes. Call yield_for_review now if you are done.");
     }
     // `kill <pid>` without -9 (bare kill with a numeric argument)
     let trimmed = cmd_lower.trim();
-    if trimmed.starts_with("kill ") && trimmed[5..].trim().chars().next().map_or(false, |c| c.is_ascii_digit()) {
+    if trimmed.starts_with("kill ")
+        && trimmed[5..]
+            .trim()
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_ascii_digit())
+    {
         return Some("NOT NEEDED. Background processes are automatically cleaned up. Call yield_for_review if done.");
     }
     None
@@ -634,7 +670,9 @@ fn is_rm_rf_dangerous(cmd: &str) -> bool {
         match lower.as_bytes().get(after) {
             // End of command or followed by space/glob/operator → root deletion
             None => return true,
-            Some(b) if matches!(b, b' ' | b'*' | b';' | b'|' | b'&' | b'\n' | b'\t') => return true,
+            Some(b) if matches!(b, b' ' | b'*' | b';' | b'|' | b'&' | b'\n' | b'\t') => {
+                return true
+            }
             _ => {} // Followed by a path char like 't' in /tmp → safe
         }
     }
@@ -652,7 +690,8 @@ fn is_destructive_command(cmd: &str) -> Option<&'static str> {
     if is_rm_rf_dangerous(cmd) {
         return Some("Recursive delete of root or home directory is blocked");
     }
-    if cmd_lower.contains("shutdown") || cmd_lower.contains("reboot") || cmd_lower.contains("halt") {
+    if cmd_lower.contains("shutdown") || cmd_lower.contains("reboot") || cmd_lower.contains("halt")
+    {
         return Some("System shutdown/reboot commands are blocked");
     }
     if cmd_lower.contains("mkfs") || cmd_lower.contains("fdisk") || cmd_lower.contains("parted") {
@@ -665,7 +704,9 @@ fn is_destructive_command(cmd: &str) -> Option<&'static str> {
         return Some("dd writing to devices is blocked");
     }
     if (cmd_lower.contains(">>") || cmd_lower.contains(">"))
-        && (cmd_lower.contains(".bashrc") || cmd_lower.contains(".zshrc") || cmd_lower.contains(".profile"))
+        && (cmd_lower.contains(".bashrc")
+            || cmd_lower.contains(".zshrc")
+            || cmd_lower.contains(".profile"))
     {
         return Some("Modifying shell config files is blocked");
     }
@@ -711,6 +752,10 @@ fn is_likely_interactive_without_flags(cmd: &str) -> Option<&'static str> {
     None
 }
 
+fn is_validator_cleanup_session(session_id: &str) -> bool {
+    session_id.starts_with("validator-dev-")
+}
+
 /// Execute a command via `bash -c` as a subprocess, capturing clean stdout+stderr.
 /// If payload.agent_id is set, gated by the state machine and cwd is validated against sandbox.
 #[tauri::command]
@@ -732,7 +777,7 @@ pub async fn terminal_exec(
     if let Some(reason) = is_likely_interactive_without_flags(&payload.command) {
         return Err(format!("Blocked: {}", reason));
     }
-    
+
     if let Some(ref aid) = payload.agent_id {
         registry.gate_tool(aid, "terminal_exec")?;
         // Validate cwd is within project sandbox (or its parent for scaffolding)
@@ -742,7 +787,10 @@ pub async fn terminal_exec(
             // No cwd specified - use project_path as default or reject
             let project_path = registry.get_project_path(aid)?;
             if project_path.is_some() {
-                return Err("Terminal command requires 'cwd' parameter within project directory".to_string());
+                return Err(
+                    "Terminal command requires 'cwd' parameter within project directory"
+                        .to_string(),
+                );
             }
         }
     }
@@ -750,41 +798,44 @@ pub async fn terminal_exec(
     let cmd = payload.command.clone();
     let cwd = payload.cwd.clone();
 
-    let result = tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || {
-        let mut builder = Command::new("/bin/bash");
-        builder.args(["-c", &cmd]);
-        builder.stdin(std::process::Stdio::null());
-        if let Some(ref dir) = cwd {
-            let p = std::path::Path::new(dir);
-            if p.is_dir() {
-                builder.current_dir(p);
+    let result = tokio::time::timeout(
+        timeout,
+        tokio::task::spawn_blocking(move || {
+            let mut builder = Command::new("/bin/bash");
+            builder.args(["-c", &cmd]);
+            builder.stdin(std::process::Stdio::null());
+            if let Some(ref dir) = cwd {
+                let p = std::path::Path::new(dir);
+                if p.is_dir() {
+                    builder.current_dir(p);
+                }
             }
-        }
-        let output = builder
-            .output()
-            .map_err(|e| format!("Failed to run bash: {e}"))?;
+            let output = builder
+                .output()
+                .map_err(|e| format!("Failed to run bash: {e}"))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
 
-        let mut combined = String::new();
-        if !stdout.is_empty() {
-            combined.push_str(&stdout);
-        }
-        if !stderr.is_empty() {
-            if !combined.is_empty() {
-                combined.push('\n');
+            let mut combined = String::new();
+            if !stdout.is_empty() {
+                combined.push_str(&stdout);
             }
-            combined.push_str(&stderr);
-        }
+            if !stderr.is_empty() {
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str(&stderr);
+            }
 
-        if !output.status.success() {
-            let code = output.status.code().unwrap_or(-1);
-            combined.push_str(&format!("\n[exit code: {code}]"));
-        }
+            if !output.status.success() {
+                let code = output.status.code().unwrap_or(-1);
+                combined.push_str(&format!("\n[exit code: {code}]"));
+            }
 
-        Ok::<String, String>(combined)
-    }))
+            Ok::<String, String>(combined)
+        }),
+    )
     .await;
 
     let output = match result {
@@ -806,6 +857,63 @@ pub async fn terminal_exec(
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidatorCleanupPayload {
+    pub session_id: String,
+    pub pid: u32,
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+/// Internal-only validator cleanup helper.
+/// This bypasses terminal_exec kill-command guidance so validator dev servers can be cleaned up.
+#[tauri::command]
+pub async fn validator_cleanup_process_tree(
+    payload: ValidatorCleanupPayload,
+) -> Result<(), String> {
+    if !is_validator_cleanup_session(&payload.session_id) {
+        return Err(
+            "validator_cleanup_process_tree only accepts validator-dev-* sessions".to_string(),
+        );
+    }
+    if payload.pid == 0 {
+        return Err("Invalid pid for validator cleanup".to_string());
+    }
+
+    let cmd = format!(
+        "kill {} >/dev/null 2>&1 || true; pkill -TERM -P {} >/dev/null 2>&1 || true",
+        payload.pid, payload.pid
+    );
+    let cwd = payload.cwd.clone();
+    let timeout = Duration::from_millis(5_000);
+
+    let result = tokio::time::timeout(
+        timeout,
+        tokio::task::spawn_blocking(move || {
+            let mut builder = Command::new("/bin/bash");
+            builder.args(["-c", &cmd]);
+            builder.stdin(std::process::Stdio::null());
+            if let Some(ref dir) = cwd {
+                let p = std::path::Path::new(dir);
+                if p.is_dir() {
+                    builder.current_dir(p);
+                }
+            }
+            builder
+                .output()
+                .map_err(|e| format!("Failed to run cleanup bash: {e}"))?;
+            Ok::<(), String>(())
+        }),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(inner)) => inner,
+        Ok(Err(e)) => Err(format!("Cleanup task join error: {e}")),
+        Err(_) => Err("Validator cleanup timed out".to_string()),
+    }
+}
+
 #[tauri::command]
 pub async fn read_file(
     registry: State<'_, AgentRegistry>,
@@ -820,14 +928,59 @@ pub async fn read_file(
     if !p.exists() {
         return Err(format!("File not found: {path}"));
     }
-    let content = std::fs::read_to_string(p)
-        .map_err(|e| format!("Failed to read {path}: {e}"))?;
+    let content = std::fs::read_to_string(p).map_err(|e| format!("Failed to read {path}: {e}"))?;
     const MAX_FILE: usize = 32_000;
     if content.len() > MAX_FILE {
         let truncated = &content[..MAX_FILE];
-        Ok(format!("{truncated}\n[...truncated at {MAX_FILE} chars...]"))
+        Ok(format!(
+            "{truncated}\n[...truncated at {MAX_FILE} chars...]"
+        ))
     } else {
         Ok(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use std::time::Duration;
+
+    #[test]
+    fn test_process_kill_commands_are_detected() {
+        assert!(is_process_kill_command("kill 123").is_some());
+        assert!(is_process_kill_command("pkill -f vite").is_some());
+        assert!(is_process_kill_command("killall node").is_some());
+        assert!(is_process_kill_command("echo hello").is_none());
+    }
+
+    #[test]
+    fn test_validator_cleanup_session_guard() {
+        assert!(is_validator_cleanup_session("validator-dev-abc"));
+        assert!(!is_validator_cleanup_session("ctx-gather"));
+        assert!(!is_validator_cleanup_session("exec-123"));
+    }
+
+    #[tokio::test]
+    async fn test_validator_cleanup_terminates_process() {
+        let mut child = Command::new("/bin/bash")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .expect("failed to spawn sleep process");
+        let pid = child.id();
+
+        let payload = ValidatorCleanupPayload {
+            session_id: "validator-dev-test".to_string(),
+            pid,
+            cwd: None,
+        };
+        validator_cleanup_process_tree(payload)
+            .await
+            .expect("cleanup should succeed");
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let status = child.try_wait().expect("try_wait failed");
+        assert!(status.is_some(), "process should be terminated by cleanup");
     }
 }
 
@@ -898,7 +1051,10 @@ pub fn get_kilo_proxy_url(state: tauri::State<'_, crate::KiloProxyPort>) -> Stri
 
 /// Perform a GET request from the Rust side, bypassing WebView CORS restrictions.
 #[tauri::command]
-pub async fn fetch_json(url: String, headers: std::collections::HashMap<String, String>) -> Result<serde_json::Value, String> {
+pub async fn fetch_json(
+    url: String,
+    headers: std::collections::HashMap<String, String>,
+) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
     let mut req = client.get(&url);
     for (key, value) in &headers {
@@ -927,11 +1083,10 @@ pub async fn worktree_create(
     task_id: String,
 ) -> Result<String, String> {
     let path = std::path::Path::new(&project_path).to_path_buf();
-    let wt = tokio::task::spawn_blocking(move || {
-        crate::worktree::create(&path, &agent_id, &task_id)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    let wt =
+        tokio::task::spawn_blocking(move || crate::worktree::create(&path, &agent_id, &task_id))
+            .await
+            .map_err(|e| e.to_string())??;
 
     let wt_str = wt.to_str().unwrap_or_default().to_string();
     // Store on the agent entry if it exists (agent_id from the outer scope is moved,
@@ -943,10 +1098,7 @@ pub async fn worktree_create(
 }
 
 #[tauri::command]
-pub async fn worktree_remove(
-    project_path: String,
-    agent_id: String,
-) -> Result<(), String> {
+pub async fn worktree_remove(project_path: String, agent_id: String) -> Result<(), String> {
     let path = std::path::Path::new(&project_path).to_path_buf();
     tokio::task::spawn_blocking(move || crate::worktree::remove(&path, &agent_id))
         .await
@@ -954,10 +1106,7 @@ pub async fn worktree_remove(
 }
 
 #[tauri::command]
-pub async fn worktree_diff(
-    project_path: String,
-    task_id: String,
-) -> Result<String, String> {
+pub async fn worktree_diff(project_path: String, task_id: String) -> Result<String, String> {
     let path = std::path::Path::new(&project_path).to_path_buf();
     tokio::task::spawn_blocking(move || crate::worktree::diff_against_base(&path, &task_id))
         .await

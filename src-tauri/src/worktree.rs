@@ -66,7 +66,12 @@ pub fn ensure_gitignore_entry(project_path: &Path) -> Result<(), String> {
 /// Check whether a local branch exists.
 fn branch_exists(project_path: &Path, branch: &str) -> bool {
     Command::new("git")
-        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
         .current_dir(project_path)
         .output()
         .map(|o| o.status.success())
@@ -79,11 +84,7 @@ fn branch_exists(project_path: &Path, branch: &str) -> bool {
 /// - Branch: `task/<task_id>` (created from base if new, reused if exists)
 ///
 /// Returns the absolute path to the worktree directory.
-pub fn create(
-    project_path: &Path,
-    agent_id: &str,
-    task_id: &str,
-) -> Result<PathBuf, String> {
+pub fn create(project_path: &Path, agent_id: &str, task_id: &str) -> Result<PathBuf, String> {
     ensure_gitignore_entry(project_path)?;
 
     let wt_dir = worktree_path_for(project_path, agent_id);
@@ -133,12 +134,7 @@ pub fn remove(project_path: &Path, agent_id: &str) -> Result<(), String> {
     }
 
     let out = Command::new("git")
-        .args([
-            "worktree",
-            "remove",
-            "--force",
-            wt_dir.to_str().unwrap(),
-        ])
+        .args(["worktree", "remove", "--force", wt_dir.to_str().unwrap()])
         .current_dir(project_path)
         .output()
         .map_err(|e| format!("git worktree remove: {e}"))?;
@@ -227,7 +223,11 @@ pub fn conflict_diff(project_path: &Path, task_id: &str) -> Result<String, Strin
     let full = String::from_utf8_lossy(&out2.stdout).to_string();
     // Truncate to avoid massive payloads
     let truncated = if full.len() > 8000 {
-        format!("{}...\n[truncated, {} bytes total]", &full[..8000], full.len())
+        format!(
+            "{}...\n[truncated, {} bytes total]",
+            &full[..8000],
+            full.len()
+        )
     } else {
         full
     };
@@ -239,10 +239,7 @@ pub fn conflict_diff(project_path: &Path, task_id: &str) -> Result<String, Strin
 ///
 /// Must be called from the main repo directory (not from inside a worktree).
 /// Returns `Clean` on success or `Conflict` with details if files collide.
-pub fn merge_to_base(
-    project_path: &Path,
-    task_id: &str,
-) -> Result<MergeOutcome, String> {
+pub fn merge_to_base(project_path: &Path, task_id: &str) -> Result<MergeOutcome, String> {
     let branch_name = format!("task/{task_id}");
     let base = detect_base_branch(project_path);
 
@@ -286,10 +283,7 @@ pub fn merge_to_base(
 }
 
 /// Get a diff of only this task branch's changes against the base branch.
-pub fn diff_against_base(
-    project_path: &Path,
-    task_id: &str,
-) -> Result<String, String> {
+pub fn diff_against_base(project_path: &Path, task_id: &str) -> Result<String, String> {
     let branch_name = format!("task/{task_id}");
     let base = detect_base_branch(project_path);
 
@@ -426,7 +420,10 @@ mod tests {
         let wt = create(dir.path(), "agent-1", "bd-42").unwrap();
 
         assert!(wt.exists(), "worktree directory should exist");
-        assert!(wt.join(".git").exists(), "worktree should be a git checkout");
+        assert!(
+            wt.join(".git").exists(),
+            "worktree should be a git checkout"
+        );
 
         // Branch should exist
         assert!(branch_exists(dir.path(), "task/bd-42"));
@@ -596,7 +593,10 @@ mod tests {
 
         let diff = diff_against_base(dir.path(), "bd-80").unwrap();
         assert!(diff.contains("new_file.rs"), "diff should mention new file");
-        assert!(diff.contains("fn main()"), "diff should contain file content");
+        assert!(
+            diff.contains("fn main()"),
+            "diff should contain file content"
+        );
     }
 
     #[test]

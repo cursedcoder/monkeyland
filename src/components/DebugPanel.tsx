@@ -18,6 +18,13 @@ interface AgentStatusResponse {
   queue_depth: number;
 }
 
+interface OrchestrationMetricsResponse {
+  merge_queue_depth: number;
+  merge_retry_count: number;
+  validation_timeout_blocks: number;
+  safety_mode_enabled: boolean;
+}
+
 const CONFIGURABLE_ROLES = [
   { key: "workforce_manager", label: "Workforce Manager" },
   { key: "project_manager", label: "Project Manager" },
@@ -65,6 +72,8 @@ export function DebugPanel({ onCopyDebug, debugCopied, onStopAll }: DebugPanelPr
   const [roleLimits, setRoleLimits] = useState<Record<string, string>>(loadPersistedRoleLimits);
   const [status, setStatus] = useState<AgentStatusResponse | null>(null);
   const [orchState, setOrchState] = useState<OrchState>("idle");
+  const [orchMetrics, setOrchMetrics] = useState<OrchestrationMetricsResponse | null>(null);
+  const [safetyModeEnabled, setSafetyModeEnabled] = useState(false);
 
   // When panel opens, sync cost limit input from persisted store if empty.
   useEffect(() => {
@@ -89,13 +98,17 @@ export function DebugPanel({ onCopyDebug, debugCopied, onStopAll }: DebugPanelPr
     let cancelled = false;
     const poll = async () => {
       try {
-        const [s, rawOrch] = await Promise.all([
+        const [s, rawOrch, metrics, safety] = await Promise.all([
           invoke<AgentStatusResponse>("agent_status"),
           invoke<number>("orch_get_state"),
+          invoke<OrchestrationMetricsResponse>("orch_get_metrics"),
+          invoke<boolean>("get_safety_mode"),
         ]);
         if (!cancelled) {
           setStatus(s);
           setOrchState(orchStateFromRaw(rawOrch));
+          setOrchMetrics(metrics);
+          setSafetyModeEnabled(safety);
         }
       } catch { /* */ }
     };
@@ -151,6 +164,17 @@ export function DebugPanel({ onCopyDebug, debugCopied, onStopAll }: DebugPanelPr
     setOrchState("paused");
     onStopAll();
   }, [onStopAll]);
+
+  const handleSafetyToggle = useCallback(async () => {
+    const next = !safetyModeEnabled;
+    setSafetyModeEnabled(next);
+    try {
+      await invoke("set_safety_mode", { enabled: next });
+    } catch (e) {
+      console.warn("set_safety_mode failed:", e);
+      setSafetyModeEnabled(!next);
+    }
+  }, [safetyModeEnabled]);
 
   const costLimitReached = costLimitUsd != null && totalCostUsd >= costLimitUsd;
 
@@ -243,6 +267,20 @@ export function DebugPanel({ onCopyDebug, debugCopied, onStopAll }: DebugPanelPr
                   </button>
                 </>
               )}
+            </div>
+            <div className="debug-panel__hint">
+              Merge queue: {orchMetrics?.merge_queue_depth ?? 0} · retries: {orchMetrics?.merge_retry_count ?? 0} · timeout blocks: {orchMetrics?.validation_timeout_blocks ?? 0}
+            </div>
+            <div className="debug-panel__orch-row" style={{ marginTop: 8 }}>
+              <span className="debug-panel__orch-state">Safety mode: {safetyModeEnabled ? "on" : "off"}</span>
+              <button
+                type="button"
+                className="debug-panel__btn debug-panel__btn--pause"
+                onClick={handleSafetyToggle}
+                title="Conservative runtime mode with lower orchestration throughput"
+              >
+                {safetyModeEnabled ? "Disable" : "Enable"}
+              </button>
             </div>
           </section>
 

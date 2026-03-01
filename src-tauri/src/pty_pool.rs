@@ -2,7 +2,7 @@
 //! Rule 1: PTYs live in Rust (portable-pty), never in Node.
 //! Rule 5: 64 KB ring buffer per session; coalescing bus drains all buffers every 16 ms.
 
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
