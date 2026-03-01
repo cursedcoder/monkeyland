@@ -190,6 +190,8 @@ pub async fn tick(
     }
 
     // 4. Process yield queue: agents in Yielded state get validation started and frontend is notified
+    // Note: yield_queue only returns agents that haven't had start_validation called yet,
+    // so this naturally runs only once per yielded developer.
     let yield_queue = registry.yield_queue()?;
     for (developer_agent_id, task_id, git_branch, diff_summary) in yield_queue {
         eprintln!("[orch] Processing yield queue: developer {} in Yielded state", developer_agent_id);
@@ -214,24 +216,9 @@ pub async fn tick(
             eprintln!("[orch] FAILED to emit validation_requested: {}", e);
         }
     }
-
-    // 4b. WATCHDOG: Re-emit validation_requested for agents stuck in InReview without validators
-    // This handles cases where the frontend missed the event or validators failed to spawn
-    let stuck_in_review = registry.agents_in_review_without_validators()?;
-    for (developer_agent_id, task_id) in stuck_in_review {
-        eprintln!("[orch] WATCHDOG: Re-emitting validation_requested for stuck developer {}", developer_agent_id);
-        if let Err(e) = app_handle.emit(
-            "validation_requested",
-            ValidationRequestedPayload {
-                developer_agent_id: developer_agent_id.clone(),
-                task_id,
-                git_branch: None,
-                diff_summary: Some("Watchdog retry - validators may have failed to spawn".to_string()),
-            },
-        ) {
-            eprintln!("[orch] WATCHDOG emit FAILED: {}", e);
-        }
-    }
+    // NOTE: Removed watchdog re-emit - it was causing infinite validator spawns.
+    // The yield_queue mechanism already handles this correctly by only returning
+    // agents without a validation entry, and start_validation creates that entry.
 
     // 5. Mark completed tasks in Beads (agents in Done state with a task_id)
     let done_agents = registry.done_agents_with_tasks()?;
