@@ -176,8 +176,8 @@ and can fix the issues (up to 3 attempts).
 
 ## CRITICAL RULES
 
-- **NEVER** kill or stop background processes (no \`pkill\`, \`killall\`, \`kill\`, \`lsof\`). Leave dev servers running.
-- When you are done implementing and verifying, call \`yield_for_review\` IMMEDIATELY. Do not try to clean up.
+- **Process cleanup is automatic.** All background processes you start (dev servers, watchers, etc.) are cleaned up by the system when your task completes. You never need to stop them yourself.
+- When you are done implementing and verifying, call \`yield_for_review\` IMMEDIATELY. Do not try to clean up files, processes, or anything else.
 - Your LAST action must ALWAYS be calling \`yield_for_review\`. No exceptions.
 `;
 

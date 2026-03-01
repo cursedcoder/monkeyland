@@ -594,47 +594,49 @@ pub async fn write_file(
     std::fs::write(p, content.as_bytes()).map_err(|e| format!("write failed: {e}"))
 }
 
-/// Check if a command contains dangerous patterns that could harm the system.
-fn is_dangerous_command(cmd: &str) -> Option<&'static str> {
+/// Process-killing commands get a helpful guidance response (returned as Ok, not Err).
+/// This makes the LLM treat it as a tool result and move on, rather than retrying.
+fn is_process_kill_command(cmd: &str) -> Option<&'static str> {
     let cmd_lower = cmd.to_lowercase();
-    
-    // Process killing commands (can kill dev server, system processes)
     if cmd_lower.contains("pkill") || cmd_lower.contains("killall") {
-        return Some("pkill/killall commands are blocked. Do NOT clean up processes. If you are done, call yield_for_review NOW");
+        return Some("NOT NEEDED. All background processes you started (dev servers, watchers, etc.) are automatically cleaned up when your task completes. Do not manage processes yourself. If you are done with your task, call yield_for_review now.");
     }
     if cmd_lower.contains("kill -9") || cmd_lower.contains("kill -kill") || cmd_lower.contains("kill -sigkill") {
-        return Some("kill commands are blocked. Do NOT clean up processes. If you are done, call yield_for_review NOW");
+        return Some("NOT NEEDED. All background processes are automatically cleaned up when your task completes. Call yield_for_review now if you are done.");
     }
-    
-    // Destructive file operations outside project
+    // `kill <pid>` without -9 (bare kill with a numeric argument)
+    let trimmed = cmd_lower.trim();
+    if trimmed.starts_with("kill ") && trimmed[5..].trim().chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        return Some("NOT NEEDED. Background processes are automatically cleaned up. Call yield_for_review if done.");
+    }
+    None
+}
+
+/// Truly destructive commands that must be hard-blocked (returned as Err).
+fn is_destructive_command(cmd: &str) -> Option<&'static str> {
+    let cmd_lower = cmd.to_lowercase();
+
     if cmd_lower.contains("rm -rf /") || cmd_lower.contains("rm -rf ~") || cmd_lower.contains("rm -rf $home") {
         return Some("Recursive delete of root or home directory is blocked");
     }
-    
-    // System commands
     if cmd_lower.contains("shutdown") || cmd_lower.contains("reboot") || cmd_lower.contains("halt") {
         return Some("System shutdown/reboot commands are blocked");
     }
     if cmd_lower.contains("mkfs") || cmd_lower.contains("fdisk") || cmd_lower.contains("parted") {
         return Some("Disk formatting commands are blocked");
     }
-    
-    // Fork bomb pattern
     if cmd.contains(":(){ :|:&") || cmd.contains(":(){") {
         return Some("Fork bomb pattern detected and blocked");
     }
-    
-    // Dangerous dd operations
     if cmd_lower.contains("dd ") && (cmd_lower.contains("of=/dev") || cmd_lower.contains("of=/")) {
         return Some("dd writing to devices/root is blocked");
     }
-    
-    // Prevent modifying shell configs outside project
-    if (cmd_lower.contains(">>") || cmd_lower.contains(">")) 
-        && (cmd_lower.contains(".bashrc") || cmd_lower.contains(".zshrc") || cmd_lower.contains(".profile")) {
+    if (cmd_lower.contains(">>") || cmd_lower.contains(">"))
+        && (cmd_lower.contains(".bashrc") || cmd_lower.contains(".zshrc") || cmd_lower.contains(".profile"))
+    {
         return Some("Modifying shell config files is blocked");
     }
-    
+
     None
 }
 
@@ -646,8 +648,13 @@ pub async fn terminal_exec(
     registry: State<'_, AgentRegistry>,
     payload: TerminalExecPayload,
 ) -> Result<String, String> {
-    // Check for dangerous commands (always, even without agent_id)
-    if let Some(reason) = is_dangerous_command(&payload.command) {
+    // Process-kill commands → return helpful guidance as a normal tool result (not an error).
+    // LLMs handle tool results much better than errors (errors trigger retries).
+    if let Some(guidance) = is_process_kill_command(&payload.command) {
+        return Ok(guidance.to_string());
+    }
+    // Truly destructive commands → hard block with error.
+    if let Some(reason) = is_destructive_command(&payload.command) {
         return Err(format!("Blocked: {}", reason));
     }
     
