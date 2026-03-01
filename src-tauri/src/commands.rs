@@ -594,6 +594,50 @@ pub async fn write_file(
     std::fs::write(p, content.as_bytes()).map_err(|e| format!("write failed: {e}"))
 }
 
+/// Check if a command contains dangerous patterns that could harm the system.
+fn is_dangerous_command(cmd: &str) -> Option<&'static str> {
+    let cmd_lower = cmd.to_lowercase();
+    
+    // Process killing commands (can kill dev server, system processes)
+    if cmd_lower.contains("pkill") || cmd_lower.contains("killall") {
+        return Some("pkill/killall commands are blocked - they can kill system processes");
+    }
+    if cmd_lower.contains("kill -9") || cmd_lower.contains("kill -kill") || cmd_lower.contains("kill -sigkill") {
+        return Some("kill -9 is blocked - use gentler termination signals");
+    }
+    
+    // Destructive file operations outside project
+    if cmd_lower.contains("rm -rf /") || cmd_lower.contains("rm -rf ~") || cmd_lower.contains("rm -rf $home") {
+        return Some("Recursive delete of root or home directory is blocked");
+    }
+    
+    // System commands
+    if cmd_lower.contains("shutdown") || cmd_lower.contains("reboot") || cmd_lower.contains("halt") {
+        return Some("System shutdown/reboot commands are blocked");
+    }
+    if cmd_lower.contains("mkfs") || cmd_lower.contains("fdisk") || cmd_lower.contains("parted") {
+        return Some("Disk formatting commands are blocked");
+    }
+    
+    // Fork bomb pattern
+    if cmd.contains(":(){ :|:&") || cmd.contains(":(){") {
+        return Some("Fork bomb pattern detected and blocked");
+    }
+    
+    // Dangerous dd operations
+    if cmd_lower.contains("dd ") && (cmd_lower.contains("of=/dev") || cmd_lower.contains("of=/")) {
+        return Some("dd writing to devices/root is blocked");
+    }
+    
+    // Prevent modifying shell configs outside project
+    if (cmd_lower.contains(">>") || cmd_lower.contains(">")) 
+        && (cmd_lower.contains(".bashrc") || cmd_lower.contains(".zshrc") || cmd_lower.contains(".profile")) {
+        return Some("Modifying shell config files is blocked");
+    }
+    
+    None
+}
+
 /// Execute a command via `bash -c` as a subprocess, capturing clean stdout+stderr.
 /// If payload.agent_id is set, gated by the state machine and cwd is validated against sandbox.
 #[tauri::command]
@@ -602,6 +646,11 @@ pub async fn terminal_exec(
     registry: State<'_, AgentRegistry>,
     payload: TerminalExecPayload,
 ) -> Result<String, String> {
+    // Check for dangerous commands (always, even without agent_id)
+    if let Some(reason) = is_dangerous_command(&payload.command) {
+        return Err(format!("Blocked: {}", reason));
+    }
+    
     if let Some(ref aid) = payload.agent_id {
         registry.gate_tool(aid, "terminal_exec")?;
         // Validate cwd is within project sandbox (or its parent for scaffolding)
