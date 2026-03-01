@@ -156,8 +156,12 @@ export function LlmSetupWizard({
       });
       setTestStatus("ok");
     } catch (e) {
+      console.error("LLM connection test failed:", e);
       setTestStatus("error");
-      setTestError(e instanceof Error ? e.message : String(e));
+      let msg = e instanceof Error ? e.message : String(e);
+      const cause = (e as any)?.cause;
+      if (cause) msg += `\nCause: ${cause instanceof Error ? cause.message : String(cause)}`;
+      setTestError(msg);
     }
   }, [provider, selectedModel, modelId, apiKey]);
 

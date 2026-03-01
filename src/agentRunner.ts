@@ -102,30 +102,29 @@ export async function getAiProviderModel(providerId: string, apiKey: string, mod
       return createOpenAI({ apiKey })(modelId);
     case "kilo": {
       const proxyUrl = await getKiloProxyUrl();
-      const baseURL = proxyUrl ? `${proxyUrl}/v1` : "https://api.kilo.ai/api/gateway/v1";
-      return createOpenAI({ baseURL, apiKey })(modelId);
+      const baseURL = proxyUrl ? proxyUrl : "https://api.kilo.ai/api/gateway";
+      return createOpenAI({ baseURL, apiKey }).chat(modelId);
     }
     case "openrouter":
-      return createOpenAI({ baseURL: "https://openrouter.ai/api/v1", apiKey })(modelId);
+      return createOpenAI({ baseURL: "https://openrouter.ai/api/v1", apiKey }).chat(modelId);
     case "deepseek":
-      return createOpenAI({ baseURL: "https://api.deepseek.com/v1", apiKey })(modelId);
+      return createOpenAI({ baseURL: "https://api.deepseek.com/v1", apiKey }).chat(modelId);
     case "groq":
-      return createOpenAI({ baseURL: "https://api.groq.com/openai/v1", apiKey })(modelId);
+      return createOpenAI({ baseURL: "https://api.groq.com/openai/v1", apiKey }).chat(modelId);
     case "lmstudio":
-      return createOpenAI({ baseURL: "http://localhost:1234/v1", apiKey: apiKey || "lmstudio" })(modelId);
+      return createOpenAI({ baseURL: "http://localhost:1234/v1", apiKey: apiKey || "lmstudio" }).chat(modelId);
     case "ollama":
-      return createOpenAI({ baseURL: "http://localhost:11434/v1", apiKey: apiKey || "ollama" })(modelId);
+      return createOpenAI({ baseURL: "http://localhost:11434/v1", apiKey: apiKey || "ollama" }).chat(modelId);
     case "cerebras":
-      return createOpenAI({ baseURL: "https://api.cerebras.ai/v1", apiKey })(modelId);
+      return createOpenAI({ baseURL: "https://api.cerebras.ai/v1", apiKey }).chat(modelId);
     case "mistralai":
-      return createOpenAI({ baseURL: "https://api.mistral.ai/v1", apiKey })(modelId);
+      return createOpenAI({ baseURL: "https://api.mistral.ai/v1", apiKey }).chat(modelId);
     case "xai":
-      return createOpenAI({ baseURL: "https://api.x.ai/v1", apiKey })(modelId);
+      return createOpenAI({ baseURL: "https://api.x.ai/v1", apiKey }).chat(modelId);
     case "azure":
-      // Azure requires specific setup, fallback to OpenAI for now or use createAzure if installed
-      return createOpenAI({ apiKey })(modelId);
+      return createOpenAI({ apiKey }).chat(modelId);
     default:
-      return createOpenAI({ apiKey })(modelId);
+      return createOpenAI({ apiKey }).chat(modelId);
   }
 }
 
