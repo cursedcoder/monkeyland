@@ -714,7 +714,7 @@ impl AgentRegistry {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = match inner.agents.get(agent_id) {
             Some(e) => e,
-            None => return Ok(()),
+            None => return Err(format!("Unknown agent ID: {agent_id}")),
         };
         let tool = Tool::from_command_name(command_name)
             .ok_or_else(|| format!("Unknown tool command: {command_name}"))?;
@@ -878,9 +878,9 @@ impl AgentRegistry {
         Ok(out)
     }
 
-    /// Force-complete validation for a stuck developer by transitioning InReview → Done.
+    /// Force-block validation for a stuck developer by transitioning InReview → Blocked.
     /// Used when validators never submitted results.
-    pub fn force_complete_validation(&self, agent_id: &str) -> Result<(), String> {
+    pub fn force_block_validation(&self, agent_id: &str) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = inner
             .agents
@@ -889,10 +889,10 @@ impl AgentRegistry {
         if entry.state != State::InReview {
             return Ok(());
         }
-        let new_state = agent_state_machine::try_transition(entry.state, Event::ValidationPass, &entry.role)?;
+        let new_state = agent_state_machine::try_transition(entry.state, Event::ValidationBlock, &entry.role)?;
         entry.state = new_state;
         inner.validation.remove(agent_id);
-        eprintln!("[registry] force_complete_validation: {} → Done (validators timed out)", agent_id);
+        eprintln!("[registry] force_block_validation: {} → Blocked (validators timed out)", agent_id);
         Ok(())
     }
 
@@ -934,7 +934,7 @@ impl AgentRegistry {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = match inner.agents.get(agent_id) {
             Some(e) => e,
-            None => return Ok(()),
+            None => return Err(format!("Unknown agent ID: {agent_id}")),
         };
 
         let project_path = match entry.worktree_path.as_ref().or(entry.project_path.as_ref()) {
@@ -976,7 +976,7 @@ impl AgentRegistry {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = match inner.agents.get(agent_id) {
             Some(e) => e,
-            None => return Ok(()), // Unknown agent, let it through (shouldn't happen)
+            None => return Err(format!("Unknown agent ID: {agent_id}")),
         };
 
         let project_path = match entry.worktree_path.as_ref().or(entry.project_path.as_ref()) {

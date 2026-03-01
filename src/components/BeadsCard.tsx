@@ -115,15 +115,9 @@ export function BeadsCard({
 
   const handleRefresh = useCallback(async () => {
     if (!status?.projectPath) {
-      // #region agent log
-      fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:handleRefresh',message:'refresh skipped no projectPath',data:{sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
       return;
     }
     setRefreshing(true);
-    // #region agent log
-    fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:handleRefresh',message:'refresh start',data:{sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     try {
       const raw = await invoke<string>("beads_run", {
         projectPath: status.projectPath,
@@ -133,18 +127,12 @@ export function BeadsCard({
       const isArray = Array.isArray(parsed);
       const nextTasks = isArray ? parsed : [];
       setTasks(nextTasks);
-      // #region agent log
-      fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:handleRefresh',message:'refresh result',data:{rawLen:raw?.length,parsedIsArray:isArray,setToLength:nextTasks.length,sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
     } catch {
-      // #region agent log
-      fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:handleRefresh',message:'refresh failed',data:{sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
       // bd not available or no tasks yet
     } finally {
       setRefreshing(false);
     }
-  }, [status?.projectPath, layout.session_id]);
+  }, [status?.projectPath]);
 
   const handleOpenTask = useCallback(
     async (task: BeadsTask) => {
@@ -218,27 +206,18 @@ export function BeadsCard({
   useEffect(() => {
     if (status?.tasks) {
       setTasks(status.tasks);
-      // #region agent log
-      fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:effect',message:'effect sync status.tasks',data:{len:status.tasks.length,sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
     }
-  }, [status?.tasks, layout.session_id]);
+  }, [status?.tasks]);
 
   useEffect(() => {
     if (!status?.projectPath || layout.collapsed) {
-      // #region agent log
-      fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:interval',message:'interval not scheduled',data:{hasProjectPath:!!status?.projectPath,collapsed:layout.collapsed,sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
       return;
     }
-    // #region agent log
-    fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:interval',message:'interval scheduled',data:{sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     const interval = setInterval(() => {
       handleRefresh();
     }, 10000);
     return () => clearInterval(interval);
-  }, [status?.projectPath, layout.collapsed, handleRefresh, layout.session_id]);
+  }, [status?.projectPath, layout.collapsed, handleRefresh]);
 
   const [epicProgress, setEpicProgress] = useState<{ total: number; done: number; in_progress: number; open: number } | null>(null);
 
@@ -504,9 +483,6 @@ export function BeadsCard({
                 )}
                 {tasks.length === 0 ? (
                   <>
-                    {/* #region agent log */}
-                    {(() => { fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:render',message:'showing no tasks',data:{hasStatus:!!status,statusTasksLen:status?.tasks?.length??'undef',sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{}); return null; })()}
-                    {/* #endregion */}
                     <p className="beads-card-empty">No tasks yet</p>
                   </>
                 ) : (

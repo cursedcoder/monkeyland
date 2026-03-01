@@ -250,23 +250,6 @@ export default function App() {
           payload: l.payload ?? "{}",
         }));
 
-        const nodeType = (l: (typeof raw)[0]) =>
-          String(l.node_type ?? "agent").toLowerCase();
-        const allAgents =
-          raw.length >= 19 &&
-          raw.length <= 21 &&
-          raw.every((l) => nodeType(l) === "agent");
-        if (allAgents) {
-          setLayouts([]);
-          loaded.current = true;
-          try {
-            await invoke("save_canvas_layout", { payload: { layouts: [] } });
-          } catch (_) {
-            /* ignore */
-          }
-          return;
-        }
-
         const withPromptText = raw.map((l) => {
           let promptText = "";
           if (l.node_type === "prompt" && l.payload) {
@@ -1230,7 +1213,7 @@ export default function App() {
         console.error("Failed to spawn validator:", e);
         for (const r of ["code_review", "business_logic", "scope"]) {
           invoke("validation_submit", {
-            payload: { developer_agent_id, validator_role: r, pass: true, reasons: ["Validator failed to spawn"] },
+            payload: { developer_agent_id, validator_role: r, pass: false, reasons: ["Validator failed to spawn"] },
           }).catch(() => {});
         }
         return;
@@ -1537,18 +1520,18 @@ export default function App() {
         const cleaned = accumulatedText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
         parsed = JSON.parse(cleaned) as ParsedResults;
       } catch {
-        // If we can't parse, auto-pass everything
+        // Fail closed when validator output is malformed.
         parsed = {
-          code_review: { status: "pass", reasons: ["Could not parse validator output"] },
-          business_logic: { status: "pass", reasons: ["Could not parse validator output"] },
-          scope: { status: "pass", reasons: [] },
+          code_review: { status: "fail", reasons: ["Could not parse validator output"] },
+          business_logic: { status: "fail", reasons: ["Could not parse validator output"] },
+          scope: { status: "fail", reasons: ["Could not parse validator output"] },
         };
       }
 
-      // Normalize missing keys to pass
+      // Normalize missing keys to fail.
       const checkKeys = ["code_review", "business_logic", "scope"] as const;
       for (const k of checkKeys) {
-        if (!parsed[k]) parsed[k] = { status: "pass", reasons: [] };
+        if (!parsed[k]) parsed[k] = { status: "fail", reasons: [`Missing validator result for ${k}`] };
       }
 
       // Update the card with final results

@@ -328,12 +328,12 @@ pub async fn tick(
         let _ = registry.force_yield(&agent_id);
     }
 
-    // 4c. SAFETY NET: Force-complete developers stuck in InReview for > 5 minutes.
+    // 4c. SAFETY NET: Force-block developers stuck in InReview for > 5 minutes.
     // Validators may have failed to spawn/complete without submitting results.
     let stuck_review = registry.stuck_in_review_developers(300)?;
     for agent_id in stuck_review {
-        eprintln!("[orch] SAFETY NET: Force-completing developer {} stuck in InReview for >5min", agent_id);
-        let _ = registry.force_complete_validation(&agent_id);
+        eprintln!("[orch] SAFETY NET: Force-blocking developer {} stuck in InReview for >5min", agent_id);
+        let _ = registry.force_block_validation(&agent_id);
     }
 
     // 5. Enqueue done agents for merge (or kill non-merging roles immediately).

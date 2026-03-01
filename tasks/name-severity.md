@@ -2,17 +2,17 @@
 
 ## Critical
 
-- [ ] **Fail closed on validator spawn failure**  
+- [x] **Fail closed on validator spawn failure**  
   Replace auto-pass fallback when validator cannot spawn with `blocked` or `manual_review_required`.
   - Files: `src/App.tsx`, `src-tauri/src/agent_registry.rs`
   - Done when: no validator failure path can transition a developer to pass/done automatically.
 
-- [ ] **Fail closed on invalid validator output**  
+- [x] **Fail closed on invalid validator output**  
   Remove "parse failure => pass" behavior; require explicit valid checks or mark as failed/retry/manual review.
   - Files: `src/App.tsx`
   - Done when: malformed validator JSON never maps to pass.
 
-- [ ] **Remove force-complete pass from InReview timeout**  
+- [x] **Remove force-complete pass from InReview timeout**  
   Replace `InReview -> ValidationPass` timeout fallback with safe terminal state (`blocked`/`stopped`) plus user-visible reason.
   - Files: `src-tauri/src/agent_registry.rs`, `src-tauri/src/orchestration.rs`
   - Done when: watchdog timeout cannot mark incomplete validation as done.
@@ -20,22 +20,22 @@
 
 ## High
 
-- [ ] **Fix agentRunner error/done race**  
+- [x] **Fix agentRunner error/done race**  
   Ensure stream errors do not also call `onDone`; enforce single terminal callback path.
   - Files: `src/agentRunner.ts`
   - Done when: one run cannot emit both error and done outcomes.
 
-- [ ] **Harden tool/path gating to fail closed for unknown agents**  
+- [x] **Harden tool/path gating to fail closed for unknown agents**  
   Reject unknown `agent_id` in `gate_tool`, `validate_path`, and terminal cwd validation.
   - Files: `src-tauri/src/agent_registry.rs`
   - Done when: unknown agent IDs always return explicit errors.
 
-- [ ] **Delete render/effect debug ingestion calls in BeadsCard**  
+- [x] **Delete render/effect debug ingestion calls in BeadsCard**  
   Remove localhost debug `fetch(...)` side effects from UI runtime and render path.
   - Files: `src/components/BeadsCard.tsx`
   - Done when: no runtime network side effects remain in render or refresh effects.
 
-- [ ] **Remove destructive layout-load heuristic**  
+- [x] **Remove destructive layout-load heuristic**  
   Replace the `19-21 all-agent cards => wipe layout` logic with explicit migration/version handling.
   - Files: `src/App.tsx`
   - Done when: valid canvases are never auto-cleared by count/type heuristics.

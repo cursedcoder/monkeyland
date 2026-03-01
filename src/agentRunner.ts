@@ -230,6 +230,23 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
   const { systemPrompt, userMessage, plugins, signal, callbacks, attachment } = params;
 
   let fullText = "";
+  let terminalState: "none" | "done" | "error" | "stopped" = "none";
+  const emitDone = () => {
+    if (terminalState !== "none") return;
+    terminalState = "done";
+    callbacks.onDone(fullText);
+  };
+  const emitError = (msg: string) => {
+    if (terminalState !== "none") return;
+    terminalState = "error";
+    callbacks.onError(msg);
+  };
+  const emitStopped = () => {
+    if (terminalState !== "none") return;
+    terminalState = "stopped";
+    callbacks.onStopped(fullText);
+  };
+
   const loaded = await loadLlmModel();
   callbacks.onModelLoaded?.({
     modelName: loaded.modelName,
@@ -303,17 +320,18 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
           status: "success"
         });
       } else if (chunk.type === "error") {
-        callbacks.onError(String(chunk.error));
+        emitError(String(chunk.error));
+        break;
       }
     }
 
-    callbacks.onDone(fullText);
+    emitDone();
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
-      callbacks.onStopped(fullText);
+      emitStopped();
     } else {
       const msg = e instanceof Error ? e.message : String(e);
-      callbacks.onError(msg);
+      emitError(msg);
     }
   }
 }
