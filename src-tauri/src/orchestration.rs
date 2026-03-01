@@ -192,8 +192,17 @@ pub async fn tick(
     // 4. Process yield queue: agents in Yielded state get validation started and frontend is notified
     let yield_queue = registry.yield_queue()?;
     for (developer_agent_id, task_id, git_branch, diff_summary) in yield_queue {
-        let _ = registry.start_validation(&developer_agent_id, task_id.clone());
-        let _ = app_handle.emit(
+        eprintln!("[orch] Processing yield queue: developer {} in Yielded state", developer_agent_id);
+        match registry.start_validation(&developer_agent_id, task_id.clone()) {
+            Ok(_) => eprintln!("[orch] start_validation succeeded for {}", developer_agent_id),
+            Err(e) => {
+                eprintln!("[orch] start_validation FAILED for {}: {}", developer_agent_id, e);
+                // Force it anyway
+                let _ = registry.force_start_validation(&developer_agent_id);
+            }
+        }
+        eprintln!("[orch] Emitting validation_requested for developer {}", developer_agent_id);
+        if let Err(e) = app_handle.emit(
             "validation_requested",
             ValidationRequestedPayload {
                 developer_agent_id: developer_agent_id.clone(),
@@ -201,7 +210,27 @@ pub async fn tick(
                 git_branch,
                 diff_summary,
             },
-        );
+        ) {
+            eprintln!("[orch] FAILED to emit validation_requested: {}", e);
+        }
+    }
+
+    // 4b. WATCHDOG: Re-emit validation_requested for agents stuck in InReview without validators
+    // This handles cases where the frontend missed the event or validators failed to spawn
+    let stuck_in_review = registry.agents_in_review_without_validators()?;
+    for (developer_agent_id, task_id) in stuck_in_review {
+        eprintln!("[orch] WATCHDOG: Re-emitting validation_requested for stuck developer {}", developer_agent_id);
+        if let Err(e) = app_handle.emit(
+            "validation_requested",
+            ValidationRequestedPayload {
+                developer_agent_id: developer_agent_id.clone(),
+                task_id,
+                git_branch: None,
+                diff_summary: Some("Watchdog retry - validators may have failed to spawn".to_string()),
+            },
+        ) {
+            eprintln!("[orch] WATCHDOG emit FAILED: {}", e);
+        }
     }
 
     // 5. Mark completed tasks in Beads (agents in Done state with a task_id)

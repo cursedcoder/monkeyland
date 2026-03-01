@@ -525,7 +525,7 @@ impl AgentRegistry {
         Ok(Some(all_passed))
     }
 
-    /// Returns (task_id, git_branch, diff_summary) for agents in InReview that have not yet had validation started.
+    /// Returns (task_id, git_branch, diff_summary) for agents in Yielded state that have not yet had validation started.
     pub fn yield_queue(&self) -> Result<Vec<(String, Option<String>, Option<String>, Option<String>)>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let mut out = Vec::new();
@@ -544,6 +544,59 @@ impl AgentRegistry {
             ));
         }
         Ok(out)
+    }
+
+    /// Returns agents in InReview state that have validation started but no validator results yet.
+    /// Used by the watchdog to re-emit validation_requested for stuck agents.
+    pub fn agents_in_review_without_validators(&self) -> Result<Vec<(String, Option<String>)>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for (id, entry) in inner.agents.iter() {
+            if entry.state != State::InReview {
+                continue;
+            }
+            // Check if validation has started but no results yet
+            if let Some(vstate) = inner.validation.get(id) {
+                if vstate.results.is_empty() {
+                    out.push((id.clone(), entry.task_id.clone()));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Force a stuck Yielded agent to InReview state if validation hasn't started.
+    /// Returns true if the agent was unstuck.
+    pub fn force_start_validation(&self, agent_id: &str) -> Result<bool, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        
+        // Get task_id first to avoid borrow issues
+        let task_id = inner.agents.get(agent_id).and_then(|e| e.task_id.clone());
+        
+        let entry = match inner.agents.get_mut(agent_id) {
+            Some(e) => e,
+            None => return Ok(false),
+        };
+        if entry.state != State::Yielded {
+            return Ok(false);
+        }
+        // Force transition
+        entry.state = State::InReview;
+        
+        // Drop the mutable borrow before inserting into validation
+        drop(entry);
+        
+        if !inner.validation.contains_key(agent_id) {
+            inner.validation.insert(
+                agent_id.to_string(),
+                ValidationState {
+                    developer_agent_id: agent_id.to_string(),
+                    task_id,
+                    results: Vec::new(),
+                },
+            );
+        }
+        Ok(true)
     }
 
     /// Gate a tool call: checks that the agent exists, is Running, has permission, and is within quota/TTL.
