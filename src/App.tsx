@@ -355,6 +355,16 @@ export default function App() {
   }, [persistLayouts]);
 
   const addTerminalLogNode = useCallback((agentNodeId: string): string => {
+    // Reuse existing terminal log card for this agent (nudge retries create new plugin instances)
+    const existing = layoutsRef.current.find((l) => {
+      if (l.node_type !== "terminal_log") return false;
+      try {
+        const p = JSON.parse(l.payload ?? "{}") as { parentAgentId?: string };
+        return p.parentAgentId === agentNodeId;
+      } catch { return false; }
+    });
+    if (existing) return existing.session_id;
+
     const logId = generateNodeId();
     setLayouts((prev) => {
       const logLayout: SessionLayout = {
