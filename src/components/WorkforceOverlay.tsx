@@ -62,6 +62,34 @@ export function WorkforceOverlay() {
   const totalTokens = agentEntries.reduce((sum, a) => sum + a.promptTokens + a.completionTokens, 0);
   const hasActivity = totalCostUsd > 0 || agentEntries.length > 0;
 
+  // Group cost by agent type (role)
+  const byRole = agentEntries.reduce(
+    (acc, a) => {
+      const role = a.role;
+      const cur = acc.get(role) ?? { costUsd: 0, promptTokens: 0, completionTokens: 0 };
+      acc.set(role, {
+        costUsd: cur.costUsd + a.costUsd,
+        promptTokens: cur.promptTokens + a.promptTokens,
+        completionTokens: cur.completionTokens + a.completionTokens,
+      });
+      return acc;
+    },
+    new Map<string, { costUsd: number; promptTokens: number; completionTokens: number }>()
+  );
+  const roleOrder = [
+    "workforce_manager",
+    "project_manager",
+    "developer",
+    "operator",
+    "worker",
+    "code_review_validator",
+    "business_logic_validator",
+    "scope_validator",
+  ];
+  const sortedRoles = Array.from(byRole.entries()).sort(
+    (a, b) => roleOrder.indexOf(a[0]) - roleOrder.indexOf(b[0]) || a[0].localeCompare(b[0])
+  );
+
   if (!hasActivity) return null;
 
   return (
@@ -71,21 +99,18 @@ export function WorkforceOverlay() {
         {totalTokens > 0 && <span>Tokens: {formatTokens(totalTokens)}</span>}
         <span>Cost: {formatCost(totalCostUsd)}</span>
       </div>
-      {agentEntries.length > 0 && (
+      {sortedRoles.length > 0 && (
         <div className="workforce-overlay__list">
-          {agentEntries.map((a) => {
-            const agentTokens = a.promptTokens + a.completionTokens;
+          {sortedRoles.map(([role, agg]) => {
+            const roleTokens = agg.promptTokens + agg.completionTokens;
             return (
-              <div key={a.agentId} className="workforce-overlay__row">
-                <span className="workforce-overlay__badge">{badge(a.role)}</span>
-                <span className="workforce-overlay__id" title={a.agentId}>
-                  {a.agentId.length > 10 ? a.agentId.slice(0, 10) + ".." : a.agentId}
-                </span>
-                <span className="workforce-overlay__model">{a.modelName}</span>
-                {agentTokens > 0 && (
-                  <span className="workforce-overlay__tokens">{formatTokens(agentTokens)}</span>
+              <div key={role} className="workforce-overlay__row">
+                <span className="workforce-overlay__badge">{badge(role)}</span>
+                <span className="workforce-overlay__role">{role.replace(/_/g, " ")}</span>
+                {roleTokens > 0 && (
+                  <span className="workforce-overlay__tokens">{formatTokens(roleTokens)}</span>
                 )}
-                <span className="workforce-overlay__cost">{formatCost(a.costUsd)}</span>
+                <span className="workforce-overlay__cost">{formatCost(agg.costUsd)}</span>
               </div>
             );
           })}
