@@ -612,11 +612,32 @@ fn is_process_kill_command(cmd: &str) -> Option<&'static str> {
     None
 }
 
+/// Check if `rm -rf /...` targets root or home, not a subdirectory.
+/// `rm -rf /tmp/foo` is fine (path continues). `rm -rf /` or `rm -rf /*` is not.
+fn is_rm_rf_dangerous(cmd: &str) -> bool {
+    let lower = cmd.to_lowercase();
+    // Check "rm -rf /" variants
+    if let Some(pos) = lower.find("rm -rf /") {
+        let after = pos + "rm -rf /".len();
+        match lower.as_bytes().get(after) {
+            // End of command or followed by space/glob/operator → root deletion
+            None => return true,
+            Some(b) if matches!(b, b' ' | b'*' | b';' | b'|' | b'&' | b'\n' | b'\t') => return true,
+            _ => {} // Followed by a path char like 't' in /tmp → safe
+        }
+    }
+    // Home directory variants
+    if lower.contains("rm -rf ~") || lower.contains("rm -rf $home") {
+        return true;
+    }
+    false
+}
+
 /// Truly destructive commands that must be hard-blocked (returned as Err).
 fn is_destructive_command(cmd: &str) -> Option<&'static str> {
     let cmd_lower = cmd.to_lowercase();
 
-    if cmd_lower.contains("rm -rf /") || cmd_lower.contains("rm -rf ~") || cmd_lower.contains("rm -rf $home") {
+    if is_rm_rf_dangerous(cmd) {
         return Some("Recursive delete of root or home directory is blocked");
     }
     if cmd_lower.contains("shutdown") || cmd_lower.contains("reboot") || cmd_lower.contains("halt") {
@@ -628,8 +649,8 @@ fn is_destructive_command(cmd: &str) -> Option<&'static str> {
     if cmd.contains(":(){ :|:&") || cmd.contains(":(){") {
         return Some("Fork bomb pattern detected and blocked");
     }
-    if cmd_lower.contains("dd ") && (cmd_lower.contains("of=/dev") || cmd_lower.contains("of=/")) {
-        return Some("dd writing to devices/root is blocked");
+    if cmd_lower.contains("dd ") && cmd_lower.contains("of=/dev") {
+        return Some("dd writing to devices is blocked");
     }
     if (cmd_lower.contains(">>") || cmd_lower.contains(">"))
         && (cmd_lower.contains(".bashrc") || cmd_lower.contains(".zshrc") || cmd_lower.contains(".profile"))
