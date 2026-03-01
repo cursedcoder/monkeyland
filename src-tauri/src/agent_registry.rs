@@ -708,6 +708,46 @@ impl AgentRegistry {
         Ok(inner.agents.get(agent_id).and_then(|e| e.project_path.clone()))
     }
 
+    /// Validate that a cwd is valid for terminal commands.
+    /// More lenient than validate_path - allows the parent directory for scaffolding tools.
+    pub fn validate_path_for_terminal(&self, agent_id: &str, cwd: &str) -> Result<(), String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = match inner.agents.get(agent_id) {
+            Some(e) => e,
+            None => return Ok(()),
+        };
+
+        let project_path = match &entry.project_path {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let project = std::path::Path::new(project_path);
+        let cwd_path = std::path::Path::new(cwd);
+
+        // Allow if cwd IS the project path
+        if cwd_path == project {
+            return Ok(());
+        }
+
+        // Allow if cwd is inside the project path
+        if cwd_path.starts_with(project) {
+            return Ok(());
+        }
+
+        // Allow if cwd is the parent of project path (for scaffolding tools like create-vite)
+        if let Some(parent) = project.parent() {
+            if cwd_path == parent {
+                return Ok(());
+            }
+        }
+
+        Err(format!(
+            "Terminal cwd '{}' must be within or parent of project directory '{}'",
+            cwd, project_path
+        ))
+    }
+
     /// Validate that a path is within the agent's sandbox (project_path).
     /// Returns Ok(()) if allowed, Err with reason if not.
     /// If agent has no project_path set, all paths are allowed (for WM, operators, etc).

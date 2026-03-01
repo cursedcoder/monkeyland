@@ -604,9 +604,9 @@ pub async fn terminal_exec(
 ) -> Result<String, String> {
     if let Some(ref aid) = payload.agent_id {
         registry.gate_tool(aid, "terminal_exec")?;
-        // Validate cwd is within project sandbox
+        // Validate cwd is within project sandbox (or its parent for scaffolding)
         if let Some(ref cwd) = payload.cwd {
-            registry.validate_path(aid, cwd)?;
+            registry.validate_path_for_terminal(aid, cwd)?;
         } else {
             // No cwd specified - use project_path as default or reject
             let project_path = registry.get_project_path(aid)?;
