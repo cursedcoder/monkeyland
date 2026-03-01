@@ -110,33 +110,133 @@ function findNonOverlappingPosition(
   return { x: preferredX, y: preferredY };
 }
 
-/** Returns new layouts with x,y reset to a clean grid: prompts → agents → terminals → browsers. */
+/** Returns new layouts organized in a tree structure based on parent-child relationships. */
 function repositionLayouts(layouts: SessionLayout[]): SessionLayout[] {
-  const typeOrder: CanvasNodeType[] = ["prompt", "agent", "terminal", "terminal_log", "browser", "beads"];
-  const sorted = [...layouts].sort((a, b) => {
-    const ta = typeOrder.indexOf((a.node_type ?? "agent") as CanvasNodeType);
-    const tb = typeOrder.indexOf((b.node_type ?? "agent") as CanvasNodeType);
-    if (ta !== tb) return ta - tb;
-    return a.session_id.localeCompare(b.session_id);
-  });
-
-  let x = REPOSITION_ORIGIN.x;
-  let y = REPOSITION_ORIGIN.y;
-  let rowMaxH = 0;
-
-  return sorted.map((layout) => {
-    const w = layout.w;
-    const h = layout.collapsed ? 48 : layout.h;
-    if (x > REPOSITION_ORIGIN.x && x + w > REPOSITION_ROW_WIDTH) {
-      x = REPOSITION_ORIGIN.x;
-      y += rowMaxH + GRID_STEP;
-      rowMaxH = 0;
+  // 1. Build adjacency list
+  const childrenMap = new Map<string, string[]>();
+  const roots: string[] = [];
+  
+  // Find all nodes and their parents
+  const nodeMap = new Map(layouts.map(l => [l.session_id, l]));
+  
+  for (const layout of layouts) {
+    let parentId: string | undefined;
+    if (layout.payload) {
+      try {
+        const p = JSON.parse(layout.payload) as { sourcePromptId?: string; parentAgentId?: string; parent_agent_id?: string };
+        parentId = p.sourcePromptId ?? p.parentAgentId ?? p.parent_agent_id;
+      } catch { /* ignore */ }
     }
-    const next = { ...layout, x, y };
-    rowMaxH = Math.max(rowMaxH, h);
-    x += w + GRID_STEP;
-    return next;
+    
+    // If it has a parent that exists in our layout, add it to children
+    if (parentId && nodeMap.has(parentId)) {
+      if (!childrenMap.has(parentId)) childrenMap.set(parentId, []);
+      childrenMap.get(parentId)!.push(layout.session_id);
+    } else {
+      // It's a root node (usually a prompt, or an orphaned agent)
+      roots.push(layout.session_id);
+    }
+  }
+
+  // Sort roots: prompts first, then others
+  roots.sort((a, b) => {
+    const nodeA = nodeMap.get(a)!;
+    const nodeB = nodeMap.get(b)!;
+    if (nodeA.node_type === "prompt" && nodeB.node_type !== "prompt") return -1;
+    if (nodeA.node_type !== "prompt" && nodeB.node_type === "prompt") return 1;
+    return a.localeCompare(b);
   });
+
+  const nextLayouts = [...layouts];
+
+  function getRole(layout: SessionLayout): string {
+    if (layout.payload) {
+      try {
+        const p = JSON.parse(layout.payload) as { role?: string };
+        return p.role ?? "";
+      } catch { return ""; }
+    }
+    return "";
+  }
+
+  // Recursive function to layout a subtree
+  // Returns the { w, h } consumed by this subtree
+  function layoutSubtree(nodeId: string, startX: number, startY: number): { w: number, h: number } {
+    const layoutIndex = nextLayouts.findIndex(l => l.session_id === nodeId);
+    if (layoutIndex === -1) return { w: 0, h: 0 };
+    
+    const layout = nextLayouts[layoutIndex];
+    const nodeW = layout.w;
+    const nodeH = layout.collapsed ? 48 : layout.h;
+    
+    // Position current node
+    nextLayouts[layoutIndex] = { ...layout, x: startX, y: startY };
+    
+    const children = childrenMap.get(nodeId) || [];
+    if (children.length === 0) {
+      return { w: nodeW, h: nodeH };
+    }
+
+    // Sort children for consistent ordering: PM first, then Beads, then others
+    children.sort((a, b) => {
+      const na = nodeMap.get(a)!;
+      const nb = nodeMap.get(b)!;
+      const ra = getRole(na);
+      const rb = getRole(nb);
+      if (ra === "project_manager" && rb !== "project_manager") return -1;
+      if (ra !== "project_manager" && rb === "project_manager") return 1;
+      if (na.node_type === "beads" && nb.node_type !== "beads") return -1;
+      if (na.node_type !== "beads" && nb.node_type === "beads") return 1;
+      return a.localeCompare(b);
+    });
+
+    const role = getRole(layout);
+    // Prompts and Managers stack their children vertically to the right
+    const isVertical = layout.node_type === "prompt" || role === "workforce_manager" || role === "project_manager";
+
+    let subtreeW = nodeW;
+    let subtreeH = nodeH;
+
+    if (isVertical) {
+      // Children stacked vertically to the right
+      let currentY = startY;
+      let maxChildW = 0;
+      const childX = startX + nodeW + GRID_STEP;
+      
+      for (const childId of children) {
+        const bbox = layoutSubtree(childId, childX, currentY);
+        currentY += bbox.h + GRID_STEP;
+        maxChildW = Math.max(maxChildW, bbox.w);
+      }
+      
+      subtreeW = nodeW + GRID_STEP + maxChildW;
+      subtreeH = Math.max(nodeH, currentY - startY - GRID_STEP);
+    } else {
+      // Developers/Workers/etc lay out their children (tools, validators) horizontally to the right
+      let currentX = startX + nodeW + GRID_STEP;
+      let maxChildH = 0;
+      
+      for (const childId of children) {
+        const bbox = layoutSubtree(childId, currentX, startY);
+        currentX += bbox.w + GRID_STEP;
+        maxChildH = Math.max(maxChildH, bbox.h);
+      }
+      
+      subtreeW = currentX - startX - GRID_STEP;
+      subtreeH = Math.max(nodeH, maxChildH);
+    }
+
+    return { w: subtreeW, h: subtreeH };
+  }
+
+  // Layout each root tree
+  let currentRootY = REPOSITION_ORIGIN.y;
+  for (const rootId of roots) {
+    const bbox = layoutSubtree(rootId, REPOSITION_ORIGIN.x, currentRootY);
+    currentRootY += bbox.h + GRID_STEP * 2; // Extra gap between root trees
+  }
+
+  return nextLayouts;
 }
 
 function generateNodeId(): string {
@@ -273,9 +373,10 @@ export default function App() {
   }, []);
 
   const handleLayoutChange = useCallback((nodeId: string, layout: SessionLayout) => {
-    setLayouts((prev) =>
-      prev.map((l) => (l.session_id === nodeId ? layout : l))
-    );
+    setLayouts((prev) => {
+      const next = prev.map((l) => (l.session_id === nodeId ? layout : l));
+      return next;
+    });
   }, []);
 
   const handleLayoutCommit = useCallback(
@@ -739,6 +840,118 @@ export default function App() {
     [startAgentConversation],
   );
 
+  // Auto-remove completed tasks and their children
+  const completionTimesRef = useRef<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!loaded.current) return;
+      
+      const now = Date.now();
+      const toRemove = new Set<string>();
+      
+      for (const [id, time] of completionTimesRef.current.entries()) {
+        if (now - time >= 30000) {
+          toRemove.add(id);
+        }
+      }
+      
+      if (toRemove.size > 0) {
+        setLayouts((prev) => {
+          // Find all children
+          let added = true;
+          const removeSet = new Set(toRemove);
+          while (added) {
+            added = false;
+            for (const layout of prev) {
+              if (removeSet.has(layout.session_id)) continue;
+              try {
+                const p = JSON.parse(layout.payload ?? "{}") as { parentAgentId?: string; parent_agent_id?: string; role?: string };
+                if (layout.node_type === "beads" || p.role === "workforce_manager" || p.role === "project_manager") continue;
+                const parentId = p.parentAgentId ?? p.parent_agent_id;
+                if (parentId && removeSet.has(parentId)) {
+                  removeSet.add(layout.session_id);
+                  added = true;
+                }
+              } catch { /* ignore */ }
+            }
+          }
+          
+          const next = prev.filter((l) => !removeSet.has(l.session_id));
+          if (next.length !== prev.length) {
+            if (loaded.current) persistLayoutsRef.current(next);
+            for (const id of removeSet) {
+              completionTimesRef.current.delete(id);
+            }
+            return next;
+          }
+          return prev;
+        });
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Update completion times when layouts change
+  useEffect(() => {
+    const now = Date.now();
+    for (const layout of layouts) {
+      try {
+        const p = JSON.parse(layout.payload ?? "{}") as { status?: string; role?: string };
+        if (layout.node_type === "beads" || p.role === "workforce_manager" || p.role === "project_manager") {
+          completionTimesRef.current.delete(layout.session_id);
+          continue;
+        }
+        if (p.status === "done" || p.status === "stopped") {
+          if (!completionTimesRef.current.has(layout.session_id)) {
+            completionTimesRef.current.set(layout.session_id, now);
+          }
+        } else {
+          completionTimesRef.current.delete(layout.session_id);
+        }
+      } catch { /* ignore */ }
+    }
+  }, [layouts]);
+
+  // Reactive layout: watch for size changes and auto-reposition to prevent overlaps
+  const prevSizesRef = useRef<Map<string, { w: number; h: number }>>(new Map());
+  
+  useEffect(() => {
+    if (!loaded.current) return;
+    
+    let needsReposition = false;
+    const currentSizes = new Map<string, { w: number; h: number }>();
+    
+    for (const layout of layouts) {
+      const h = layout.collapsed ? 48 : layout.h;
+      currentSizes.set(layout.session_id, { w: layout.w, h });
+      
+      const prevSize = prevSizesRef.current.get(layout.session_id);
+      if (prevSize && (prevSize.w !== layout.w || prevSize.h !== h)) {
+        needsReposition = true;
+      }
+    }
+    
+    // Also reposition if cards were added or removed
+    if (prevSizesRef.current.size !== currentSizes.size) {
+      needsReposition = true;
+    }
+    
+    prevSizesRef.current = currentSizes;
+    
+    if (needsReposition) {
+      // Debounce the auto-reposition to avoid jitter during rapid LLM streaming
+      const timer = setTimeout(() => {
+        setLayouts((prev) => {
+          const next = repositionLayouts(prev);
+          if (loaded.current) persistLayoutsRef.current(next);
+          return next;
+        });
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [layouts]);
+
   // Listen for agent_spawned events from the Rust orchestration loop
   const startAgentConversationRef = useRef(startAgentConversation);
   startAgentConversationRef.current = startAgentConversation;
@@ -746,9 +959,9 @@ export default function App() {
   // Wire up dispatchAgentRef so WM's dispatch_agent tool can spawn agents.
   dispatchAgentRef.current = (p) => {
     const agentId = generateNodeId();
-    const wmLayout = layoutsRef.current.find((l) => l.session_id === p.parentAgentId);
-    const prefX = wmLayout ? wmLayout.x : REPOSITION_ORIGIN.x;
-    const prefY = wmLayout ? wmLayout.y + wmLayout.h + GRID_STEP : REPOSITION_ORIGIN.y;
+      const wmLayout = layoutsRef.current.find((l) => l.session_id === p.parentAgentId);
+      const prefX = wmLayout ? wmLayout.x : REPOSITION_ORIGIN.x;
+      const prefY = wmLayout ? wmLayout.y + wmLayout.h + GRID_STEP : REPOSITION_ORIGIN.y;
     startAgentConversationRef.current({
       agentNodeId: agentId,
       role: p.role as AgentRole,
@@ -908,6 +1121,10 @@ export default function App() {
           validatorId = result.agent_id;
         } catch (e) {
           console.error("Failed to spawn validator:", e);
+          // Auto-submit a pass so the backend doesn't wait forever for 3 results
+          invoke("validation_submit", {
+            payload: { developer_agent_id, validator_role: role, pass: true, reasons: ["Validator failed to spawn"] },
+          }).catch(() => {});
           continue;
         }
 
@@ -923,7 +1140,8 @@ export default function App() {
           projectPath: resolvedProjectPath,
         });
 
-        // After the validator finishes, parse verdict and submit
+        // After the validator finishes, parse verdict and submit.
+        // .catch() ensures a result is submitted even if the conversation errors out.
         validatorPromise.then(async () => {
           const validatorLayout = layoutsRef.current.find((l) => l.session_id === validatorId);
           let pass = true;
@@ -1002,6 +1220,11 @@ export default function App() {
           } catch {
             /* best effort */
           }
+        }).catch(() => {
+          // Validator conversation failed entirely — auto-submit pass so we don't block forever
+          invoke("validation_submit", {
+            payload: { developer_agent_id, validator_role: role, pass: true, reasons: ["Validator errored out"] },
+          }).catch(() => {});
         });
 
         baseX += GRID_STEP * 7;

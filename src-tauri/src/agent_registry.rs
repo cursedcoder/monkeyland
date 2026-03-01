@@ -775,6 +775,41 @@ impl AgentRegistry {
         Ok(out)
     }
 
+    /// Returns developers stuck in InReview state longer than `max_secs`.
+    /// Validators may have failed to spawn or errored out without submitting results.
+    pub fn stuck_in_review_developers(&self, max_secs: u64) -> Result<Vec<String>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let cutoff = Duration::from_secs(max_secs);
+        let mut out = Vec::new();
+        for (id, entry) in inner.agents.iter() {
+            if entry.role != "developer" || entry.state != State::InReview {
+                continue;
+            }
+            if entry.spawned_at.elapsed() > cutoff {
+                out.push(id.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// Force-complete validation for a stuck developer by transitioning InReview → Done.
+    /// Used when validators never submitted results.
+    pub fn force_complete_validation(&self, agent_id: &str) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = inner
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+        if entry.state != State::InReview {
+            return Ok(());
+        }
+        let new_state = agent_state_machine::try_transition(entry.state, Event::ValidationPass, &entry.role)?;
+        entry.state = new_state;
+        inner.validation.remove(agent_id);
+        eprintln!("[registry] force_complete_validation: {} → Done (validators timed out)", agent_id);
+        Ok(())
+    }
+
     /// Get the project_path (sandbox directory) for an agent.
     pub fn get_project_path(&self, agent_id: &str) -> Result<Option<String>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;

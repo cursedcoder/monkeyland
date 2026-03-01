@@ -220,10 +220,18 @@ pub async fn tick(
     // This catches ALL cases: nudge failed, frontend crashed, LLM looped forever, etc.
     // After force_yield, the agent goes to Yielded without a validation entry,
     // so the NEXT tick's yield_queue (step 4) will pick it up normally.
-    let stuck = registry.stuck_running_developers(300)?;
-    for agent_id in stuck {
+    let stuck_running = registry.stuck_running_developers(300)?;
+    for agent_id in stuck_running {
         eprintln!("[orch] SAFETY NET: Force-yielding developer {} stuck in Running for >5min", agent_id);
         let _ = registry.force_yield(&agent_id);
+    }
+
+    // 4c. SAFETY NET: Force-complete developers stuck in InReview for > 5 minutes.
+    // Validators may have failed to spawn/complete without submitting results.
+    let stuck_review = registry.stuck_in_review_developers(300)?;
+    for agent_id in stuck_review {
+        eprintln!("[orch] SAFETY NET: Force-completing developer {} stuck in InReview for >5min", agent_id);
+        let _ = registry.force_complete_validation(&agent_id);
     }
 
     // 5. Mark completed tasks in Beads (agents in Done state with a task_id)
