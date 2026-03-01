@@ -22,6 +22,7 @@ const ROLE_LABELS: Record<AgentRole, string> = {
   operator: "Operator",
   worker: "Worker",
   validator: "Validator",
+  merge_agent: "Merge",
 };
 
 function parseRole(payload: string | undefined): AgentRole | null {

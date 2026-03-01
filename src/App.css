@@ -1215,6 +1215,27 @@
 .beads-card-task-status-badge[data-status="ready"]       { background: rgba(224,175,104,0.12); color: #e0af68; }
 .beads-card-task-status-badge[data-status="blocked"]     { background: rgba(247,118,142,0.12); color: #f7768e; }
 
+.beads-card-task-merge-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  background: rgba(122,162,247,0.12);
+  color: #7aa2f7;
+  animation: merge-pulse 1.5s ease-in-out infinite;
+}
+.beads-card-task-merge-badge[data-merge-status="merging"]  { background: rgba(122,162,247,0.15); color: #7aa2f7; }
+.beads-card-task-merge-badge[data-merge-status="conflict"] { background: rgba(224,175,104,0.15); color: #e0af68; animation: none; }
+.beads-card-task-merge-badge[data-merge-status="failed"]   { background: rgba(247,118,142,0.15); color: #f7768e; animation: none; }
+
+@keyframes merge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 .beads-card-resize-handle {
   position: absolute;
   z-index: 5;

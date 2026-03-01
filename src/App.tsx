@@ -1095,8 +1095,14 @@ export default function App() {
       role: string;
       task_id: string | null;
       parent_agent_id: string | null;
+      merge_context?: {
+        base_branch: string;
+        task_branch: string;
+        conflict_diff: string;
+        task_description: string;
+      } | null;
     }>("agent_spawned", async (event) => {
-      const { agent_id, role, task_id, parent_agent_id } = event.payload;
+      const { agent_id, role, task_id, parent_agent_id, merge_context } = event.payload;
 
       let taskDescription = `Execute task ${task_id ?? "unknown"}.`;
       let taskMeta: { title?: string; type?: string; priority?: number; description?: string } | undefined;
@@ -1105,7 +1111,21 @@ export default function App() {
         resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
       } catch { /* */ }
 
-      if (task_id && resolvedProjectPath) {
+      // Merge agents get a specialized prompt with conflict context
+      if (role === "merge_agent" && merge_context) {
+        taskDescription = [
+          `Resolve merge conflicts for task ${task_id}.`,
+          ``,
+          `Base branch: ${merge_context.base_branch}`,
+          `Task branch: ${merge_context.task_branch}`,
+          ``,
+          `## Original task description`,
+          merge_context.task_description || "(not available)",
+          ``,
+          `## Conflict diff`,
+          merge_context.conflict_diff || "(not available)",
+        ].join("\n");
+      } else if (task_id && resolvedProjectPath) {
         try {
           const jsonOut = await invoke<string>("beads_run", {
             projectPath: resolvedProjectPath,
@@ -1121,7 +1141,6 @@ export default function App() {
                 priority: typeof parsed.priority === "number" ? parsed.priority : undefined,
                 description: ((parsed.description ?? parsed.body) as string) ?? undefined,
               };
-              // Always include the task_id so PM agents can use it as parent_id
               const bodyText = taskMeta.description || taskMeta.title || "";
               taskDescription = task_id
                 ? `Epic ID: ${task_id}\n\n${bodyText}`.trim()

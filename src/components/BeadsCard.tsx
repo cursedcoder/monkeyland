@@ -257,6 +257,29 @@ export function BeadsCard({
     return () => { unlisten.then((fn) => fn()); };
   }, [epicId]);
 
+  // Merge status per task (from orchestration merge_status events)
+  const [mergeStatuses, setMergeStatuses] = useState<Map<string, { status: string; detail?: string }>>(new Map());
+
+  useEffect(() => {
+    const unlisten = listen<{
+      task_id: string;
+      status: string;
+      detail?: string;
+    }>("merge_status", (event) => {
+      const { task_id, status: st, detail } = event.payload;
+      setMergeStatuses((prev) => {
+        const next = new Map(prev);
+        if (st === "done") {
+          next.delete(task_id);
+        } else {
+          next.set(task_id, { status: st, detail: detail ?? undefined });
+        }
+        return next;
+      });
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
   // Sync the actual rendered height back into the layout so the canvas
   // knows the card's real footprint (used by hit-testing / connectors).
   useEffect(() => {
@@ -490,6 +513,7 @@ export function BeadsCard({
                   <div className="beads-card-task-list">
                     {[...inProgressTasks, ...readyTasks, ...otherTasks, ...doneTasks].map((t) => {
                       const taskType = t.type || t.issue_type || "task";
+                      const mergeInfo = mergeStatuses.get(t.id);
                       return (
                         <div
                           key={t.id}
@@ -503,13 +527,26 @@ export function BeadsCard({
                           </span>
                           <span className="beads-card-task-key">{t.id}</span>
                           <span className="beads-card-task-title">{t.title || t.id}</span>
-                          <span className="beads-card-task-status-badge" data-status={t.status}>
-                            {t.status === "in-progress" ? "In Progress"
-                              : t.status === "done" ? "Done"
-                              : t.status === "ready" ? "Ready"
-                              : t.status === "blocked" ? "Blocked"
-                              : t.status}
-                          </span>
+                          {mergeInfo ? (
+                            <span
+                              className="beads-card-task-merge-badge"
+                              data-merge-status={mergeInfo.status}
+                              title={mergeInfo.detail ?? undefined}
+                            >
+                              {mergeInfo.status === "merging" ? "Merging…"
+                                : mergeInfo.status === "conflict" ? "Conflict"
+                                : mergeInfo.status === "failed" ? "Merge failed"
+                                : mergeInfo.status}
+                            </span>
+                          ) : (
+                            <span className="beads-card-task-status-badge" data-status={t.status}>
+                              {t.status === "in-progress" ? "In Progress"
+                                : t.status === "done" ? "Done"
+                                : t.status === "ready" ? "Ready"
+                                : t.status === "blocked" ? "Blocked"
+                                : t.status}
+                            </span>
+                          )}
                         </div>
                       );
                     })}

@@ -30,7 +30,8 @@ export type AgentRole =
   | "developer"
   | "operator"
   | "worker"
-  | "validator";
+  | "validator"
+  | "merge_agent";
 
 export interface SessionLayout {
   session_id: string;

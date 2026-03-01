@@ -83,6 +83,15 @@ fn default_role_configs() -> HashMap<String, RoleConfig> {
             max_count: 15,
         },
     );
+    m.insert(
+        "merge_agent".to_string(),
+        RoleConfig {
+            ttl_secs: 300,
+            token_quota: 100_000,
+            max_children: 0,
+            max_count: 5,
+        },
+    );
     m
 }
 

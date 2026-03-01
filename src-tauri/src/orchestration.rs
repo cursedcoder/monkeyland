@@ -7,6 +7,8 @@ use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Mutex;
+use tokio::sync::Mutex as TokioMutex;
 use tauri::Emitter;
 
 const BEADS_PROJECT_PATH_KEY: &str = "beads_project_path";
@@ -60,6 +62,15 @@ pub struct AgentSpawnedPayload {
     pub role: String,
     pub task_id: Option<String>,
     pub parent_agent_id: Option<String>,
+    pub merge_context: Option<MergeContext>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MergeContext {
+    pub base_branch: String,
+    pub task_branch: String,
+    pub conflict_diff: String,
+    pub task_description: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,12 +96,60 @@ pub struct EpicProgressPayload {
     pub open: u32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct MergeStatusPayload {
+    pub task_id: String,
+    pub status: String,      // "merging" | "conflict" | "done" | "failed"
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MergeEntry {
+    pub agent_id: String,
+    pub task_id: String,
+    pub retry_count: u8,
+}
+
+/// Serialized merge queue. Only one merge runs at a time via the git_lock mutex.
+pub struct MergeQueue {
+    queue: Mutex<Vec<MergeEntry>>,
+    git_lock: TokioMutex<()>,
+}
+
+impl MergeQueue {
+    pub fn new() -> Self {
+        Self {
+            queue: Mutex::new(Vec::new()),
+            git_lock: TokioMutex::new(()),
+        }
+    }
+
+    pub fn push(&self, entry: MergeEntry) {
+        let mut q = self.queue.lock().unwrap();
+        q.push(entry);
+    }
+
+    pub fn pop_front(&self) -> Option<MergeEntry> {
+        let mut q = self.queue.lock().unwrap();
+        if q.is_empty() {
+            None
+        } else {
+            Some(q.remove(0))
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.lock().unwrap().is_empty()
+    }
+}
+
 /// One tick: get ready tasks, spawn agents, claim in Beads, kill expired, process yield queue.
 pub async fn tick(
     app_handle: &tauri::AppHandle,
     meta_db: &MetaDb,
     registry: &AgentRegistry,
     pool: &PtyPool,
+    merge_queue: &MergeQueue,
 ) -> Result<(), String> {
     let project_path = match meta_db.get_setting(BEADS_PROJECT_PATH_KEY)? {
         Some(p) if !p.is_empty() => p,
@@ -205,6 +264,7 @@ pub async fn tick(
                 role: role.clone(),
                 task_id: Some(task.id.clone()),
                 parent_agent_id: None,
+                merge_context: None,
             },
         );
     }
@@ -276,60 +336,164 @@ pub async fn tick(
         let _ = registry.force_complete_validation(&agent_id);
     }
 
-    // 5. Mark completed tasks in Beads (agents in Done state with a task_id)
-    //    SKIP epics: PM agents own epics, but we don't mark the epic as done when
-    //    the PM finishes planning. Epic closure is handled by step 6 (auto-close)
-    //    which checks whether all children are done.
+    // 5. Enqueue done agents for merge (or kill non-merging roles immediately).
+    //    Developer agents get their worktree removed and pushed onto the merge queue.
+    //    PM agents are killed immediately (epics handled by auto-close in step 6).
+    //    Merge agents are cleaned up — the original task is already re-queued by handle_merge_conflict.
     let done_agents = registry.done_agents_with_tasks()?;
     for (agent_id, task_id, role) in done_agents {
-        // Merge worktree branch into base before marking done, then remove worktree
+        if role == "project_manager" {
+            eprintln!("[orch] skipping merge for epic task {task_id} (PM agent); auto-close will handle it");
+            let _ = registry.kill(&agent_id);
+            let _ = pool.kill(&agent_id);
+            continue;
+        }
+        if role == "merge_agent" {
+            eprintln!("[orch] merge agent {agent_id} done for task {task_id}; cleaning up");
+            if let Ok(Some(_wt)) = registry.get_worktree_path(&agent_id) {
+                let rm_path = path.to_path_buf();
+                let rm_agent = agent_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::worktree::remove(&rm_path, &rm_agent)
+                })
+                .await;
+            }
+            let _ = registry.kill(&agent_id);
+            let _ = pool.kill(&agent_id);
+            continue;
+        }
+
+        // Remove worktree (frees the branch for rebase/merge from main repo dir)
         if let Ok(Some(_wt)) = registry.get_worktree_path(&agent_id) {
-            let merge_path = path.to_path_buf();
-            let merge_agent = agent_id.clone();
-            let merge_task = task_id.clone();
-            let _ = tokio::task::spawn_blocking({
-                let merge_path = merge_path.clone();
-                let merge_agent = merge_agent.clone();
-                move || crate::worktree::remove(&merge_path, &merge_agent)
+            let rm_path = path.to_path_buf();
+            let rm_agent = agent_id.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::worktree::remove(&rm_path, &rm_agent)
             })
             .await;
-            match tokio::task::spawn_blocking({
-                let merge_path = merge_path.clone();
-                let merge_task = merge_task.clone();
-                move || crate::worktree::merge_to_base(&merge_path, &merge_task)
+        }
+
+        eprintln!("[orch] enqueuing task {task_id} (agent {agent_id}) for merge");
+        merge_queue.push(MergeEntry {
+            agent_id: agent_id.clone(),
+            task_id: task_id.clone(),
+            retry_count: 0,
+        });
+        let _ = app_handle.emit(
+            "merge_status",
+            MergeStatusPayload {
+                task_id,
+                status: "merging".to_string(),
+                detail: None,
+            },
+        );
+    }
+
+    // 5b. Merge train: process one entry from the merge queue per tick.
+    //     Acquire git lock so only one merge runs at a time.
+    if !merge_queue.is_empty() {
+        if let Some(entry) = merge_queue.pop_front() {
+            let _git_guard = merge_queue.git_lock.lock().await;
+            let task_id = entry.task_id.clone();
+            let agent_id = entry.agent_id.clone();
+
+            // Step 1: Rebase task branch onto base
+            let rebase_path = path.to_path_buf();
+            let rebase_task = task_id.clone();
+            let rebase_ok = tokio::task::spawn_blocking(move || {
+                crate::worktree::rebase_onto_base(&rebase_path, &rebase_task)
             })
-            .await
-            {
-                Ok(Ok(crate::worktree::MergeOutcome::Clean)) => {
-                    eprintln!("[orch] worktree merge clean for task {task_id}");
-                }
-                Ok(Ok(crate::worktree::MergeOutcome::Conflict(detail))) => {
-                    eprintln!("[orch] worktree merge CONFLICT for task {task_id}: {detail}");
+            .await;
+
+            let rebase_clean = match rebase_ok {
+                Ok(Ok(true)) => true,
+                Ok(Ok(false)) => {
+                    eprintln!("[orch] rebase conflict for task {task_id}");
+                    false
                 }
                 Ok(Err(e)) => {
-                    eprintln!("[orch] worktree merge error for task {task_id}: {e}");
+                    eprintln!("[orch] rebase error for task {task_id}: {e}");
+                    false
                 }
                 Err(e) => {
-                    eprintln!("[orch] worktree merge join error for task {task_id}: {e}");
+                    eprintln!("[orch] rebase join error for task {task_id}: {e}");
+                    false
                 }
+            };
+
+            if rebase_clean {
+                // Step 2: Merge (--no-ff) into base
+                let merge_path = path.to_path_buf();
+                let merge_task = task_id.clone();
+                let merge_result = tokio::task::spawn_blocking(move || {
+                    crate::worktree::merge_to_base(&merge_path, &merge_task)
+                })
+                .await;
+
+                match merge_result {
+                    Ok(Ok(crate::worktree::MergeOutcome::Clean)) => {
+                        eprintln!("[orch] merge clean for task {task_id}");
+                        // Mark done in Beads
+                        let done_args = vec![
+                            "update".to_string(),
+                            task_id.clone(),
+                            "--status".to_string(),
+                            "done".to_string(),
+                        ];
+                        let path_done = path.to_path_buf();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            run_bd_sync(&path_done, &done_args)
+                        })
+                        .await;
+                        // Clean up branch
+                        let del_path = path.to_path_buf();
+                        let del_task = task_id.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            crate::worktree::delete_task_branch(&del_path, &del_task)
+                        })
+                        .await;
+                        // Kill agent
+                        let _ = registry.kill(&agent_id);
+                        let _ = pool.kill(&agent_id);
+                        let _ = app_handle.emit(
+                            "merge_status",
+                            MergeStatusPayload {
+                                task_id,
+                                status: "done".to_string(),
+                                detail: None,
+                            },
+                        );
+                    }
+                    Ok(Ok(crate::worktree::MergeOutcome::Conflict(detail))) => {
+                        handle_merge_conflict(
+                            app_handle, path, registry, pool, merge_queue,
+                            entry, &detail,
+                        )
+                        .await;
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!("[orch] merge error for task {task_id}: {e}");
+                        handle_merge_conflict(
+                            app_handle, path, registry, pool, merge_queue,
+                            entry, &e,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        eprintln!("[orch] merge join error for task {task_id}: {e}");
+                        let _ = registry.kill(&agent_id);
+                        let _ = pool.kill(&agent_id);
+                    }
+                }
+            } else {
+                // Rebase failed -- treat as conflict
+                handle_merge_conflict(
+                    app_handle, path, registry, pool, merge_queue,
+                    entry, "rebase conflict",
+                )
+                .await;
             }
         }
-
-        if role != "project_manager" {
-            let done_args = vec![
-                "update".to_string(),
-                task_id.clone(),
-                "--status".to_string(),
-                "done".to_string(),
-            ];
-            let path_done = path.to_path_buf();
-            let _ = tokio::task::spawn_blocking(move || run_bd_sync(&path_done, &done_args)).await;
-        } else {
-            eprintln!("[orch] skipping done-mark for epic task {task_id} (PM agent); auto-close will handle it");
-        }
-
-        let _ = registry.kill(&agent_id);
-        let _ = pool.kill(&agent_id);
     }
 
     // 6. Auto-close epics whose children are ALL done (and have at least 1 child)
@@ -458,9 +622,173 @@ fn default_priority() -> u8 {
 fn role_for_task(issue_type: &str, _priority: u8) -> String {
     match issue_type.to_lowercase().as_str() {
         "epic" => "project_manager".to_string(),
-        // All task types go to developers. Workers are sub-agents spawned by
-        // developers on-demand, not independent task assignees from Beads.
-        // Developers go through validation; workers don't.
         _ => "developer".to_string(),
     }
+}
+
+const MAX_MERGE_RETRIES: u8 = 2;
+
+/// Handle a merge or rebase conflict: spawn merge agent (if retries remain) or mark blocked.
+async fn handle_merge_conflict(
+    app_handle: &tauri::AppHandle,
+    project_path: &Path,
+    registry: &AgentRegistry,
+    pool: &PtyPool,
+    merge_queue: &MergeQueue,
+    entry: MergeEntry,
+    detail: &str,
+) {
+    let task_id = entry.task_id.clone();
+    let agent_id = entry.agent_id.clone();
+
+    if entry.retry_count >= MAX_MERGE_RETRIES {
+        eprintln!(
+            "[orch] merge permanently failed for task {task_id} after {} retries",
+            entry.retry_count
+        );
+        // Mark blocked in Beads
+        let block_args = vec![
+            "update".to_string(),
+            task_id.clone(),
+            "--status".to_string(),
+            "blocked".to_string(),
+        ];
+        let path_block = project_path.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || run_bd_sync(&path_block, &block_args)).await;
+        // Kill the agent
+        let _ = registry.kill(&agent_id);
+        let _ = pool.kill(&agent_id);
+        let _ = app_handle.emit(
+            "merge_status",
+            MergeStatusPayload {
+                task_id,
+                status: "failed".to_string(),
+                detail: Some(detail.to_string()),
+            },
+        );
+        return;
+    }
+
+    eprintln!(
+        "[orch] merge conflict for task {task_id} (retry {}), spawning merge agent",
+        entry.retry_count
+    );
+
+    // Get conflict context for the merge agent
+    let diff_path = project_path.to_path_buf();
+    let diff_task = task_id.clone();
+    let conflict_context = tokio::task::spawn_blocking(move || {
+        crate::worktree::conflict_diff(&diff_path, &diff_task)
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()))
+    .unwrap_or_else(|e| format!("(failed to get diff: {e})"));
+
+    // Get task description from Beads
+    let show_args = vec!["show".to_string(), task_id.clone(), "--json".to_string()];
+    let show_path = project_path.to_path_buf();
+    let task_desc = match tokio::task::spawn_blocking(move || run_bd_sync(&show_path, &show_args)).await {
+        Ok(Ok(stdout)) => {
+            serde_json::from_str::<serde_json::Value>(&stdout)
+                .ok()
+                .and_then(|v| v.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()))
+                .unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+
+    let base_branch = {
+        let pp = project_path.to_path_buf();
+        tokio::task::spawn_blocking(move || crate::worktree::detect_base_branch(&pp))
+            .await
+            .unwrap_or_else(|_| "main".to_string())
+    };
+
+    // Spawn merge agent
+    let merge_agent_id = match registry.spawn(
+        "merge_agent",
+        Some(task_id.clone()),
+        None,
+        Some(project_path.to_str().unwrap_or_default().to_string()),
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("[orch] failed to spawn merge agent for {task_id}: {e}");
+            // Re-queue with incremented retry count
+            merge_queue.push(MergeEntry {
+                agent_id,
+                task_id: task_id.clone(),
+                retry_count: entry.retry_count + 1,
+            });
+            return;
+        }
+    };
+
+    // Create worktree for merge agent
+    let wt_path = project_path.to_path_buf();
+    let wt_agent = merge_agent_id.clone();
+    let wt_task = task_id.clone();
+    let agent_cwd = match tokio::task::spawn_blocking(move || {
+        crate::worktree::create(&wt_path, &wt_agent, &wt_task)
+    })
+    .await
+    {
+        Ok(Ok(wt)) => {
+            let _ = registry.set_worktree_path(&merge_agent_id, wt.to_str().unwrap_or_default());
+            wt
+        }
+        _ => {
+            eprintln!("[orch] merge agent worktree creation failed for {task_id}");
+            project_path.to_path_buf()
+        }
+    };
+
+    if pool.spawn(&merge_agent_id, 80, 24, Some(agent_cwd.as_path())).is_err() {
+        eprintln!("[orch] failed to spawn pty for merge agent {merge_agent_id}");
+        let _ = registry.kill(&merge_agent_id);
+        merge_queue.push(MergeEntry {
+            agent_id,
+            task_id: task_id.clone(),
+            retry_count: entry.retry_count + 1,
+        });
+        return;
+    }
+
+    let task_branch = format!("task/{task_id}");
+    let _ = app_handle.emit(
+        "agent_spawned",
+        AgentSpawnedPayload {
+            agent_id: merge_agent_id.clone(),
+            role: "merge_agent".to_string(),
+            task_id: Some(task_id.clone()),
+            parent_agent_id: Some(agent_id.clone()),
+            merge_context: Some(MergeContext {
+                base_branch,
+                task_branch,
+                conflict_diff: conflict_context,
+                task_description: task_desc,
+            }),
+        },
+    );
+
+    let _ = app_handle.emit(
+        "merge_status",
+        MergeStatusPayload {
+            task_id: task_id.clone(),
+            status: "conflict".to_string(),
+            detail: Some(format!(
+                "Retry {}/{MAX_MERGE_RETRIES} — merge agent spawned",
+                entry.retry_count + 1
+            )),
+        },
+    );
+
+    // Re-queue the original entry with incremented retry count.
+    // When the merge agent completes (enters Done), the next tick will pick it up
+    // via done_agents_with_tasks and re-enqueue for merge.
+    merge_queue.push(MergeEntry {
+        agent_id,
+        task_id,
+        retry_count: entry.retry_count + 1,
+    });
 }

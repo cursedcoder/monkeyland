@@ -159,6 +159,82 @@ pub fn remove(project_path: &Path, agent_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Rebase the task branch onto the current base branch.
+///
+/// Returns `Ok(true)` if rebase succeeded (no conflicts), `Ok(false)` if conflicts
+/// were detected (rebase is aborted automatically). Must be called when no worktree
+/// is checked out on the task branch.
+pub fn rebase_onto_base(project_path: &Path, task_id: &str) -> Result<bool, String> {
+    let branch_name = format!("task/{task_id}");
+    let base = detect_base_branch(project_path);
+
+    let out = Command::new("git")
+        .args(["rebase", &base, &branch_name])
+        .current_dir(project_path)
+        .output()
+        .map_err(|e| format!("git rebase: {e}"))?;
+
+    if out.status.success() {
+        // Switch back to base branch after rebase
+        let _ = Command::new("git")
+            .args(["checkout", &base])
+            .current_dir(project_path)
+            .output();
+        return Ok(true);
+    }
+
+    // Rebase failed (conflicts) -- abort to leave repo clean
+    let _ = Command::new("git")
+        .args(["rebase", "--abort"])
+        .current_dir(project_path)
+        .output();
+
+    Ok(false)
+}
+
+/// Delete a task branch after successful merge.
+pub fn delete_task_branch(project_path: &Path, task_id: &str) -> Result<(), String> {
+    let branch_name = format!("task/{task_id}");
+    let _ = Command::new("git")
+        .args(["branch", "-d", &branch_name])
+        .current_dir(project_path)
+        .output();
+    Ok(())
+}
+
+/// Get the list of conflicted files from a failed merge or rebase attempt.
+/// Used to provide context to the merge agent.
+pub fn conflict_diff(project_path: &Path, task_id: &str) -> Result<String, String> {
+    let branch_name = format!("task/{task_id}");
+    let base = detect_base_branch(project_path);
+
+    // Show what files differ between base and the task branch
+    let out = Command::new("git")
+        .args(["diff", &base, &branch_name, "--stat"])
+        .current_dir(project_path)
+        .output()
+        .map_err(|e| format!("git diff --stat: {e}"))?;
+
+    let stat = String::from_utf8_lossy(&out.stdout).to_string();
+
+    // Also get the full diff for context
+    let out2 = Command::new("git")
+        .args(["diff", &base, &branch_name])
+        .current_dir(project_path)
+        .output()
+        .map_err(|e| format!("git diff: {e}"))?;
+
+    let full = String::from_utf8_lossy(&out2.stdout).to_string();
+    // Truncate to avoid massive payloads
+    let truncated = if full.len() > 8000 {
+        format!("{}...\n[truncated, {} bytes total]", &full[..8000], full.len())
+    } else {
+        full
+    };
+
+    Ok(format!("Changed files:\n{stat}\nFull diff:\n{truncated}"))
+}
+
 /// Merge the agent's task branch into the base branch (non-fast-forward).
 ///
 /// Must be called from the main repo directory (not from inside a worktree).

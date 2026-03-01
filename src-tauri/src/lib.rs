@@ -27,6 +27,7 @@ pub fn run() {
             app.manage(browser_pool::BrowserPool::new());
             app.manage(agent_registry::AgentRegistry::new());
             app.manage(orchestration::OrchestrationState::new());
+            app.manage(orchestration::MergeQueue::new());
 
             // Prune stale git worktrees from any previous session
             if let Some(db) = app.try_state::<storage::MetaDb>() {
@@ -50,12 +51,13 @@ pub fn run() {
                     if orch_state.as_deref().map_or(true, |s| !s.is_running()) {
                         continue;
                     }
-                    if let (Some(meta_db), Some(registry), Some(pool)) = (
+                    if let (Some(meta_db), Some(registry), Some(pool), Some(merge_q)) = (
                         handle_orch.try_state::<storage::MetaDb>(),
                         handle_orch.try_state::<agent_registry::AgentRegistry>(),
                         handle_orch.try_state::<pty_pool::PtyPool>(),
+                        handle_orch.try_state::<orchestration::MergeQueue>(),
                     ) {
-                        let _ = orchestration::tick(&handle_orch, &meta_db, &registry, &pool).await;
+                        let _ = orchestration::tick(&handle_orch, &meta_db, &registry, &pool, &merge_q).await;
                     }
                 }
             });

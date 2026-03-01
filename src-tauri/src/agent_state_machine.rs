@@ -101,7 +101,7 @@ pub fn try_transition(current: State, event: Event, role: &str) -> Result<State,
 }
 
 /// Roles that MUST have a task_id to be spawned.
-const TASK_REQUIRED_ROLES: &[&str] = &["developer", "worker", "project_manager"];
+const TASK_REQUIRED_ROLES: &[&str] = &["developer", "worker", "project_manager", "merge_agent"];
 
 /// Validate whether a new agent is allowed to spawn.
 /// Called by `AgentRegistry::spawn()` before creating the entry.
@@ -177,6 +177,10 @@ pub fn allowed_tools(role: &str) -> HashSet<Tool> {
         .collect(),
 
         "worker" => [Tool::WriteFile, Tool::ReadFile, Tool::TerminalExec]
+            .into_iter()
+            .collect(),
+
+        "merge_agent" => [Tool::WriteFile, Tool::ReadFile, Tool::TerminalExec]
             .into_iter()
             .collect(),
 
