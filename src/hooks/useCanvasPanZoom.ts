@@ -27,7 +27,7 @@ export function useCanvasPanZoom(containerRef: React.RefObject<HTMLElement | nul
       // Don't start panning when click originates inside a card — allow
       // native text selection and card-internal interactions instead.
       const target = e.target as HTMLElement;
-      if (target.closest(".session-card, .prompt-card, .terminal-card, .terminal-log-card, .browser-card, .beads-card")) return;
+      if (target.closest(".session-card, .prompt-card, .terminal-card, .terminal-log-card, .browser-card, .beads-card, .beads-task-card")) return;
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
       isPanning.current = true;
       lastPointer.current = { x: e.clientX, y: e.clientY };

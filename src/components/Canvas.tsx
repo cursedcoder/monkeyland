@@ -6,6 +6,7 @@ import { SessionCard } from "./SessionCard";
 import { TerminalCard } from "./TerminalCard";
 import { BrowserCard } from "./BrowserCard";
 import { BeadsCard } from "./BeadsCard";
+import { BeadsTaskCard } from "./BeadsTaskCard";
 import { TerminalLogCard } from "./TerminalLogCard";
 import { ValidatorCard } from "./ValidatorCard";
 import type { SessionLayout } from "../types";
@@ -18,6 +19,7 @@ interface CanvasProps {
   onPromptChange?: (nodeId: string, text: string) => void;
   onLaunch?: (nodeId: string) => void;
   onStopAgent?: (nodeId: string) => void;
+  onAddTaskCard?: (parentBeadsId: string, task: import("../types").BeadsTask) => void;
 }
 
 function parsePromptPayload(payload?: string): string {
@@ -57,6 +59,7 @@ export function Canvas({
   onPromptChange,
   onLaunch,
   onStopAgent,
+  onAddTaskCard,
 }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const {
@@ -146,8 +149,9 @@ export function Canvas({
           sourcePromptId?: string;
           parentAgentId?: string;
           parent_agent_id?: string;
+          parentBeadsId?: string;
         };
-        const parentId = p.parentAgentId ?? p.parent_agent_id;
+        const parentId = p.parentAgentId ?? p.parent_agent_id ?? p.parentBeadsId;
 
         // Prompt → Agent connection (use effective layout so lines follow dragged cards)
         if (layout.node_type === "agent" && p.sourcePromptId) {
@@ -203,6 +207,21 @@ export function Canvas({
               y1: agent.y + agent.h / 2,
               x2: beads.x,
               y2: beads.y + (beads.collapsed ? 24 : beads.h / 2),
+              color: "#f7768e",
+            });
+          }
+        }
+
+        // Beads → BeadsTask connection
+        if (layout.node_type === "beads_task" && parentId) {
+          const beads = effectiveLayoutById.get(parentId);
+          const task = sourceOrTargetLayout;
+          if (beads && task) {
+            lines.push({
+              x1: beads.x + beads.w,
+              y1: beads.y + (beads.collapsed ? 24 : beads.h / 2),
+              x2: task.x,
+              y2: task.y + task.h / 2,
               color: "#f7768e",
             });
           }
@@ -330,6 +349,20 @@ export function Canvas({
           if (nodeType === "beads") {
             return (
               <BeadsCard
+                key={layout.session_id}
+                layout={layout}
+                onLayoutChange={handleCardLayoutChange(layout.session_id)}
+                onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
+                onDragStart={handleDragStart}
+                onAddTaskCard={(task) => onAddTaskCard?.(layout.session_id, task)}
+                scale={viewport.scale}
+              />
+            );
+          }
+
+          if (nodeType === "beads_task") {
+            return (
+              <BeadsTaskCard
                 key={layout.session_id}
                 layout={layout}
                 onLayoutChange={handleCardLayoutChange(layout.session_id)}

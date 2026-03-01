@@ -31,6 +31,8 @@ import {
   TERMINAL_LOG_DEFAULT_H,
   BEADS_CARD_DEFAULT_W,
   BEADS_CARD_DEFAULT_H,
+  BEADS_TASK_CARD_DEFAULT_W,
+  BEADS_TASK_CARD_DEFAULT_H,
   getDefaultSize,
 } from "./types";
 
@@ -47,14 +49,21 @@ function repositionLayouts(layouts: SessionLayout[]): SessionLayout[] {
   // Find all nodes and their parents
   const nodeMap = new Map(layouts.map(l => [l.session_id, l]));
   
-  for (const layout of layouts) {
-    let parentId: string | undefined;
-    if (layout.payload) {
-      try {
-        const p = JSON.parse(layout.payload) as { sourcePromptId?: string; parentAgentId?: string; parent_agent_id?: string };
-        parentId = p.sourcePromptId ?? p.parentAgentId ?? p.parent_agent_id;
-      } catch { /* ignore */ }
-    }
+      for (const layout of layouts) {
+        let parentId: string | undefined;
+        if (layout.payload) {
+          try {
+            const p = JSON.parse(layout.payload) as {
+              sourcePromptId?: string;
+              parentAgentId?: string;
+              parent_agent_id?: string;
+              parentBeadsId?: string;
+            };
+            parentId = p.sourcePromptId ?? p.parentAgentId ?? p.parent_agent_id ?? p.parentBeadsId;
+          } catch {
+            /* ignore */
+          }
+        }
     
     // If it has a parent that exists in our layout, add it to children
     if (parentId && nodeMap.has(parentId)) {
@@ -391,6 +400,51 @@ export default function App() {
     return beadsId;
   }, []);
 
+  const handleAddTaskCard = useCallback((parentBeadsId: string, task: import("./types").BeadsTask) => {
+    setLayouts((prev) => {
+      // Check if task card already exists
+      const existing = prev.find(l => {
+        if (l.node_type !== "beads_task") return false;
+        try {
+          const p = JSON.parse(l.payload ?? "{}");
+          return p.id === task.id && p.parentBeadsId === parentBeadsId;
+        } catch { return false; }
+      });
+      if (existing) {
+        const next = prev.map((l) => {
+          if (l.session_id !== existing.session_id) return l;
+          let prevPayload: Record<string, unknown> = {};
+          try {
+            prevPayload = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+          } catch {
+            /* ignore */
+          }
+          return {
+            ...l,
+            payload: JSON.stringify({ ...prevPayload, ...task, parentBeadsId }),
+          };
+        });
+        if (loaded.current) persistLayoutsRef.current(next);
+        return next;
+      }
+
+      const taskId = generateNodeId();
+      const taskLayout: SessionLayout = {
+        session_id: taskId,
+        x: 0,
+        y: 0,
+        w: BEADS_TASK_CARD_DEFAULT_W,
+        h: BEADS_TASK_CARD_DEFAULT_H,
+        collapsed: false,
+        node_type: "beads_task",
+        payload: JSON.stringify({ ...task, parentBeadsId }),
+      };
+      const next = repositionLayouts([...prev, taskLayout]);
+      if (loaded.current) persistLayoutsRef.current(next);
+      return next;
+    });
+  }, []);
+
   const updateBeadsStatus = useCallback((nodeId: string, status: import("./components/BeadsCard").BeadsStatus) => {
     setLayouts((prev) => {
       const next = prev.map((l) => {
@@ -616,9 +670,26 @@ export default function App() {
                   updatePayload({ status: "loading", toolActivity: "Prompting to submit..." });
                   const nudgeController = new AbortController();
                   abortControllers.current.set(agentNodeId, nudgeController);
+                  const nudgeMessage = [
+                    "Continue the SAME developer task. Do not claim missing context or a fresh session.",
+                    "You are still responsible for this task.",
+                    "",
+                    "Original assignment:",
+                    userMessage,
+                    "",
+                    "Current task metadata:",
+                    `- task_id: ${taskId ?? "unknown"}`,
+                    `- task_title: ${taskMeta?.title ?? "unknown"}`,
+                    `- project_path: ${projectPath ?? "unknown"}`,
+                    "",
+                    "Now do one of the following:",
+                    "1) If implementation is complete and verified, call yield_for_review with an accurate diff_summary.",
+                    "2) If not complete, continue implementation and then call yield_for_review.",
+                    "Never say you have no context.",
+                  ].join("\n");
                   await runAgent({
                     systemPrompt: getPromptForRole(role),
-                    userMessage: "You finished working but didn't submit your changes. Please call yield_for_review now to submit your work for validation. Include a brief summary of what you implemented.",
+                    userMessage: nudgeMessage,
                     plugins: buildPlugins(role, agentNodeId, taskId, projectPath),
                     signal: nudgeController.signal,
                     callbacks: {
@@ -640,24 +711,37 @@ export default function App() {
                         }).catch(() => {});
                       },
                       onDone: async () => {
-                        // If the nudge also failed to yield, force-yield as last resort
+                        // Re-check state after the nudge turn. Do NOT force-yield here:
+                        // if the model is confused after a timeout, force-yield creates empty reviews.
                         await new Promise((r) => setTimeout(r, 500));
                         try {
-                          await invoke("agent_force_yield", { agentId: agentNodeId });
-                        } catch { /* already yielded or done - expected */ }
-                        updatePayload({ status: "in_review", answer: accumulatedText, toolActivity: "Awaiting validation..." }, true);
+                          const postNudge = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role });
+                          if (postNudge === "already_done") {
+                            updatePayload({ status: "in_review", answer: accumulatedText, toolActivity: "Awaiting validation..." }, true);
+                          } else {
+                            updatePayload({
+                              status: "error",
+                              errorMessage:
+                                "Developer did not submit for review after retry. Rerun the task with non-interactive commands (for example use --yes, and background dev servers).",
+                            }, true);
+                          }
+                        } catch {
+                          updatePayload({
+                            status: "error",
+                            errorMessage:
+                              "Failed to finalize developer retry flow. Please rerun the task.",
+                          }, true);
+                        }
                       },
-                      onError: async () => {
-                        try {
-                          await invoke("agent_force_yield", { agentId: agentNodeId });
-                        } catch { /* best effort */ }
-                        updatePayload({ status: "in_review", answer: accumulatedText, toolActivity: "Awaiting validation..." }, true);
+                      onError: (msg) => {
+                        updatePayload({
+                          status: "error",
+                          errorMessage:
+                            `Developer retry failed: ${msg}. Use non-interactive commands (--yes) and avoid foreground long-running servers.`,
+                        }, true);
                       },
-                      onStopped: async () => {
+                      onStopped: () => {
                         updatePayload({ status: "stopped", answer: accumulatedText, toolActivity: "" }, true);
-                        try {
-                          await invoke("agent_force_yield", { agentId: agentNodeId });
-                        } catch { /* best effort */ }
                       },
                     },
                   });
@@ -1589,6 +1673,7 @@ export default function App() {
           onPromptChange={handlePromptChange}
           onLaunch={handleLaunch}
           onStopAgent={handleStopAgent}
+          onAddTaskCard={handleAddTaskCard}
         />
         <WorkforceOverlay />
         <DebugPanel

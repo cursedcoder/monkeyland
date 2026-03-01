@@ -20,6 +20,16 @@ export interface BeadsTask {
   title: string;
   type: string;
   status: string;
+  description?: string;
+  body?: string;
+  issue_type?: string;
+  priority?: number;
+  deps?: string[] | string;
+  parent_id?: string;
+  parentId?: string;
+  assignee?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface BeadsCardProps {
@@ -27,6 +37,7 @@ interface BeadsCardProps {
   onLayoutChange: (layout: SessionLayout) => void;
   onLayoutCommit: (layout: SessionLayout) => void;
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
+  onAddTaskCard?: (task: BeadsTask) => void;
   scale?: number;
 }
 
@@ -57,6 +68,7 @@ export function BeadsCard({
   onLayoutChange,
   onLayoutCommit,
   onDragStart,
+  onAddTaskCard,
   scale = 1,
 }: BeadsCardProps) {
   const [isDragging, setIsDragging] = useState(false);
@@ -82,10 +94,6 @@ export function BeadsCard({
   const [refreshing, setRefreshing] = useState(false);
   const [tasks, setTasks] = useState<BeadsTask[]>(status?.tasks ?? []);
 
-  useEffect(() => {
-    if (status?.tasks) setTasks(status.tasks);
-  }, [status?.tasks]);
-
   const handleRefresh = useCallback(async () => {
     if (!status?.projectPath) return;
     setRefreshing(true);
@@ -102,6 +110,79 @@ export function BeadsCard({
       setRefreshing(false);
     }
   }, [status?.projectPath]);
+
+  const handleOpenTask = useCallback(
+    async (task: BeadsTask) => {
+      if (!onAddTaskCard) return;
+      if (!status?.projectPath) {
+        onAddTaskCard(task);
+        return;
+      }
+      try {
+        const raw = await invoke<string>("beads_run", {
+          projectPath: status.projectPath,
+          args: ["show", task.id, "--json"],
+        });
+        const parsed = JSON.parse(raw.trim());
+        const detail =
+          (Array.isArray(parsed) ? parsed[0] : parsed) as Record<string, unknown> | undefined;
+        if (!detail || typeof detail !== "object") {
+          onAddTaskCard(task);
+          return;
+        }
+        onAddTaskCard({
+          ...task,
+          id: String(detail.id ?? task.id),
+          title: String(detail.title ?? task.title),
+          type: String(detail.type ?? detail.issue_type ?? task.type),
+          status: String(detail.status ?? task.status),
+          description:
+            typeof detail.description === "string"
+              ? detail.description
+              : typeof detail.body === "string"
+                ? detail.body
+                : undefined,
+          body: typeof detail.body === "string" ? detail.body : undefined,
+          issue_type: typeof detail.issue_type === "string" ? detail.issue_type : undefined,
+          priority: typeof detail.priority === "number" ? detail.priority : undefined,
+          deps:
+            typeof detail.deps === "string" || Array.isArray(detail.deps)
+              ? (detail.deps as string[] | string)
+              : undefined,
+          parent_id:
+            typeof detail.parent_id === "string"
+              ? detail.parent_id
+              : typeof detail.parentId === "string"
+                ? detail.parentId
+                : undefined,
+          parentId:
+            typeof detail.parentId === "string"
+              ? detail.parentId
+              : typeof detail.parent_id === "string"
+                ? detail.parent_id
+                : undefined,
+          assignee: typeof detail.assignee === "string" ? detail.assignee : undefined,
+          created_at: typeof detail.created_at === "string" ? detail.created_at : undefined,
+          updated_at: typeof detail.updated_at === "string" ? detail.updated_at : undefined,
+        });
+      } catch {
+        onAddTaskCard(task);
+      }
+    },
+    [onAddTaskCard, status?.projectPath]
+  );
+
+  useEffect(() => {
+    if (status?.tasks) setTasks(status.tasks);
+  }, [status?.tasks]);
+
+  useEffect(() => {
+    if (!status?.projectPath || layout.collapsed) return;
+    const interval = setInterval(() => {
+      handleRefresh();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [status?.projectPath, layout.collapsed, handleRefresh]);
 
   const handlePointerDownDrag = useCallback(
     (e: React.PointerEvent) => {
@@ -201,7 +282,7 @@ export function BeadsCard({
 
   const isSkipped = status?.initResult?.includes("skipped") || status?.initResult?.includes("not found");
   const isWarning = status?.initResult?.includes("warning");
-  const isOk = status?.initResult === "Beads initialized.";
+  const isOk = status?.initResult === "Beads initialized." || status?.initResult === "Beads already initialized.";
   const shortPath = status?.projectPath
     ? status.projectPath.length > 30
       ? "..." + status.projectPath.slice(-27)
@@ -281,7 +362,13 @@ export function BeadsCard({
                 ) : (
                   <div className="beads-card-task-list">
                     {[...inProgressTasks, ...readyTasks, ...otherTasks, ...doneTasks].map((t) => (
-                      <div key={t.id} className="beads-card-task" data-status={t.status}>
+                      <div
+                        key={t.id}
+                        className="beads-card-task"
+                        data-status={t.status}
+                        onClick={() => void handleOpenTask(t)}
+                        style={{ cursor: "pointer" }}
+                      >
                         <span className="beads-card-task-icon">{STATUS_ICONS[t.status] ?? "⬜"}</span>
                         <span className="beads-card-task-title">{t.title || t.id}</span>
                         <span className="beads-card-task-type">{t.type}</span>

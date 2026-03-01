@@ -1,4 +1,22 @@
-export type CanvasNodeType = "prompt" | "agent" | "terminal" | "terminal_log" | "browser" | "worker" | "validator" | "beads";
+export interface BeadsTask {
+  id: string;
+  title: string;
+  type: string;
+  status: string;
+  description?: string;
+  body?: string;
+  issue_type?: string;
+  priority?: number;
+  deps?: string[] | string;
+  parent_id?: string;
+  parentId?: string;
+  assignee?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type CanvasNodeType = "prompt" | "agent" | "terminal" | "terminal_log" | "browser" | "worker" | "validator" | "beads" | "beads_task";
+
 
 /** Agent roles from orchestration (plan §1.2). Used in layout payload for hierarchy and sizing. */
 export type AgentRole =
@@ -59,6 +77,8 @@ export const BEADS_CARD_DEFAULT_W = 360;
 export const BEADS_CARD_DEFAULT_H = 220;
 export const BEADS_CARD_MIN_W = 300;
 export const BEADS_CARD_MIN_H = 180;
+export const BEADS_TASK_CARD_DEFAULT_W = 280;
+export const BEADS_TASK_CARD_DEFAULT_H = 160;
 export const GRID_STEP = 40;
 export const CULL_MARGIN = 100;
 
@@ -72,6 +92,8 @@ export function getDefaultSize(nodeType: CanvasNodeType): { w: number; h: number
       return { w: VALIDATOR_CARD_DEFAULT_W, h: VALIDATOR_CARD_DEFAULT_H };
     case "beads":
       return { w: BEADS_CARD_DEFAULT_W, h: BEADS_CARD_DEFAULT_H };
+    case "beads_task":
+      return { w: BEADS_TASK_CARD_DEFAULT_W, h: BEADS_TASK_CARD_DEFAULT_H };
     case "terminal_log":
       return { w: TERMINAL_LOG_DEFAULT_W, h: TERMINAL_LOG_DEFAULT_H };
     default:
@@ -89,6 +111,8 @@ export function getMinSize(nodeType: CanvasNodeType): { w: number; h: number } {
       return { w: WORKER_CARD_MIN_W, h: WORKER_CARD_MIN_H };
     case "beads":
       return { w: BEADS_CARD_MIN_W, h: BEADS_CARD_MIN_H };
+    case "beads_task":
+      return { w: BEADS_TASK_CARD_DEFAULT_W, h: BEADS_TASK_CARD_DEFAULT_H };
     case "terminal_log":
       return { w: TERMINAL_LOG_MIN_W, h: TERMINAL_LOG_MIN_H };
     default:
