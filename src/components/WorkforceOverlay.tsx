@@ -16,9 +16,7 @@ const ROLE_BADGES: Record<string, string> = {
   developer: "DEV",
   operator: "OP",
   worker: "WRK",
-  code_review_validator: "CR",
-  business_logic_validator: "BL",
-  scope_validator: "SC",
+  validator: "VAL",
 };
 
 function badge(role: string): string {
@@ -82,9 +80,7 @@ export function WorkforceOverlay() {
     "developer",
     "operator",
     "worker",
-    "code_review_validator",
-    "business_logic_validator",
-    "scope_validator",
+    "validator",
   ];
   const sortedRoles = Array.from(byRole.entries()).sort(
     (a, b) => roleOrder.indexOf(a[0]) - roleOrder.indexOf(b[0]) || a[0].localeCompare(b[0])

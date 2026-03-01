@@ -7,9 +7,7 @@ export type AgentRole =
   | "developer"
   | "operator"
   | "worker"
-  | "code_review_validator"
-  | "business_logic_validator"
-  | "scope_validator";
+  | "validator";
 
 export interface SessionLayout {
   session_id: string;
@@ -54,8 +52,8 @@ export const WORKER_CARD_DEFAULT_W = 200;
 export const WORKER_CARD_DEFAULT_H = 80;
 export const WORKER_CARD_MIN_W = 120;
 export const WORKER_CARD_MIN_H = 48;
-export const VALIDATOR_CARD_DEFAULT_W = 240;
-export const VALIDATOR_CARD_DEFAULT_H = 100;
+export const VALIDATOR_CARD_DEFAULT_W = 300;
+export const VALIDATOR_CARD_DEFAULT_H = 200;
 /** Beads project/task-graph card. */
 export const BEADS_CARD_DEFAULT_W = 360;
 export const BEADS_CARD_DEFAULT_H = 220;

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Plugin } from "multi-llm-ts";
+import { Attachment, type Plugin } from "multi-llm-ts";
 import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
 import { WorkforceOverlay } from "./components/WorkforceOverlay";
@@ -35,80 +35,8 @@ import {
 } from "./types";
 
 const REPOSITION_ORIGIN = { x: 80, y: 80 };
-const REPOSITION_ROW_WIDTH = 2400;
 
-function layoutToRect(layout: SessionLayout): { left: number; top: number; right: number; bottom: number } {
-  const h = layout.collapsed ? 48 : layout.h;
-  return {
-    left: layout.x,
-    top: layout.y,
-    right: layout.x + layout.w,
-    bottom: layout.y + h,
-  };
-}
 
-function rectsOverlap(
-  a: { left: number; top: number; right: number; bottom: number },
-  b: { left: number; top: number; right: number; bottom: number },
-  gap: number
-): boolean {
-  return (
-    a.left - gap < b.right &&
-    a.right + gap > b.left &&
-    a.top - gap < b.bottom &&
-    a.bottom + gap > b.top
-  );
-}
-
-/**
- * Find (x, y) for a new card of size (w, h) that does not overlap existing layouts.
- * Tries preferred position first, then searches in a spiral around it.
- * @param existingLayouts - current layouts (can exclude one by id via excludeId)
- * @param excludeId - if set, layouts with this session_id are ignored (e.g. when placing relative to a card we're replacing or moving)
- */
-function findNonOverlappingPosition(
-  existingLayouts: SessionLayout[],
-  preferredX: number,
-  preferredY: number,
-  w: number,
-  h: number,
-  excludeId?: string
-): { x: number; y: number } {
-  const gap = GRID_STEP;
-  const existingRects = existingLayouts
-    .filter((l) => l.session_id !== excludeId)
-    .map(layoutToRect);
-
-  const candidateRect = (x: number, y: number) => ({
-    left: x,
-    top: y,
-    right: x + w,
-    bottom: y + h,
-  });
-
-  const overlapsAny = (rect: { left: number; top: number; right: number; bottom: number }) =>
-    existingRects.some((r) => rectsOverlap(rect, r, gap));
-
-  if (!overlapsAny(candidateRect(preferredX, preferredY))) {
-    return { x: preferredX, y: preferredY };
-  }
-
-  const step = GRID_STEP;
-  let radius = 1;
-  const maxRadius = 50;
-  while (radius <= maxRadius) {
-    for (let dy = -radius; dy <= radius; dy++) {
-      for (let dx = -radius; dx <= radius; dx++) {
-        if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
-        const x = preferredX + dx * step;
-        const y = preferredY + dy * step;
-        if (!overlapsAny(candidateRect(x, y))) return { x, y };
-      }
-    }
-    radius++;
-  }
-  return { x: preferredX, y: preferredY };
-}
 
 /** Returns new layouts organized in a tree structure based on parent-child relationships. */
 function repositionLayouts(layouts: SessionLayout[]): SessionLayout[] {
@@ -411,27 +339,17 @@ export default function App() {
   const addTerminalLogNode = useCallback((agentNodeId: string): string => {
     const logId = generateNodeId();
     setLayouts((prev) => {
-      const agent = prev.find((l) => l.session_id === agentNodeId);
-      const preferredX = agent ? agent.x + agent.w + GRID_STEP : REPOSITION_ORIGIN.x;
-      const preferredY = agent ? agent.y : REPOSITION_ORIGIN.y;
-      const { x, y } = findNonOverlappingPosition(
-        prev,
-        preferredX,
-        preferredY,
-        TERMINAL_LOG_DEFAULT_W,
-        TERMINAL_LOG_DEFAULT_H
-      );
       const logLayout: SessionLayout = {
         session_id: logId,
-        x,
-        y,
+        x: 0,
+        y: 0,
         w: TERMINAL_LOG_DEFAULT_W,
         h: TERMINAL_LOG_DEFAULT_H,
         collapsed: false,
         node_type: "terminal_log",
         payload: JSON.stringify({ parentAgentId: agentNodeId, entries: [] }),
       };
-      const next = [...prev, logLayout];
+      const next = repositionLayouts([...prev, logLayout]);
       if (loaded.current) persistLayoutsRef.current(next);
       return next;
     });
@@ -456,27 +374,17 @@ export default function App() {
   const addBeadsNode = useCallback((agentNodeId: string): string => {
     const beadsId = generateNodeId();
     setLayouts((prev) => {
-      const agent = prev.find((l) => l.session_id === agentNodeId);
-      const preferredX = agent ? agent.x + agent.w + GRID_STEP : REPOSITION_ORIGIN.x;
-      const preferredY = agent ? agent.y + (agent.h / 2) : REPOSITION_ORIGIN.y;
-      const { x, y } = findNonOverlappingPosition(
-        prev,
-        preferredX,
-        preferredY,
-        BEADS_CARD_DEFAULT_W,
-        BEADS_CARD_DEFAULT_H
-      );
       const beadsLayout: SessionLayout = {
         session_id: beadsId,
-        x,
-        y,
+        x: 0,
+        y: 0,
         w: BEADS_CARD_DEFAULT_W,
         h: BEADS_CARD_DEFAULT_H,
         collapsed: false,
         node_type: "beads",
         payload: JSON.stringify({ parentAgentId: agentNodeId, beadsStatus: null }),
       };
-      const next = [...prev, beadsLayout];
+      const next = repositionLayouts([...prev, beadsLayout]);
       if (loaded.current) persistLayoutsRef.current(next);
       return next;
     });
@@ -502,47 +410,17 @@ export default function App() {
     (agentNodeId: string, port: number): string => {
       const browserId = generateNodeId();
       setLayouts((prev) => {
-        const agent = prev.find((l) => l.session_id === agentNodeId);
-        const terminal = prev.find((l) => {
-          if (l.node_type !== "terminal") return false;
-          try {
-            const p = JSON.parse(l.payload ?? "{}") as { parentAgentId?: string };
-            return p.parentAgentId === agentNodeId;
-          } catch {
-            return false;
-          }
-        });
-
-        let preferredX: number, preferredY: number;
-        if (terminal) {
-          preferredX = terminal.x;
-          preferredY = terminal.y + terminal.h + GRID_STEP;
-        } else if (agent) {
-          preferredX = agent.x + agent.w + GRID_STEP;
-          preferredY = agent.y;
-        } else {
-          preferredX = REPOSITION_ORIGIN.x;
-          preferredY = REPOSITION_ORIGIN.y;
-        }
-        const { x, y } = findNonOverlappingPosition(
-          prev,
-          preferredX,
-          preferredY,
-          BROWSER_CARD_DEFAULT_W,
-          BROWSER_CARD_DEFAULT_H
-        );
-
         const browserLayout: SessionLayout = {
           session_id: browserId,
-          x,
-          y,
+          x: 0,
+          y: 0,
           w: BROWSER_CARD_DEFAULT_W,
           h: BROWSER_CARD_DEFAULT_H,
           collapsed: false,
           node_type: "browser",
           payload: JSON.stringify({ parentAgentId: agentNodeId, browserPort: port }),
         };
-        const next = [...prev, browserLayout];
+        const next = repositionLayouts([...prev, browserLayout]);
         if (loaded.current) persistLayoutsRef.current(next);
         return next;
       });
@@ -613,12 +491,10 @@ export default function App() {
       taskId: string | null;
       sourcePromptId?: string;
       parentAgentId?: string;
-      preferredX: number;
-      preferredY: number;
       taskMeta?: { title?: string; type?: string; priority?: number; description?: string };
       projectPath?: string | null;
     }) => {
-      const { agentNodeId, role, userMessage, taskId, sourcePromptId, parentAgentId, preferredX, preferredY, taskMeta, projectPath } = params;
+      const { agentNodeId, role, userMessage, taskId, sourcePromptId, parentAgentId, taskMeta, projectPath } = params;
       const size = getDefaultSize(role === "worker" ? "worker" : role.includes("validator") ? "validator" : "agent");
 
       setLayouts((prev) => {
@@ -637,11 +513,10 @@ export default function App() {
           if (loaded.current) persistLayouts(next);
           return next;
         }
-        const { x, y } = findNonOverlappingPosition(prev, preferredX, preferredY, size.w, size.h);
         const newAgentLayout: SessionLayout = {
           session_id: agentNodeId,
-          x,
-          y,
+          x: 0,
+          y: 0,
           w: size.w,
           h: size.h,
           collapsed: false,
@@ -659,7 +534,7 @@ export default function App() {
             answer: "",
           }),
         };
-        const next = [...prev, newAgentLayout];
+        const next = repositionLayouts([...prev, newAgentLayout]);
         if (loaded.current) persistLayouts(next);
         return next;
       });
@@ -827,8 +702,6 @@ export default function App() {
         userMessage: promptText,
         taskId: null,
         sourcePromptId: nodeId,
-        preferredX: promptLayout.x,
-        preferredY: promptLayout.y + promptLayout.h + GRID_STEP,
       });
       // Start orchestration so the loop can pick up tasks from Beads and spawn developer agents.
       try {
@@ -959,17 +832,12 @@ export default function App() {
   // Wire up dispatchAgentRef so WM's dispatch_agent tool can spawn agents.
   dispatchAgentRef.current = (p) => {
     const agentId = generateNodeId();
-      const wmLayout = layoutsRef.current.find((l) => l.session_id === p.parentAgentId);
-      const prefX = wmLayout ? wmLayout.x : REPOSITION_ORIGIN.x;
-      const prefY = wmLayout ? wmLayout.y + wmLayout.h + GRID_STEP : REPOSITION_ORIGIN.y;
     startAgentConversationRef.current({
       agentNodeId: agentId,
       role: p.role as AgentRole,
       userMessage: p.taskDescription,
       taskId: null,
       parentAgentId: p.parentAgentId,
-      preferredX: prefX,
-      preferredY: prefY,
     });
     return agentId;
   };
@@ -1018,16 +886,6 @@ export default function App() {
 
       const wmId = activeWmNodeId.current;
       const parentRef = parent_agent_id ?? wmId ?? undefined;
-      let preferredX = REPOSITION_ORIGIN.x;
-      let preferredY = REPOSITION_ORIGIN.y;
-
-      if (parentRef) {
-        const parentLayout = layoutsRef.current.find((l) => l.session_id === parentRef);
-        if (parentLayout) {
-          preferredX = parentLayout.x;
-          preferredY = parentLayout.y + parentLayout.h + GRID_STEP;
-        }
-      }
 
       startAgentConversationRef.current({
         agentNodeId: agent_id,
@@ -1036,8 +894,6 @@ export default function App() {
         taskId: task_id,
         taskMeta,
         parentAgentId: parentRef,
-        preferredX,
-        preferredY,
         projectPath: resolvedProjectPath,
       });
     });
@@ -1073,7 +929,7 @@ export default function App() {
     };
   }, []);
 
-  // Listen for validation_requested: spawn 3 parallel validator agents
+  // Listen for validation_requested: single unified validator with smart context gathering
   useEffect(() => {
     const unlisten = listen<{
       developer_agent_id: string;
@@ -1082,152 +938,386 @@ export default function App() {
       diff_summary: string | null;
     }>("validation_requested", async (event) => {
       const { developer_agent_id, task_id, diff_summary } = event.payload;
-      const validatorRoles: AgentRole[] = [
-        "code_review_validator",
-        "business_logic_validator",
-        "scope_validator",
-      ];
 
-      // Get project path for sandboxing validators
       let resolvedProjectPath: string | null = null;
       try {
         resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
       } catch { /* */ }
 
-      const devLayout = layoutsRef.current.find((l) => l.session_id === developer_agent_id);
-      let baseX = devLayout ? devLayout.x : REPOSITION_ORIGIN.x;
-      let baseY = devLayout ? devLayout.y + devLayout.h + GRID_STEP : REPOSITION_ORIGIN.y;
+      // ── 1. Spawn 1 unified validator agent in the backend ──
+      let validatorId: string;
+      try {
+        const result = await invoke<{ agent_id: string }>("agent_spawn", {
+          payload: {
+            role: "validator",
+            task_id,
+            parent_agent_id: developer_agent_id,
+            cwd: resolvedProjectPath,
+          },
+        });
+        validatorId = result.agent_id;
+      } catch (e) {
+        console.error("Failed to spawn validator:", e);
+        for (const r of ["code_review", "business_logic", "scope"]) {
+          invoke("validation_submit", {
+            payload: { developer_agent_id, validator_role: r, pass: true, reasons: ["Validator failed to spawn"] },
+          }).catch(() => {});
+        }
+        return;
+      }
 
-      for (const role of validatorRoles) {
-        const userMessage = [
-          `Task ID: ${task_id ?? "unknown"}`,
-          `Developer agent: ${developer_agent_id}`,
-          "",
-          "## Changes to review",
-          diff_summary ?? "No diff summary provided.",
-        ].join("\n");
+      // ── 2. Create the ValidatorCard layout ──
+      const vSize = getDefaultSize("validator");
+      const pendingCheck = { status: "pending" as const, reasons: [] };
+      const initialResults = {
+        code_review: { ...pendingCheck },
+        business_logic: { ...pendingCheck },
+        scope: { ...pendingCheck },
+      };
 
-        // Register validator in backend for state machine + sandbox enforcement
-        let validatorId: string;
+      setLayouts((prev) => {
+        const newLayout: SessionLayout = {
+          session_id: validatorId,
+          x: 0, y: 0,
+          w: vSize.w, h: vSize.h,
+          collapsed: false,
+          node_type: "validator",
+          payload: JSON.stringify({
+            role: "validator",
+            status: "loading",
+            parent_agent_id: developer_agent_id,
+            validationResults: initialResults,
+          }),
+        };
+        const next = repositionLayouts([...prev, newLayout]);
+        if (loaded.current) persistLayouts(next);
+        return next;
+      });
+
+      const updateValidatorPayload = (update: Record<string, unknown>) => {
+        setLayouts((prev) => {
+          const next = prev.map((l) => {
+            if (l.session_id !== validatorId) return l;
+            try {
+              const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+              return { ...l, payload: JSON.stringify({ ...p, ...update }) };
+            } catch { return l; }
+          });
+          if (loaded.current) persistLayouts(next);
+          return next;
+        });
+      };
+
+      // ── 3. Gather smart context ──
+      const SKIP_PATTERNS = [
+        /lock\.json$/i, /lock\.yaml$/i, /yarn\.lock$/i, /pnpm-lock/i,
+        /^dist\//i, /^build\//i, /^\.next\//i, /^out\//i,
+        /\.min\.(js|css)$/i, /\.map$/i, /\.chunk\./i,
+        /^\.beads\//i, /^\.git\//i,
+        /\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot)$/i,
+      ];
+      const SOURCE_EXT = /\.(jsx?|tsx?|css|html|json|md|py|rs|go|rb|vue|svelte|toml|yaml|yml|sh|sql)$/i;
+
+      let sourceFiles: string[] = [];
+      const fileContents: Record<string, string> = {};
+      let gitDiff = "";
+
+      if (resolvedProjectPath) {
         try {
-          const result = await invoke<{ agent_id: string }>("agent_spawn", {
+          const fileListOut = await invoke<string>("terminal_exec", {
             payload: {
-              role,
-              task_id: task_id,
-              parent_agent_id: developer_agent_id,
+              session_id: "ctx-gather",
+              command: "{ git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u",
               cwd: resolvedProjectPath,
             },
           });
-          validatorId = result.agent_id;
-        } catch (e) {
-          console.error("Failed to spawn validator:", e);
-          // Auto-submit a pass so the backend doesn't wait forever for 3 results
-          invoke("validation_submit", {
-            payload: { developer_agent_id, validator_role: role, pass: true, reasons: ["Validator failed to spawn"] },
-          }).catch(() => {});
-          continue;
+          sourceFiles = fileListOut.split("\n")
+            .filter((f) => f.trim() !== "")
+            .filter((f) => SOURCE_EXT.test(f))
+            .filter((f) => !SKIP_PATTERNS.some((p) => p.test(f)))
+            .slice(0, 50);
+        } catch { /* no git or no files */ }
+
+        for (const f of sourceFiles) {
+          try {
+            fileContents[f] = await invoke<string>("read_file", {
+              path: `${resolvedProjectPath}/${f}`,
+            });
+          } catch { /* skip unreadable */ }
         }
 
-        // Spawn validator -- it runs, produces verdict, then we submit it
-        const validatorPromise = startAgentConversationRef.current({
-          agentNodeId: validatorId,
-          role,
-          userMessage,
-          taskId: task_id,
-          parentAgentId: developer_agent_id,
-          preferredX: baseX,
-          preferredY: baseY,
-          projectPath: resolvedProjectPath,
-        });
+        try {
+          gitDiff = await invoke<string>("terminal_exec", {
+            payload: {
+              session_id: "ctx-gather",
+              command: "git diff HEAD 2>/dev/null || git diff 2>/dev/null || echo ''",
+              cwd: resolvedProjectPath,
+            },
+          });
+        } catch { /* no commits yet */ }
+      }
 
-        // After the validator finishes, parse verdict and submit.
-        // .catch() ensures a result is submitted even if the conversation errors out.
-        validatorPromise.then(async () => {
-          const validatorLayout = layoutsRef.current.find((l) => l.session_id === validatorId);
-          let pass = true;
-          let reasons: string[] = [];
-          if (validatorLayout?.payload) {
+      // ── 4. Detect frontend project and capture screenshot ──
+      const hasFrontendFiles = sourceFiles.some((f) =>
+        /\.(jsx|tsx|vue|svelte|html|css)$/i.test(f),
+      );
+      let hasDevScript = false;
+      if (hasFrontendFiles) {
+        try {
+          const pkg = JSON.parse(fileContents["package.json"] || "{}") as {
+            scripts?: Record<string, string>;
+          };
+          hasDevScript = !!(pkg.scripts?.dev || pkg.scripts?.start);
+        } catch { /* not a node project */ }
+      }
+      const isFrontendProject = hasFrontendFiles && hasDevScript;
+
+      let screenshotAttachment: Attachment | undefined;
+      if (isFrontendProject && resolvedProjectPath) {
+        try {
+          // Start dev server in background
+          const devCmd = fileContents["package.json"]?.includes('"dev"') ? "npm run dev" : "npm start";
+          await invoke<string>("terminal_exec", {
+            payload: {
+              session_id: `validator-dev-${validatorId}`,
+              command: `cd "${resolvedProjectPath}" && nohup ${devCmd} > /tmp/validator-dev.log 2>&1 & sleep 4 && echo "started"`,
+              cwd: resolvedProjectPath,
+            },
+          });
+
+          // Probe common ports
+          const ports = [5173, 3000, 4321, 8080, 8000];
+          let devServerUrl = "";
+          for (const port of ports) {
             try {
-              const p = JSON.parse(validatorLayout.payload) as { answer?: string };
-              const answer = p.answer ?? "";
-              try {
-                const verdict = JSON.parse(answer) as { status?: string; reasons?: string[] };
-                pass = verdict.status === "pass";
-                reasons = verdict.reasons ?? [];
-              } catch {
-                pass = !answer.toLowerCase().includes('"fail"');
-                reasons = [answer.slice(0, 500)];
+              const check = await invoke<string>("terminal_exec", {
+                payload: {
+                  session_id: "ctx-gather",
+                  command: `curl -s -o /dev/null -w "%{http_code}" http://localhost:${port} 2>/dev/null || echo "0"`,
+                  cwd: "/tmp",
+                },
+              });
+              if (check.trim().startsWith("2") || check.trim().startsWith("3")) {
+                devServerUrl = `http://localhost:${port}`;
+                break;
               }
-            } catch {
-              /* assume pass if unparseable */
-            }
+            } catch { /* port not responding */ }
           }
-          try {
-            const outcome = await invoke<{
-              all_passed: boolean;
-              retry_count: number;
-              max_retries: number;
-              failures: { role: string; reasons: string[] }[];
-            } | null>("validation_submit", {
-              payload: {
-                developer_agent_id,
-                validator_role: role,
-                pass,
-                reasons,
-              },
+
+          if (devServerUrl) {
+            const browserPort = await invoke<number>("browser_ensure_started", { agentId: validatorId });
+            // Create session
+            await fetch(`http://127.0.0.1:${browserPort}/session`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id: `validator-${validatorId}` }),
             });
-
-            // When all 3 validators are in and at least one failed, restart the developer with feedback
-            if (outcome && !outcome.all_passed && outcome.retry_count < outcome.max_retries) {
-              const feedbackParts = [
-                `## Validation Failed (attempt ${outcome.retry_count}/${outcome.max_retries})`,
-                "",
-              ];
-              for (const f of outcome.failures) {
-                feedbackParts.push(`### ${f.role}`);
-                for (const r of f.reasons) {
-                  feedbackParts.push(`- ${r}`);
-                }
-                feedbackParts.push("");
-              }
-              feedbackParts.push("Fix ONLY the issues listed above. Stay within task scope. Then call yield_for_review again.");
-
-              // Include original task description so the developer has context
-              const devLayout = layoutsRef.current.find((l) => l.session_id === developer_agent_id);
-              let taskDesc = "";
-              if (devLayout?.payload) {
-                try {
-                  const dp = JSON.parse(devLayout.payload) as { taskDescription?: string };
-                  taskDesc = dp.taskDescription ?? "";
-                } catch { /* */ }
-              }
-
-              const retryMessage = taskDesc
-                ? `## Original Task\n${taskDesc}\n\n${feedbackParts.join("\n")}`
-                : feedbackParts.join("\n");
-
-              // Restart the developer's LLM conversation on the same card
-              startAgentConversationRef.current({
-                agentNodeId: developer_agent_id,
-                role: "developer",
-                userMessage: retryMessage,
-                taskId: task_id,
-                preferredX: devLayout?.x ?? REPOSITION_ORIGIN.x,
-                preferredY: devLayout?.y ?? REPOSITION_ORIGIN.y,
-                projectPath: resolvedProjectPath,
+            // Navigate
+            await fetch(`http://127.0.0.1:${browserPort}/session/validator-${validatorId}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "navigate", params: { url: devServerUrl } }),
+            });
+            // Wait for page to render
+            await new Promise((r) => setTimeout(r, 3000));
+            // Screenshot
+            const ssResp = await fetch(`http://127.0.0.1:${browserPort}/session/validator-${validatorId}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "screenshot", params: {} }),
+            });
+            const ssData = await ssResp.json() as { data?: string };
+            if (ssData.data) {
+              screenshotAttachment = new Attachment(ssData.data, "image/jpeg");
+              updateValidatorPayload({
+                validationResults: { ...initialResults, visual: { status: "pending", reasons: [] } },
               });
             }
-          } catch {
-            /* best effort */
           }
-        }).catch(() => {
-          // Validator conversation failed entirely — auto-submit pass so we don't block forever
-          invoke("validation_submit", {
-            payload: { developer_agent_id, validator_role: role, pass: true, reasons: ["Validator errored out"] },
-          }).catch(() => {});
-        });
+        } catch (e) {
+          console.warn("Visual validator screenshot failed:", e);
+        }
+      }
 
-        baseX += GRID_STEP * 7;
+      // ── 5. Build comprehensive message ──
+      const devLayout = layoutsRef.current.find((l) => l.session_id === developer_agent_id);
+      let taskDesc = "";
+      if (devLayout?.payload) {
+        try {
+          const dp = JSON.parse(devLayout.payload) as { taskDescription?: string };
+          taskDesc = dp.taskDescription ?? "";
+        } catch { /* */ }
+      }
+
+      const msgParts = [
+        `## Task`,
+        `Task ID: ${task_id ?? "unknown"}`,
+        taskDesc ? `Description: ${taskDesc}` : "",
+        "",
+        `## Developer Summary`,
+        diff_summary ?? "No summary provided.",
+        "",
+        `## File Listing (${sourceFiles.length} files)`,
+        sourceFiles.join("\n"),
+        "",
+      ];
+
+      const fileEntries = Object.entries(fileContents);
+      if (fileEntries.length > 0) {
+        msgParts.push("## File Contents");
+        for (const [path, content] of fileEntries) {
+          const truncated = content.length > 5000 ? content.slice(0, 5000) + "\n... (truncated)" : content;
+          msgParts.push(`### ${path}\n\`\`\`\n${truncated}\n\`\`\`\n`);
+        }
+      }
+
+      if (gitDiff.trim()) {
+        const diffTruncated = gitDiff.length > 10000 ? gitDiff.slice(0, 10000) + "\n... (truncated)" : gitDiff;
+        msgParts.push(`## Git Diff\n\`\`\`diff\n${diffTruncated}\n\`\`\`\n`);
+      }
+
+      const userMessage = msgParts.filter(Boolean).join("\n");
+
+      // ── 6. Run single LLM call (no tools) ──
+      const controller = new AbortController();
+      abortControllers.current.set(validatorId, controller);
+
+      let accumulatedText = "";
+      try {
+        await runAgent({
+          systemPrompt: getPromptForRole("validator"),
+          userMessage,
+          plugins: [],
+          signal: controller.signal,
+          attachment: screenshotAttachment,
+          callbacks: {
+            onChunk: (c) => {
+              if ((c.type === "content" || c.type === "reasoning") && c.text) {
+                accumulatedText += c.text;
+              }
+            },
+            onUsage: (usage) => {
+              costStore.reportUsage(
+                validatorId, "validator", "unknown",
+                usage.prompt_tokens, usage.completion_tokens, 0, 0,
+              );
+              invoke("agent_report_tokens", {
+                agentId: validatorId,
+                delta: usage.prompt_tokens + usage.completion_tokens,
+              }).catch(() => {});
+            },
+            onDone: () => { /* handled below */ },
+            onError: () => { /* handled below */ },
+            onStopped: () => { /* handled below */ },
+          },
+        });
+      } catch { /* handled below */ }
+
+      abortControllers.current.delete(validatorId);
+
+      // ── 7. Parse LLM JSON output → submit validation results ──
+      type CheckResult = { status: "pass" | "fail"; reasons: string[]; out_of_scope_files?: string[] };
+      type ParsedResults = {
+        code_review?: CheckResult;
+        business_logic?: CheckResult;
+        scope?: CheckResult;
+        visual?: CheckResult;
+      };
+
+      let parsed: ParsedResults = {};
+      try {
+        const cleaned = accumulatedText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+        parsed = JSON.parse(cleaned) as ParsedResults;
+      } catch {
+        // If we can't parse, auto-pass everything
+        parsed = {
+          code_review: { status: "pass", reasons: ["Could not parse validator output"] },
+          business_logic: { status: "pass", reasons: ["Could not parse validator output"] },
+          scope: { status: "pass", reasons: [] },
+        };
+      }
+
+      // Normalize missing keys to pass
+      const checkKeys = ["code_review", "business_logic", "scope"] as const;
+      for (const k of checkKeys) {
+        if (!parsed[k]) parsed[k] = { status: "pass", reasons: [] };
+      }
+
+      // Update the card with final results
+      const finalResults: Record<string, CheckResult> = {
+        code_review: parsed.code_review!,
+        business_logic: parsed.business_logic!,
+        scope: parsed.scope!,
+      };
+      if (parsed.visual) finalResults.visual = parsed.visual;
+
+      updateValidatorPayload({
+        status: "done",
+        validationResults: finalResults,
+      });
+
+      // Complete the validator agent
+      invoke("agent_turn_ended", { agentId: validatorId, role: "validator" }).catch(() => {});
+
+      // ── 8. Submit 3 validation_submit calls to the backend ──
+      type ValidationOutcome = {
+        all_passed: boolean;
+        retry_count: number;
+        max_retries: number;
+        failures: { role: string; reasons: string[] }[];
+      } | null;
+      let lastOutcome: ValidationOutcome = null;
+
+      for (const k of checkKeys) {
+        const check = parsed[k]!;
+        let pass = check.status === "pass";
+        if (k === "scope" && parsed.visual && parsed.visual.status === "fail") {
+          pass = false;
+        }
+        try {
+          const outcome = await invoke<ValidationOutcome>("validation_submit", {
+            payload: {
+              developer_agent_id,
+              validator_role: k,
+              pass,
+              reasons: check.status === "fail" ? check.reasons : (
+                k === "scope" && parsed.visual?.status === "fail" ? parsed.visual.reasons : []
+              ),
+            },
+          });
+          if (outcome) lastOutcome = outcome;
+        } catch { /* best effort */ }
+      }
+
+      // ── 9. Handle retry flow (if validation failed) ──
+      if (lastOutcome && !lastOutcome.all_passed && lastOutcome.retry_count < lastOutcome.max_retries) {
+        const feedbackParts = [
+          `## Validation Failed (attempt ${lastOutcome.retry_count}/${lastOutcome.max_retries})`,
+          "",
+        ];
+        for (const f of lastOutcome.failures) {
+          feedbackParts.push(`### ${f.role}`);
+          for (const r of f.reasons) feedbackParts.push(`- ${r}`);
+          feedbackParts.push("");
+        }
+        if (parsed.visual?.status === "fail") {
+          feedbackParts.push("### Visual");
+          for (const r of parsed.visual.reasons) feedbackParts.push(`- ${r}`);
+          feedbackParts.push("");
+        }
+        feedbackParts.push("Fix ONLY the issues listed above. Stay within task scope. Then call yield_for_review again.");
+
+        const retryMessage = taskDesc
+          ? `## Original Task\n${taskDesc}\n\n${feedbackParts.join("\n")}`
+          : feedbackParts.join("\n");
+
+        startAgentConversationRef.current({
+          agentNodeId: developer_agent_id,
+          role: "developer",
+          userMessage: retryMessage,
+          taskId: task_id,
+          projectPath: resolvedProjectPath,
+        });
       }
     });
 
@@ -1238,24 +1328,17 @@ export default function App() {
 
   const handleAddPrompt = useCallback(() => {
     setLayouts((prev) => {
-      const { x, y } = findNonOverlappingPosition(
-        prev,
-        REPOSITION_ORIGIN.x,
-        REPOSITION_ORIGIN.y,
-        PROMPT_CARD_DEFAULT_W,
-        PROMPT_CARD_DEFAULT_H
-      );
       const newLayout: SessionLayout = {
         session_id: generateNodeId(),
-        x,
-        y,
+        x: 0,
+        y: 0,
         w: PROMPT_CARD_DEFAULT_W,
         h: PROMPT_CARD_DEFAULT_H,
         collapsed: false,
         node_type: "prompt",
         payload: JSON.stringify({ promptText: "" }),
       };
-      const next = [...prev, newLayout];
+      const next = repositionLayouts([...prev, newLayout]);
       if (loaded.current) persistLayouts(next);
       return next;
     });

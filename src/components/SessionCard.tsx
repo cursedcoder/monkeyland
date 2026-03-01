@@ -16,9 +16,7 @@ const ROLE_LABELS: Record<AgentRole, string> = {
   developer: "Developer",
   operator: "Operator",
   worker: "Worker",
-  code_review_validator: "Code Review",
-  business_logic_validator: "Business Logic",
-  scope_validator: "Scope",
+  validator: "Validator",
 };
 
 function parseRole(payload: string | undefined): AgentRole | null {

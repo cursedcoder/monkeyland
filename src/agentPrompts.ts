@@ -234,37 +234,40 @@ Read file contents from disk.
 `;
 
 /**
- * Code Review Validator -- reviews a git diff for quality.
+ * Unified Validator -- performs all 3 validation checks in a single LLM call.
+ * Receives pre-gathered context (file listing, file contents, git diff) so it needs no tools.
  */
-export const CODE_REVIEW_VALIDATOR_PROMPT = `You are a Code Review Validator. You receive a git diff and analyze it for quality.
+export const UNIFIED_VALIDATOR_PROMPT = `You are a Validator in Monkeyland. You perform 3 independent checks on a developer's work.
 
-Check for: anti-patterns, security flaws, style violations, dead code, missing error handling.
+You will receive: the task description, the developer's summary, a file listing, file contents, and any git diff.
 
-Respond with JSON: { "status": "pass" | "fail", "reasons": ["..."] }
+Perform these 3 independent checks:
 
-Be strict but fair. Minor style issues are not failures. Security and correctness issues are.`;
+## 1. Code Review
+Check for: anti-patterns, security flaws, dead code, missing error handling.
+Minor style issues are NOT failures. Security and correctness issues ARE failures.
 
-/**
- * Business Logic Validator -- checks implementation correctness.
- */
-export const BUSINESS_LOGIC_VALIDATOR_PROMPT = `You are a Business Logic Validator. You receive a task description and its implementation diff.
+## 2. Business Logic
+Does the implementation correctly fulfill the task requirements? Are edge cases handled?
 
-Check: Does the implementation correctly fulfill the task requirements? Are edge cases handled? Does the logic make sense?
+## 3. Scope
+Did the developer ONLY modify/create files relevant to the task? Any unrelated changes?
 
-You may use \`run_terminal_command\` to run tests if a test suite exists.
+## 4. Visual (only if a screenshot is attached)
+Look at the screenshot of the running application. Check:
+- Does the UI render without obvious visual broken elements?
+- Is the layout reasonable and usable?
+- Are there visible error messages or blank screens?
+Minor style issues are NOT failures. Broken rendering, blank pages, or visible errors ARE failures.
+If no screenshot is attached, omit the "visual" key from your response entirely.
 
-Respond with JSON: { "status": "pass" | "fail", "reasons": ["..."] }`;
-
-/**
- * Scope Validator -- ensures changes stay within task boundaries.
- */
-export const SCOPE_VALIDATOR_PROMPT = `You are a Scope Validator. You receive a task description and a git diff.
-
-Check: Did the developer ONLY modify files relevant to the task? Did they add unrelated changes or expand scope?
-
-Compare the diff file list against what the task description implies.
-
-Respond with JSON: { "status": "pass" | "fail", "reasons": ["..."], "out_of_scope_files": ["..."] }`;
+Respond with ONLY this JSON (no markdown fences, no other text):
+{
+  "code_review": { "status": "pass" | "fail", "reasons": ["..."] },
+  "business_logic": { "status": "pass" | "fail", "reasons": ["..."] },
+  "scope": { "status": "pass" | "fail", "reasons": ["..."], "out_of_scope_files": [] },
+  "visual": { "status": "pass" | "fail", "reasons": ["..."] }
+}`;
 
 /**
  * Get the system prompt for a given agent role.
@@ -282,12 +285,8 @@ export function getPromptForRole(role: AgentRole | "orchestrator"): string {
       return OPERATOR_PROMPT;
     case "worker":
       return WORKER_PROMPT;
-    case "code_review_validator":
-      return CODE_REVIEW_VALIDATOR_PROMPT;
-    case "business_logic_validator":
-      return BUSINESS_LOGIC_VALIDATOR_PROMPT;
-    case "scope_validator":
-      return SCOPE_VALIDATOR_PROMPT;
+    case "validator":
+      return UNIFIED_VALIDATOR_PROMPT;
     default:
       return DEVELOPER_PROMPT;
   }
@@ -306,7 +305,5 @@ export const ROLE_TOOLS: Record<AgentRole | "orchestrator", ToolName[]> = {
   developer: ["write_file", "read_file", "run_terminal_command", "browser_action", "yield_for_review"],
   operator: ["read_file", "run_terminal_command", "browser_action"],
   worker: ["write_file", "read_file", "run_terminal_command", "complete_task"],
-  code_review_validator: ["read_file", "complete_task"],
-  business_logic_validator: ["read_file", "run_terminal_command", "complete_task"],
-  scope_validator: ["read_file", "complete_task"],
+  validator: [],
 };

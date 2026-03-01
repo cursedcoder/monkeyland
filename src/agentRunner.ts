@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { loadModels, igniteModel, Message, Plugin } from "multi-llm-ts";
+import { loadModels, igniteModel, Message, Attachment, Plugin } from "multi-llm-ts";
 import type { LlmChunk } from "multi-llm-ts";
 import type { LlmProviderId } from "./types";
 
@@ -29,6 +29,7 @@ export interface AgentRunnerParams {
   plugins: Plugin[];
   signal: AbortSignal;
   callbacks: AgentRunnerCallbacks;
+  attachment?: Attachment;
 }
 
 export interface LoadedModel {
@@ -131,7 +132,7 @@ async function loadLlmModel(): Promise<LoadedModel> {
  * This is the core bridge that all agent roles use -- orchestrator, developer, worker, validator.
  */
 export async function runAgent(params: AgentRunnerParams): Promise<void> {
-  const { systemPrompt, userMessage, plugins, signal, callbacks } = params;
+  const { systemPrompt, userMessage, plugins, signal, callbacks, attachment } = params;
 
   let fullText = "";
   const loaded = await loadLlmModel();
@@ -145,11 +146,12 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
       loaded.engine.addPlugin(plugin);
     }
 
+    const userMsg = attachment
+      ? new Message("user", userMessage, attachment)
+      : new Message("user", userMessage);
+
     const stream = loaded.engine.generate(
-      [
-        new Message("system", systemPrompt),
-        new Message("user", userMessage),
-      ],
+      [new Message("system", systemPrompt), userMsg],
       { tools: true, usage: true, abortSignal: signal },
     );
 

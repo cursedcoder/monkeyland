@@ -7,6 +7,7 @@ import { TerminalCard } from "./TerminalCard";
 import { BrowserCard } from "./BrowserCard";
 import { BeadsCard } from "./BeadsCard";
 import { TerminalLogCard } from "./TerminalLogCard";
+import { ValidatorCard } from "./ValidatorCard";
 import type { SessionLayout } from "../types";
 import { CULL_MARGIN } from "../types";
 
@@ -352,8 +353,22 @@ export function Canvas({
             );
           }
 
-          // agent, worker, validator: SessionCard (worker/validator use smaller default size from layout)
-          const agentLike = ["agent", "worker", "validator"];
+          if (nodeType === "validator") {
+            return (
+              <ValidatorCard
+                key={layout.session_id}
+                layout={layout}
+                onLayoutChange={handleCardLayoutChange(layout.session_id)}
+                onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
+                onDragStart={handleDragStart}
+                onStop={() => onStopAgent?.(layout.session_id)}
+                scale={viewport.scale}
+              />
+            );
+          }
+
+          // agent, worker: SessionCard
+          const agentLike = ["agent", "worker"];
           const index = layouts.filter((l) =>
             agentLike.includes((l.node_type ?? "agent") as string)
           ).indexOf(layout);

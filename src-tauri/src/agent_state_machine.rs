@@ -180,13 +180,7 @@ pub fn allowed_tools(role: &str) -> HashSet<Tool> {
             .into_iter()
             .collect(),
 
-        "code_review_validator" | "scope_validator" => {
-            [Tool::ReadFile].into_iter().collect()
-        }
-
-        "business_logic_validator" => {
-            [Tool::ReadFile, Tool::TerminalExec].into_iter().collect()
-        }
+        "validator" => HashSet::new(),
 
         _ => HashSet::new(),
     }

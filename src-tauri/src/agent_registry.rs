@@ -75,27 +75,9 @@ fn default_role_configs() -> HashMap<String, RoleConfig> {
         },
     );
     m.insert(
-        "code_review_validator".to_string(),
+        "validator".to_string(),
         RoleConfig {
-            ttl_secs: 300,
-            token_quota: 50_000,
-            max_children: 0,
-            max_count: 15,
-        },
-    );
-    m.insert(
-        "business_logic_validator".to_string(),
-        RoleConfig {
-            ttl_secs: 300,
-            token_quota: 50_000,
-            max_children: 0,
-            max_count: 15,
-        },
-    );
-    m.insert(
-        "scope_validator".to_string(),
-        RoleConfig {
-            ttl_secs: 300,
+            ttl_secs: 120,
             token_quota: 50_000,
             max_children: 0,
             max_count: 15,
