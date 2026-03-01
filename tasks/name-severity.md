@@ -48,22 +48,22 @@
   - Files: `src/components/BeadsCard.tsx`, `src/components/Canvas.tsx`, `src/App.tsx`
   - Done when: panning/culling/remount preserves latest task data.
 
-- [ ] **Reduce layout update churn under streaming**  
+- [x] **Reduce layout update churn under streaming**  
   Avoid full `layouts.map + JSON.parse/stringify` on each chunk; normalize payload state and throttle writes.
   - Files: `src/App.tsx`, `src/components/Canvas.tsx`
   - Done when: many concurrent agents stream without visible UI jank.
 
-- [ ] **Improve merge train throughput strategy**  
+- [x] **Improve merge train throughput strategy**  
   Keep correctness lock, but optimize queue processing cadence and conflict handling latency.
   - Files: `src-tauri/src/orchestration.rs`
   - Done when: merge backlog drains predictably under multi-agent load.
 
-- [ ] **Bound terminal log memory growth**  
+- [x] **Bound terminal log memory growth**  
   Add entry/output caps (ring buffer semantics) and render virtualization for long sessions.
   - Files: `src/plugins/TerminalToolPlugin.ts`, `src/components/TerminalLogCard.tsx`
   - Done when: long runs do not grow memory/UI unboundedly.
 
-- [ ] **Stabilize BrowserCard event listener lifecycle**  
+- [x] **Stabilize BrowserCard event listener lifecycle**  
   Avoid rebinding native listeners on high-frequency frame updates.
   - Files: `src/components/BrowserCard.tsx`
   - Done when: listeners mount once per card lifecycle with stable handlers.
@@ -76,17 +76,17 @@
 
 ## Operational Readiness
 
-- [ ] **Add CI required checks**  
+- [x] **Add CI required checks**  
   Minimum: frontend build, Rust tests, validation script, and lint checks.
   - Files: `.github/workflows/*`, `package.json`
   - Done when: merges/releases are gated by automated checks.
 
-- [ ] **Add frontend test suite baseline**  
+- [x] **Add frontend test suite baseline**  
   Introduce component and orchestration-flow tests for high-risk state transitions.
   - Files: `src/**` (new test files)
   - Done when: key flows have deterministic regression coverage.
 
-- [ ] **Improve docs and launch runbooks**  
+- [x] **Improve docs and launch runbooks**  
   Update stale `README.md` stage status and populate `docs/CONTEXT.md` with architecture + operations.
   - Files: `README.md`, `docs/CONTEXT.md`
   - Done when: new contributors/operators can run, debug, and recover from failures.

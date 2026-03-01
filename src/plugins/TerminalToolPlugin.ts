@@ -2,6 +2,10 @@ import { Plugin, type PluginParameter, type PluginExecutionContext } from "./Plu
 import { invoke } from "@tauri-apps/api/core";
 import type { TerminalLogEntry } from "../components/TerminalLogCard";
 
+const MAX_TERMINAL_LOG_ENTRIES = 200;
+const MAX_TERMINAL_OUTPUT_CHARS = 12_000;
+const MAX_TERMINAL_TOTAL_CHARS = 250_000;
+
 export type AddTerminalLogNodeFn = (agentNodeId: string) => string;
 export type UpdateTerminalLogFn = (nodeId: string, entries: TerminalLogEntry[]) => void;
 
@@ -31,6 +35,17 @@ export class TerminalToolPlugin extends Plugin {
     this.updateLog = updateLog;
     this.sessionId = `exec-${Date.now()}`;
     this.defaultCwd = defaultCwd ?? null;
+  }
+
+  private pruneEntries(): void {
+    while (this.entries.length > MAX_TERMINAL_LOG_ENTRIES) {
+      this.entries.shift();
+    }
+    let totalChars = this.entries.reduce((acc, e) => acc + e.output.length, 0);
+    while (totalChars > MAX_TERMINAL_TOTAL_CHARS && this.entries.length > 1) {
+      const removed = this.entries.shift();
+      totalChars -= removed?.output.length ?? 0;
+    }
   }
 
   isEnabled(): boolean {
@@ -95,10 +110,14 @@ export class TerminalToolPlugin extends Plugin {
     const entry: TerminalLogEntry = {
       command: parameters.command,
       cwd: parameters.cwd,
-      output,
+      output:
+        output.length > MAX_TERMINAL_OUTPUT_CHARS
+          ? `... [output truncated, showing last ${MAX_TERMINAL_OUTPUT_CHARS} chars]\n${output.slice(-MAX_TERMINAL_OUTPUT_CHARS)}`
+          : output,
       ts: Date.now(),
     };
     this.entries.push(entry);
+    this.pruneEntries();
     this.updateLog(this.logNodeId, [...this.entries]);
 
     return { output };

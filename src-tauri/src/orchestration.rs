@@ -4,6 +4,7 @@ use crate::agent_registry::AgentRegistry;
 use crate::pty_pool::PtyPool;
 use crate::storage::MetaDb;
 use serde::Serialize;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -112,30 +113,41 @@ pub struct MergeEntry {
 
 /// Serialized merge queue. Only one merge runs at a time via the git_lock mutex.
 pub struct MergeQueue {
-    queue: Mutex<Vec<MergeEntry>>,
+    queue: Mutex<VecDeque<MergeEntry>>,
+    queued_tasks: Mutex<HashSet<String>>,
     git_lock: TokioMutex<()>,
 }
 
 impl MergeQueue {
     pub fn new() -> Self {
         Self {
-            queue: Mutex::new(Vec::new()),
+            queue: Mutex::new(VecDeque::new()),
+            queued_tasks: Mutex::new(HashSet::new()),
             git_lock: TokioMutex::new(()),
         }
     }
 
-    pub fn push(&self, entry: MergeEntry) {
+    pub fn push(&self, entry: MergeEntry) -> bool {
+        let mut queued = self.queued_tasks.lock().unwrap();
+        if queued.contains(&entry.task_id) {
+            return false;
+        }
+        queued.insert(entry.task_id.clone());
+        drop(queued);
         let mut q = self.queue.lock().unwrap();
-        q.push(entry);
+        q.push_back(entry);
+        true
     }
 
     pub fn pop_front(&self) -> Option<MergeEntry> {
         let mut q = self.queue.lock().unwrap();
-        if q.is_empty() {
-            None
-        } else {
-            Some(q.remove(0))
+        let entry = q.pop_front();
+        drop(q);
+        if let Some(ref e) = entry {
+            let mut queued = self.queued_tasks.lock().unwrap();
+            queued.remove(&e.task_id);
         }
+        entry
     }
 
     pub fn is_empty(&self) -> bool {
@@ -374,25 +386,29 @@ pub async fn tick(
         }
 
         eprintln!("[orch] enqueuing task {task_id} (agent {agent_id}) for merge");
-        merge_queue.push(MergeEntry {
+        if merge_queue.push(MergeEntry {
             agent_id: agent_id.clone(),
             task_id: task_id.clone(),
             retry_count: 0,
-        });
-        let _ = app_handle.emit(
-            "merge_status",
-            MergeStatusPayload {
-                task_id,
-                status: "merging".to_string(),
-                detail: None,
-            },
-        );
+        }) {
+            let _ = app_handle.emit(
+                "merge_status",
+                MergeStatusPayload {
+                    task_id,
+                    status: "merging".to_string(),
+                    detail: None,
+                },
+            );
+        }
     }
 
-    // 5b. Merge train: process one entry from the merge queue per tick.
-    //     Acquire git lock so only one merge runs at a time.
-    if !merge_queue.is_empty() {
-        if let Some(entry) = merge_queue.pop_front() {
+    // 5b. Merge train: process multiple queued entries per tick to reduce backlog latency.
+    //     git_lock still ensures merges execute serially for correctness.
+    const MAX_MERGES_PER_TICK: usize = 3;
+    for _ in 0..MAX_MERGES_PER_TICK {
+        let Some(entry) = merge_queue.pop_front() else {
+            break;
+        };
             let _git_guard = merge_queue.git_lock.lock().await;
             let task_id = entry.task_id.clone();
             let agent_id = entry.agent_id.clone();
@@ -493,7 +509,6 @@ pub async fn tick(
                 )
                 .await;
             }
-        }
     }
 
     // 6. Auto-close epics whose children are ALL done (and have at least 1 child)
@@ -715,7 +730,7 @@ async fn handle_merge_conflict(
         Err(e) => {
             eprintln!("[orch] failed to spawn merge agent for {task_id}: {e}");
             // Re-queue with incremented retry count
-            merge_queue.push(MergeEntry {
+            let _ = merge_queue.push(MergeEntry {
                 agent_id,
                 task_id: task_id.clone(),
                 retry_count: entry.retry_count + 1,
@@ -746,7 +761,7 @@ async fn handle_merge_conflict(
     if pool.spawn(&merge_agent_id, 80, 24, Some(agent_cwd.as_path())).is_err() {
         eprintln!("[orch] failed to spawn pty for merge agent {merge_agent_id}");
         let _ = registry.kill(&merge_agent_id);
-        merge_queue.push(MergeEntry {
+        let _ = merge_queue.push(MergeEntry {
             agent_id,
             task_id: task_id.clone(),
             retry_count: entry.retry_count + 1,
@@ -786,7 +801,7 @@ async fn handle_merge_conflict(
     // Re-queue the original entry with incremented retry count.
     // When the merge agent completes (enters Done), the next tick will pick it up
     // via done_agents_with_tasks and re-enqueue for merge.
-    merge_queue.push(MergeEntry {
+    let _ = merge_queue.push(MergeEntry {
         agent_id,
         task_id,
         retry_count: entry.retry_count + 1,

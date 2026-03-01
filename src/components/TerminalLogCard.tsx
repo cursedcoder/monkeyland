@@ -10,6 +10,7 @@ import { cardColorsFromId } from "../utils/cardColors";
 /** Only auto-scroll when user is within this many px of the bottom. */
 const AUTO_SCROLL_THRESHOLD_PX = 80;
 const AT_BOTTOM_THRESHOLD_PX = 24;
+const MAX_RENDERED_ENTRIES = 120;
 
 export interface TerminalLogEntry {
   command: string;
@@ -68,6 +69,17 @@ export function TerminalLogCard({
   const displayLayout = liveLayout ?? layout;
 
   const entries = useMemo(() => parseEntries(layout.payload), [layout.payload]);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+  const renderedEntries = useMemo(
+    () => (showFullHistory ? entries : entries.slice(-MAX_RENDERED_ENTRIES)),
+    [entries, showFullHistory],
+  );
+
+  useEffect(() => {
+    if (entries.length <= MAX_RENDERED_ENTRIES) {
+      setShowFullHistory(false);
+    }
+  }, [entries.length]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -235,8 +247,20 @@ export function TerminalLogCard({
             {entries.length === 0 && (
               <p className="terminal-log-card-empty">No commands yet...</p>
             )}
-            {entries.map((entry, i) => (
-              <div key={i} className="terminal-log-entry">
+            {!showFullHistory && entries.length > MAX_RENDERED_ENTRIES && (
+              <button
+                type="button"
+                className="terminal-log-card-scroll-to-bottom"
+                onClick={(e) => { e.stopPropagation(); setShowFullHistory(true); }}
+                onPointerDown={(e) => e.stopPropagation()}
+                aria-label="Show full terminal history"
+                title="Show full terminal history"
+              >
+                Show full history ({entries.length} commands)
+              </button>
+            )}
+            {renderedEntries.map((entry, i) => (
+              <div key={`${entry.ts}-${i}`} className="terminal-log-entry">
                 <div className="terminal-log-cmd">
                   <span className="terminal-log-prompt">$</span>
                   <span className="terminal-log-cmd-text">{entry.command}</span>

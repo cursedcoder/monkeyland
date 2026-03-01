@@ -1,48 +1,57 @@
 # Monkeyland — Agent Canvas
 
-Desktop app for managing **20 concurrent AI agents** with terminals and browsers. Built with Tauri 2 (Rust) + React + TypeScript.
+Desktop application for coordinating many concurrent AI agents with terminal, browser, validation, and merge orchestration. Built with Tauri 2 (Rust backend) + React + TypeScript frontend.
 
-## Architecture
+## Current Status
 
-- **PTYs in Rust** (portable-pty), never Node. One PTY pool (20 slots), 64 KB ring buffer per session.
-- **One Chromium instance** via shared Playwright server; browser context pool (max 20).
-- **Per-session SQLite** files under `~/.config/monkeyland/sessions/{session-id}.db`; meta DB at `~/.config/monkeyland/meta.db`.
-- **DOM canvas** with CSS transforms (no WebGL/PixiJS). Viewport culling; only visible session cards are mounted.
-- **Coalesced IPC**: one batched message per frame (16 ms) to the WebView; batched SQLite writes every 100 ms.
+- Multi-agent canvas with hierarchical cards (prompt, agent/worker/validator, browser, beads, terminal, terminal-log).
+- Orchestration loop with task claiming, developer validation flow, merge train retries, and safety nets.
+- Rust-backed tool gating and path sandbox checks for agent calls.
+- Visual validator support with managed browser sessions and explicit dev-server cleanup.
 
 ## Prerequisites
 
-- **Node.js** 18+
-- **Rust** (stable)
-- **macOS** (primary target; Linux/WebKitGTK should work)
+- Node.js 18+
+- Rust stable toolchain
+- `bd` CLI installed and available in `PATH` for Beads integrations
 
-## Install and run
+Install Beads CLI (optional but recommended for orchestration flow):
+
+```bash
+npm run beads:install
+```
+
+## Local Development
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-## Build
+## Quality Checks
+
+```bash
+npm run lint
+npm run test
+npm run build
+npm run validate:no-errors
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+## Build Release
 
 ```bash
 npm run tauri build
 ```
 
-## Implemented
+## Configuration and Data
 
-- **Stage 1**: Tauri 2 + React shell, DOM infinite canvas (pan/zoom), 20 draggable/resizable session cards, viewport culling, layout persistence (meta DB).
-- **Stage 2**: Per-session SQLite schema (events + snapshots), meta DB with canvas layout; `SessionDb` and `MetaDb` in Rust; log compaction API. Coalescing bus and write batcher to be wired in Stage 3.
+- App settings and databases are under the OS-specific app config directory.
+- Key persisted data includes:
+  - canvas layouts
+  - orchestration metadata
+  - per-session event/snapshot logs
 
-## Pending
+## Operational Docs
 
-- Stage 3: PTY pool (portable-pty), ring buffers, coalesced IPC, xterm.js pool, JSON-RPC over Unix socket.
-- Stage 4: Playwright server, browser context pool, CDP, JSON-RPC browser commands.
-- Stage 5: Replay (snapshot-based seek, play/pause, speed).
-- Stage 6: 20-agent stress test, session list UI, error handling.
-
-## Config / data
-
-- **Config dir**: `~/.config/monkeyland/` (or app equivalent on macOS).
-- **Meta DB**: `meta.db` — session index, canvas layout.
-- **Session DBs**: `sessions/{session-id}.db` — events and snapshots per session.
+- Architecture and runbooks: `docs/CONTEXT.md`

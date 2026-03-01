@@ -257,6 +257,18 @@ export function Canvas({
     return lines;
   }, [layouts, effectiveLayoutById]);
 
+  const agentLikeIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    let index = 0;
+    for (const l of layouts) {
+      const nodeType = l.node_type ?? "agent";
+      if (nodeType === "agent" || nodeType === "worker") {
+        map.set(l.session_id, index++);
+      }
+    }
+    return map;
+  }, [layouts]);
+
   // ViewBox and SVG extend into negative coords so lines don't clip when cards are dragged left/up
   const svgExtent = 8000;
   const svgSize = svgExtent * 2;
@@ -408,10 +420,7 @@ export function Canvas({
           }
 
           // agent, worker: SessionCard
-          const agentLike = ["agent", "worker"];
-          const index = layouts.filter((l) =>
-            agentLike.includes((l.node_type ?? "agent") as string)
-          ).indexOf(layout);
+          const index = agentLikeIndexById.get(layout.session_id) ?? 0;
           return (
             <SessionCard
               key={layout.session_id}

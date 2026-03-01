@@ -284,7 +284,10 @@ export function BrowserCard({
 
   // --- Viewport coord mapping ---
   const imgRef = useRef<HTMLImageElement>(null);
-  const frameOverlayRef = useRef<HTMLDivElement>(null);
+  const [frameOverlayNode, setFrameOverlayNode] = useState<HTMLDivElement | null>(null);
+  const handleOverlayRef = useCallback((node: HTMLDivElement | null) => {
+    setFrameOverlayNode(node);
+  }, []);
 
   function toViewportCoords(clientX: number, clientY: number): { x: number; y: number } | null {
     const img = imgRef.current;
@@ -339,16 +342,17 @@ export function BrowserCard({
 
   // --- Native DOM listeners for pointer, wheel, keyboard ---
   useEffect(() => {
-    const overlay = frameOverlayRef.current;
+    const overlay = frameOverlayNode;
     if (!overlay) return;
+    const overlayEl = overlay;
 
     let downPos: { x: number; y: number; button: number } | null = null;
     let lastMoveTs = 0;
 
     function onPointerDown(e: PointerEvent) {
       e.stopPropagation();
-      overlay!.setPointerCapture(e.pointerId);
-      overlay!.focus({ preventScroll: true });
+      overlayEl.setPointerCapture(e.pointerId);
+      overlayEl.focus({ preventScroll: true });
       downPos = { x: e.clientX, y: e.clientY, button: e.button };
     }
 
@@ -410,22 +414,22 @@ export function BrowserCard({
       postKeyEvent({ type: "keyup", key: toPlaywrightKey(e) });
     }
 
-    overlay.addEventListener("pointerdown", onPointerDown);
-    overlay.addEventListener("pointerup", onPointerUp);
-    overlay.addEventListener("pointermove", onPointerMove);
-    overlay.addEventListener("wheel", onWheel, { passive: false });
-    overlay.addEventListener("keydown", onKeyDown);
-    overlay.addEventListener("keyup", onKeyUp);
+    overlayEl.addEventListener("pointerdown", onPointerDown);
+    overlayEl.addEventListener("pointerup", onPointerUp);
+    overlayEl.addEventListener("pointermove", onPointerMove);
+    overlayEl.addEventListener("wheel", onWheel, { passive: false });
+    overlayEl.addEventListener("keydown", onKeyDown);
+    overlayEl.addEventListener("keyup", onKeyUp);
 
     return () => {
-      overlay.removeEventListener("pointerdown", onPointerDown);
-      overlay.removeEventListener("pointerup", onPointerUp);
-      overlay.removeEventListener("pointermove", onPointerMove);
-      overlay.removeEventListener("wheel", onWheel);
-      overlay.removeEventListener("keydown", onKeyDown);
-      overlay.removeEventListener("keyup", onKeyUp);
+      overlayEl.removeEventListener("pointerdown", onPointerDown);
+      overlayEl.removeEventListener("pointerup", onPointerUp);
+      overlayEl.removeEventListener("pointermove", onPointerMove);
+      overlayEl.removeEventListener("wheel", onWheel);
+      overlayEl.removeEventListener("keydown", onKeyDown);
+      overlayEl.removeEventListener("keyup", onKeyUp);
     };
-  }, [frameSrc]);
+  }, [frameOverlayNode]);
 
   // --- Nav actions ---
   function navAction(action: string) {
@@ -581,7 +585,7 @@ export function BrowserCard({
                   style={{ pointerEvents: "none" }}
                 />
                 <div
-                  ref={frameOverlayRef}
+                  ref={handleOverlayRef}
                   className="browser-card-overlay"
                   tabIndex={0}
                   onPointerDown={(e) => e.stopPropagation()}
