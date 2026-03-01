@@ -729,7 +729,11 @@ export default function App() {
       const toRemove = new Set<string>();
       
       for (const [id, time] of completionTimesRef.current.entries()) {
-        if (now - time >= 30000) {
+        // Validators stay longer so the user can read results
+        const layout = layoutsRef.current.find((l) => l.session_id === id);
+        const isValidator = layout?.node_type === "validator";
+        const delay = isValidator ? 120_000 : 30_000;
+        if (now - time >= delay) {
           toRemove.add(id);
         }
       }
@@ -780,7 +784,12 @@ export default function App() {
           completionTimesRef.current.delete(layout.session_id);
           continue;
         }
-        if (p.status === "done" || p.status === "stopped") {
+        const isFailed = p.status === "stopped" || p.status === "error";
+        if (isFailed) {
+          completionTimesRef.current.delete(layout.session_id);
+          continue;
+        }
+        if (p.status === "done") {
           if (!completionTimesRef.current.has(layout.session_id)) {
             completionTimesRef.current.set(layout.session_id, now);
           }
@@ -1029,19 +1038,36 @@ export default function App() {
 
       if (resolvedProjectPath) {
         try {
-          const fileListOut = await invoke<string>("terminal_exec", {
-            payload: {
-              session_id: "ctx-gather",
-              command: "{ git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u",
-              cwd: resolvedProjectPath,
-            },
-          });
+          // Try git first; fall back to find if not a git repo or empty result
+          let fileListOut = "";
+          try {
+            fileListOut = await invoke<string>("terminal_exec", {
+              payload: {
+                session_id: "ctx-gather",
+                command: "{ git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u",
+                cwd: resolvedProjectPath,
+              },
+            });
+          } catch { /* */ }
+
+          if (!fileListOut.trim()) {
+            try {
+              fileListOut = await invoke<string>("terminal_exec", {
+                payload: {
+                  session_id: "ctx-gather",
+                  command: "find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/dist/*' -not -path '*/build/*' -not -path '*/.next/*' | sed 's|^\\./||' | head -500",
+                  cwd: resolvedProjectPath,
+                },
+              });
+            } catch { /* */ }
+          }
+
           sourceFiles = fileListOut.split("\n")
             .filter((f) => f.trim() !== "")
             .filter((f) => SOURCE_EXT.test(f))
             .filter((f) => !SKIP_PATTERNS.some((p) => p.test(f)))
             .slice(0, 50);
-        } catch { /* no git or no files */ }
+        } catch { /* no files */ }
 
         for (const f of sourceFiles) {
           try {
@@ -1447,6 +1473,8 @@ export default function App() {
     const snap = layoutsRef.current.map((l) => {
       let parsed: Record<string, unknown> = {};
       try { parsed = JSON.parse(l.payload ?? "{}"); } catch { /* */ }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const validationResults = (parsed as any).validationResults as Record<string, { status: string; reasons: string[] }> | undefined;
       return {
         id: l.session_id,
         type: l.node_type ?? "agent",
@@ -1454,23 +1482,38 @@ export default function App() {
         collapsed: l.collapsed,
         ...(parsed.role ? { role: parsed.role } : {}),
         ...(parsed.status ? { status: parsed.status } : {}),
-        ...(parsed.answer ? { content: String(parsed.answer).slice(-800) } : {}),
-        ...(parsed.promptText ? { promptText: parsed.promptText } : {}),
+        ...(parsed.taskTitle ? { taskTitle: parsed.taskTitle } : {}),
+        ...(parsed.taskDescription ? { taskDescription: String(parsed.taskDescription).slice(0, 500) } : {}),
+        ...(parsed.task_id ? { task_id: parsed.task_id } : {}),
+        ...(parsed.parent_agent_id ? { parent_agent_id: parsed.parent_agent_id } : {}),
+        ...(parsed.answer ? { content: String(parsed.answer).slice(-1200) } : {}),
+        ...(parsed.promptText ? { promptText: String(parsed.promptText).slice(0, 500) } : {}),
         ...(parsed.beadsStatus ? { beads: parsed.beadsStatus } : {}),
         ...(parsed.toolActivity ? { toolActivity: parsed.toolActivity } : {}),
-        ...(parsed.parentAgentId ? { parent: parsed.parentAgentId } : {}),
-        ...(parsed.terminalLog ? { terminalLog: (parsed.terminalLog as Array<{command: string; output: string}>).slice(-3).map(e => ({ cmd: e.command, out: e.output?.slice(-300) })) } : {}),
+        ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
+        ...(validationResults ? { validationResults } : {}),
+        ...(parsed.terminalLog ? { terminalLog: (parsed.terminalLog as Array<{command: string; output: string}>).slice(-5).map(e => ({ cmd: e.command, out: e.output?.slice(-500) })) } : {}),
       };
     });
 
     let beadsProject = "";
     try { beadsProject = await invoke<string>("get_beads_project_path") ?? ""; } catch { /* */ }
 
+    let backendState: unknown = null;
+    try { backendState = await invoke("debug_snapshot"); } catch { /* */ }
+
+    let orchState: unknown = null;
+    try { orchState = await invoke("orch_get_state"); } catch { /* */ }
+
     const debug = {
       ts: new Date().toISOString(),
       beadsProject,
+      orchState,
+      totalCostUsd: costStore.getState().totalCostUsd,
+      costLimitUsd: costStore.getState().costLimitUsd,
       nodeCount: snap.length,
       nodes: snap,
+      backend: backendState,
     };
 
     const text = JSON.stringify(debug, null, 2);

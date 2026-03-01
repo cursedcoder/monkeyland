@@ -1,4 +1,4 @@
-use crate::agent_registry::{AgentQuota, AgentRegistry, AgentStatusResponse, ValidationOutcome, YieldPayload};
+use crate::agent_registry::{AgentQuota, AgentRegistry, AgentStatusResponse, DebugSnapshot, ValidationOutcome, YieldPayload};
 use crate::browser_pool::BrowserPool;
 use crate::orchestration::OrchestrationState;
 use crate::pty_pool::PtyPool;
@@ -462,6 +462,11 @@ pub async fn agent_kill(
 #[tauri::command]
 pub async fn agent_status(registry: State<'_, AgentRegistry>) -> Result<AgentStatusResponse, String> {
     registry.status()
+}
+
+#[tauri::command]
+pub async fn debug_snapshot(registry: State<'_, AgentRegistry>) -> Result<DebugSnapshot, String> {
+    registry.debug_snapshot()
 }
 
 #[tauri::command]

@@ -128,6 +128,43 @@ pub struct AgentStatusResponse {
     pub queue_depth: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DebugSnapshot {
+    pub agents: Vec<DebugAgentEntry>,
+    pub pending_validations: Vec<DebugValidationEntry>,
+    pub queue_depth: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DebugAgentEntry {
+    pub id: String,
+    pub role: String,
+    pub state: String,
+    pub task_id: Option<String>,
+    pub parent_id: Option<String>,
+    pub age_secs: u64,
+    pub tokens_used: u64,
+    pub children: u32,
+    pub retry_count: u32,
+    pub project_path: Option<String>,
+    pub yield_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DebugValidationEntry {
+    pub developer_agent_id: String,
+    pub task_id: Option<String>,
+    pub results_received: usize,
+    pub results: Vec<DebugValidatorResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DebugValidatorResult {
+    pub role: String,
+    pub pass: bool,
+    pub reasons: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundMessage {
     pub from: String,
@@ -307,6 +344,45 @@ impl AgentRegistry {
         inner.validation.clear();
         inner.queue_depth = 0;
         Ok(ids)
+    }
+
+    /// Detailed snapshot for the "Copy debug data" button.
+    pub fn debug_snapshot(&self) -> Result<DebugSnapshot, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let agents: Vec<DebugAgentEntry> = inner.agents.values().map(|e| {
+            DebugAgentEntry {
+                id: e.id.clone(),
+                role: e.role.clone(),
+                state: format!("{:?}", e.state),
+                task_id: e.task_id.clone(),
+                parent_id: e.parent_id.clone(),
+                age_secs: e.spawned_at.elapsed().as_secs(),
+                tokens_used: e.token_used,
+                children: e.children_count,
+                retry_count: e.validation_retry_count,
+                project_path: e.project_path.clone(),
+                yield_summary: e.yield_diff_summary.clone(),
+            }
+        }).collect();
+
+        let pending_validations: Vec<DebugValidationEntry> = inner.validation.iter().map(|(dev_id, vs)| {
+            DebugValidationEntry {
+                developer_agent_id: dev_id.clone(),
+                task_id: vs.task_id.clone(),
+                results_received: vs.results.len(),
+                results: vs.results.iter().map(|r| DebugValidatorResult {
+                    role: r.role.clone(),
+                    pass: r.pass,
+                    reasons: r.reasons.clone(),
+                }).collect(),
+            }
+        }).collect();
+
+        Ok(DebugSnapshot {
+            agents,
+            pending_validations,
+            queue_depth: inner.queue_depth,
+        })
     }
 
     pub fn status(&self) -> Result<AgentStatusResponse, String> {
