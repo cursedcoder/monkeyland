@@ -228,10 +228,12 @@ impl AgentRegistry {
 
         if let Some(ref pid) = parent_id {
             if let Some(parent) = inner.agents.get(pid) {
-                if parent.children_count >= config.max_children {
+                // Use the PARENT's config for max_children check, not the child's
+                let parent_config = inner.role_config.get(&parent.role).cloned().unwrap_or_default();
+                if parent.children_count >= parent_config.max_children {
                     return Err(format!(
                         "Parent {} at max_children {}",
-                        pid, config.max_children
+                        pid, parent_config.max_children
                     ));
                 }
             }
