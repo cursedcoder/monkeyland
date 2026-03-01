@@ -201,18 +201,16 @@ export function SessionCard({
         }
         // Auto-grow card height when content overflows (up to SESSION_CARD_MAX_H)
         const rafId = requestAnimationFrame(() => {
-          if (!bodyScrollRef.current || layout.collapsed) return;
+          if (!bodyScrollRef.current || layoutRef.current.collapsed) return;
           const { scrollHeight, clientHeight } = bodyScrollRef.current;
-          if (scrollHeight > clientHeight && layout.h < SESSION_CARD_MAX_H) {
-            const overflow = scrollHeight - clientHeight;
-            const newH = Math.min(
-              layout.h + overflow,
-              SESSION_CARD_MAX_H
-            );
-            if (newH > layout.h) {
-              const next = { ...layout, h: Math.round(newH / GRID_STEP) * GRID_STEP };
-              onLayoutChange(next);
-              onLayoutCommit(next);
+          const curH = layoutRef.current.h;
+          if (scrollHeight > clientHeight && curH < SESSION_CARD_MAX_H) {
+            const newH = Math.min(curH + (scrollHeight - clientHeight), SESSION_CARD_MAX_H);
+            const snapped = Math.round(newH / GRID_STEP) * GRID_STEP;
+            if (snapped > curH) {
+              const next = { ...layoutRef.current, h: snapped };
+              onLayoutChangeRef.current(next);
+              onLayoutCommitRef.current(next);
             }
           }
         });
@@ -221,7 +219,7 @@ export function SessionCard({
     } catch {
       /* ignore */
     }
-  }, [layout.payload, layout.collapsed, layout.h, layout, onLayoutChange, onLayoutCommit]);
+  }, [layout.payload, layout.collapsed]);
 
   const handleBodyScroll = useCallback(() => {
     const el = bodyScrollRef.current;

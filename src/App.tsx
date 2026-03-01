@@ -586,7 +586,7 @@ export default function App() {
           const nudgeController = new AbortController();
           abortControllers.current.set(agentNodeId, nudgeController);
 
-          let resolved = false;
+          let stopped = false;
           await runAgent({
             systemPrompt: getPromptForRole(role),
             userMessage: nudgeMsg,
@@ -621,45 +621,39 @@ export default function App() {
                   delta: usage.prompt_tokens + usage.completion_tokens,
                 }).catch(() => {});
               },
-              onDone: async () => {
-                await new Promise((r) => setTimeout(r, 500));
-                try {
-                  const postNudge = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role });
-                  if (postNudge === "already_done") {
-                    updatePayload({ status: "in_review", answer: getAccumulated(), toolActivity: "Awaiting validation..." }, true);
-                    resolved = true;
-                  }
-                } catch { /* continue to next attempt */ }
-              },
-              onError: () => { /* continue to next attempt */ },
-              onStopped: () => {
-                updatePayload({ status: "stopped", answer: getAccumulated(), toolActivity: "" }, true);
-                resolved = true;
-              },
+              onDone: () => { /* state check happens below */ },
+              onError: () => { /* state check happens below */ },
+              onStopped: () => { stopped = true; },
             },
           });
           abortControllers.current.delete(agentNodeId);
 
-          if (resolved) return;
+          if (stopped) {
+            updatePayload({ status: "stopped", answer: getAccumulated(), toolActivity: "" }, true);
+            return;
+          }
+
+          // Check agent state AFTER runAgent returns (onDone is not awaited by runAgent)
+          await new Promise((r) => setTimeout(r, 500));
+          try {
+            const postNudge = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role });
+            if (postNudge === "already_done") {
+              updatePayload({ status: "in_review", answer: getAccumulated(), toolActivity: "Awaiting validation..." }, true);
+              return;
+            }
+          } catch { /* continue to next attempt */ }
         }
 
         // All nudge attempts exhausted -- force-yield immediately instead of
         // waiting for the 5-min safety net. Include terminal diagnostics so
         // the validator has context about what went wrong.
         updatePayload({ status: "loading", toolActivity: "Force-submitting for review..." });
-        try {
-          await invoke("agent_force_yield", { agentId: agentNodeId });
-          const summary = terminalDiag.length > 0
-            ? `Auto-submitted after ${MAX_NUDGES} failed nudge attempts.\n\nTerminal diagnostics:\n${terminalDiag}`
-            : `Auto-submitted after ${MAX_NUDGES} failed nudge attempts. No terminal output captured.`;
-          await invoke("agent_set_yield_summary", { agentId: agentNodeId, diffSummary: summary }).catch(() => {});
-          updatePayload({ status: "in_review", answer: getAccumulated(), toolActivity: "Force-submitted for validation..." }, true);
-        } catch {
-          updatePayload({
-            status: "error",
-            errorMessage: "Developer did not submit for review. Force-yield failed.",
-          }, true);
-        }
+        await invoke("agent_force_yield", { agentId: agentNodeId }).catch(() => {});
+        const summary = terminalDiag.length > 0
+          ? `Auto-submitted after ${MAX_NUDGES} failed nudge attempts.\n\nTerminal diagnostics:\n${terminalDiag}`
+          : `Auto-submitted after ${MAX_NUDGES} failed nudge attempts. No terminal output captured.`;
+        await invoke("agent_set_yield_summary", { agentId: agentNodeId, diffSummary: summary }).catch(() => {});
+        updatePayload({ status: "in_review", answer: getAccumulated(), toolActivity: "Force-submitted for validation..." }, true);
       } catch { /* best effort */ }
     },
     [buildPlugins, costStore],
