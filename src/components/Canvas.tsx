@@ -21,6 +21,7 @@ interface CanvasProps {
   onLaunch?: (nodeId: string) => void;
   onStopAgent?: (nodeId: string) => void;
   onAddTaskCard?: (parentBeadsId: string, task: import("../types").BeadsTask) => void;
+  onBeadsStatusChange?: (nodeId: string, status: import("./BeadsCard").BeadsStatus) => void;
 }
 
 function parsePromptPayload(payload?: string): string {
@@ -62,6 +63,7 @@ export function Canvas({
   onLaunch,
   onStopAgent,
   onAddTaskCard,
+  onBeadsStatusChange,
 }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const {
@@ -356,6 +358,7 @@ export function Canvas({
                 onLayoutChange={handleCardLayoutChange(layout.session_id)}
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onDragStart={handleDragStart}
+                onStatusChange={(status) => onBeadsStatusChange?.(layout.session_id, status)}
                 onAddTaskCard={(task) => onAddTaskCard?.(layout.session_id, task)}
                 onClose={onRemoveLayout ? () => onRemoveLayout(layout.session_id) : undefined}
                 scale={viewport.scale}

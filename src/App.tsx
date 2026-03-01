@@ -38,6 +38,7 @@ import {
 } from "./types";
 
 const REPOSITION_ORIGIN = { x: 80, y: 80 };
+const STREAM_PAYLOAD_FLUSH_MS = 80;
 
 
 
@@ -808,7 +809,11 @@ export default function App() {
         return next;
       });
 
-      const updatePayload = (update: Record<string, unknown>, persist?: boolean) => {
+      let queuedPayloadPatch: Record<string, unknown> | null = null;
+      let queuedPersist = false;
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const applyPayloadUpdate = (update: Record<string, unknown>, persist?: boolean) => {
         setLayouts((prev) => {
           const next = prev.map((l) => {
             if (l.session_id !== agentNodeId) return l;
@@ -822,6 +827,39 @@ export default function App() {
           if (persist && loaded.current) persistLayouts(next);
           return next;
         });
+      };
+
+      const flushQueuedPayload = () => {
+        if (!queuedPayloadPatch) return;
+        const patch = queuedPayloadPatch;
+        const persist = queuedPersist;
+        queuedPayloadPatch = null;
+        queuedPersist = false;
+        applyPayloadUpdate(patch, persist);
+      };
+
+      const updatePayload = (
+        update: Record<string, unknown>,
+        persist?: boolean,
+        immediate?: boolean,
+      ) => {
+        queuedPayloadPatch = { ...(queuedPayloadPatch ?? {}), ...update };
+        queuedPersist = queuedPersist || !!persist;
+
+        if (immediate) {
+          if (flushTimer) {
+            clearTimeout(flushTimer);
+            flushTimer = null;
+          }
+          flushQueuedPayload();
+          return;
+        }
+
+        if (flushTimer) return;
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          flushQueuedPayload();
+        }, STREAM_PAYLOAD_FLUSH_MS);
       };
 
       const controller = new AbortController();
@@ -872,7 +910,7 @@ export default function App() {
           },
           onDone: async (fullText) => {
             if (role !== "developer") {
-              updatePayload({ status: "done", answer: fullText, toolActivity: "" }, true);
+              updatePayload({ status: "done", answer: fullText, toolActivity: "" }, true, true);
             }
             if (role === "developer") {
               await developerSelfHeal(
@@ -886,14 +924,18 @@ export default function App() {
             }
           },
           onError: (msg) => {
-            updatePayload({ status: "error", errorMessage: msg }, true);
+            updatePayload({ status: "error", errorMessage: msg }, true, true);
           },
           onStopped: (fullText) => {
-            updatePayload({ status: "stopped", answer: fullText, toolActivity: "" }, true);
+            updatePayload({ status: "stopped", answer: fullText, toolActivity: "" }, true, true);
           },
         },
       });
 
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+      }
+      flushQueuedPayload();
       abortControllers.current.delete(agentNodeId);
     },
     [persistLayouts, buildPlugins, costStore],
@@ -1366,16 +1408,20 @@ export default function App() {
       let screenshotAttachment: Attachment | undefined;
       if (isFrontendProject && resolvedProjectPath) {
         const ssAbort = AbortSignal.timeout(20_000);
+        let devServerPid: string | null = null;
         try {
           const devCmd = fileContents["package.json"]?.includes('"dev"') ? "npm run dev" : "npm start";
-          await invoke<string>("terminal_exec", {
+          const spawnOut = await invoke<string>("terminal_exec", {
             payload: {
               session_id: `validator-dev-${validatorId}`,
-              command: `cd "${resolvedProjectPath}" && nohup ${devCmd} > /tmp/validator-dev.log 2>&1 & sleep 3 && echo "started"`,
+              command: `cd "${resolvedProjectPath}" && nohup ${devCmd} > /tmp/validator-dev-${validatorId}.log 2>&1 & echo $!`,
               cwd: resolvedProjectPath,
               timeout_ms: 10_000,
             },
           });
+          const pidMatch = spawnOut.match(/\b(\d+)\b/);
+          devServerPid = pidMatch ? pidMatch[1] : null;
+          await new Promise((r) => setTimeout(r, 3000));
 
           const ports = [5173, 3000, 4321, 8080, 8000];
           let devServerUrl = "";
@@ -1427,6 +1473,17 @@ export default function App() {
           }
         } catch (e) {
           console.warn("Visual validator screenshot failed:", e);
+        } finally {
+          if (devServerPid) {
+            invoke<string>("terminal_exec", {
+              payload: {
+                session_id: `validator-dev-${validatorId}`,
+                command: `kill ${devServerPid} >/dev/null 2>&1 || true; pkill -TERM -P ${devServerPid} >/dev/null 2>&1 || true`,
+                cwd: resolvedProjectPath,
+                timeout_ms: 5_000,
+              },
+            }).catch(() => {});
+          }
         }
       }
 
@@ -1851,6 +1908,7 @@ export default function App() {
           onLaunch={handleLaunch}
           onStopAgent={handleStopAgent}
           onAddTaskCard={handleAddTaskCard}
+          onBeadsStatusChange={updateBeadsStatus}
         />
         <WorkforceOverlay />
         <DebugPanel

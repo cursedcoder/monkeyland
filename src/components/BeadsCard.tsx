@@ -44,6 +44,7 @@ interface BeadsCardProps {
   onLayoutChange: (layout: SessionLayout) => void;
   onLayoutCommit: (layout: SessionLayout) => void;
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
+  onStatusChange?: (status: BeadsStatus) => void;
   onAddTaskCard?: (task: BeadsTask) => void;
   onClose?: () => void;
   scale?: number;
@@ -79,6 +80,7 @@ export function BeadsCard({
   onLayoutChange,
   onLayoutCommit,
   onDragStart,
+  onStatusChange,
   onAddTaskCard,
   onClose,
   scale = 1,
@@ -127,12 +129,18 @@ export function BeadsCard({
       const isArray = Array.isArray(parsed);
       const nextTasks = isArray ? parsed : [];
       setTasks(nextTasks);
+      onStatusChange?.({
+        projectPath: status.projectPath,
+        initResult: status.initResult ?? "",
+        tasks: nextTasks,
+        lastRefresh: Date.now(),
+      });
     } catch {
       // bd not available or no tasks yet
     } finally {
       setRefreshing(false);
     }
-  }, [status?.projectPath]);
+  }, [onStatusChange, status]);
 
   const handleOpenTask = useCallback(
     async (task: BeadsTask) => {

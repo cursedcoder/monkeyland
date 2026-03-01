@@ -43,7 +43,7 @@
 
 ## Medium
 
-- [ ] **Persist Beads task list in canonical app state**  
+- [x] **Persist Beads task list in canonical app state**  
   Move refreshed tasks out of local card-only state so viewport culling/unmount does not lose task data.
   - Files: `src/components/BeadsCard.tsx`, `src/components/Canvas.tsx`, `src/App.tsx`
   - Done when: panning/culling/remount preserves latest task data.
@@ -68,7 +68,7 @@
   - Files: `src/components/BrowserCard.tsx`
   - Done when: listeners mount once per card lifecycle with stable handlers.
 
-- [ ] **Manage validator dev server lifecycle explicitly**  
+- [x] **Manage validator dev server lifecycle explicitly**  
   Track and clean up server processes launched during visual validation.
   - Files: `src/App.tsx`
   - Done when: repeated validations do not leave orphan server processes.
