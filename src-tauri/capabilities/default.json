@@ -9,6 +9,14 @@
     "core:window:allow-close",
     "core:window:allow-set-title",
     "core:window:allow-set-size",
-    "core:window:allow-set-position"
+    "core:window:allow-set-position",
+    {
+      "identifier": "http:allow-fetch",
+      "allow": [{ "url": "https://**" }]
+    },
+    "http:allow-fetch-send",
+    "http:allow-fetch-read-body",
+    "http:allow-fetch-cancel",
+    "http:allow-fetch-cancel-body"
   ]
 }

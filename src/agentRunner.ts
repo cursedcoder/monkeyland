@@ -84,7 +84,15 @@ function fallbackPricing(modelId: string): { input: number; output: number } {
   return { input: 0, output: 0 };
 }
 
-export function getAiProviderModel(providerId: string, apiKey: string, modelId: string) {
+let _kiloProxyUrl: string | null = null;
+async function getKiloProxyUrl(): Promise<string> {
+  if (_kiloProxyUrl === null) {
+    _kiloProxyUrl = await invoke<string>("get_kilo_proxy_url");
+  }
+  return _kiloProxyUrl;
+}
+
+export async function getAiProviderModel(providerId: string, apiKey: string, modelId: string) {
   switch (providerId) {
     case "anthropic":
       return createAnthropic({ apiKey })(modelId);
@@ -92,8 +100,11 @@ export function getAiProviderModel(providerId: string, apiKey: string, modelId: 
       return createGoogleGenerativeAI({ apiKey })(modelId);
     case "openai":
       return createOpenAI({ apiKey })(modelId);
-    case "kilo":
-      return createOpenAI({ baseURL: "https://api.kilo.ai/api/gateway", apiKey })(modelId);
+    case "kilo": {
+      const proxyUrl = await getKiloProxyUrl();
+      const baseURL = proxyUrl ? `${proxyUrl}/v1` : "https://api.kilo.ai/api/gateway/v1";
+      return createOpenAI({ baseURL, apiKey })(modelId);
+    }
     case "openrouter":
       return createOpenAI({ baseURL: "https://openrouter.ai/api/v1", apiKey })(modelId);
     case "deepseek":
@@ -120,24 +131,25 @@ export function getAiProviderModel(providerId: string, apiKey: string, modelId: 
 
 export async function loadKiloModels(apiKey: string): Promise<ChatModel[]> {
   try {
-    const response = await fetch("https://api.kilo.ai/api/gateway/models", {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
+    const data = await invoke<{ data: any[] }>("fetch_json", {
+      url: "https://api.kilo.ai/api/gateway/models",
+      headers: { Authorization: `Bearer ${apiKey}` },
     });
-    if (!response.ok) {
-      throw new Error(`Failed to fetch Kilo models: ${response.statusText}`);
-    }
-    const data = await response.json();
     if (data && Array.isArray(data.data)) {
       return data.data.map((m: any) => ({
         id: m.id,
         name: m.name || m.id,
+        capabilities: {
+          tools: m.supported_parameters?.includes("tools") ?? false,
+          vision: m.architecture?.input_modalities?.includes("image") ?? false,
+          reasoning: m.supported_parameters?.includes("reasoning") ?? false,
+          caching: false,
+        },
         pricing: m.pricing ? {
           prompt: m.pricing.prompt,
-          completion: m.pricing.completion
-        } : undefined
-      }));
+          completion: m.pricing.completion,
+        } : undefined,
+      })) as ChatModel[];
     }
     return [];
   } catch (e) {
@@ -201,7 +213,7 @@ async function loadLlmModel(): Promise<LoadedModel> {
     outputPricePerM = fb.output;
   }
 
-  const aiModel = getAiProviderModel(settings.provider, apiKey?.trim() || "", actualModelId);
+  const aiModel = await getAiProviderModel(settings.provider, apiKey?.trim() || "", actualModelId);
 
   return {
     model: aiModel,

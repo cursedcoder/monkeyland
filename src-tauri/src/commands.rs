@@ -822,6 +822,30 @@ pub async fn agent_gate_tool(
     registry.gate_tool(&agent_id, &tool_name)
 }
 
+/// Returns the base URL of the local Kilo AI CORS proxy started at launch.
+#[tauri::command]
+pub fn get_kilo_proxy_url(state: tauri::State<'_, crate::KiloProxyPort>) -> String {
+    let port = state.0.load(std::sync::atomic::Ordering::Relaxed);
+    if port == 0 {
+        String::new()
+    } else {
+        format!("http://127.0.0.1:{}", port)
+    }
+}
+
+/// Perform a GET request from the Rust side, bypassing WebView CORS restrictions.
+#[tauri::command]
+pub async fn fetch_json(url: String, headers: std::collections::HashMap<String, String>) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    let mut req = client.get(&url);
+    for (key, value) in &headers {
+        req = req.header(key.as_str(), value.as_str());
+    }
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(json)
+}
+
 /// Write text to the system clipboard. Used by the debug panel so copy works in the Tauri webview.
 #[tauri::command]
 pub fn write_clipboard_text(text: String) -> Result<(), String> {

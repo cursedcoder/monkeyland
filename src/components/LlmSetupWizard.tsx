@@ -149,7 +149,7 @@ export function LlmSetupWizard({
     setTestStatus("running");
     setTestError(null);
     try {
-      const aiModel = getAiProviderModel(provider, apiKey.trim(), finalModelId);
+      const aiModel = await getAiProviderModel(provider, apiKey.trim(), finalModelId);
       await generateText({
         model: aiModel,
         prompt: TEST_PROMPT,

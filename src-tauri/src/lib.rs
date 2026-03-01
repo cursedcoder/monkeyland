@@ -1,10 +1,14 @@
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 use tauri::{Emitter, Manager};
+
+pub struct KiloProxyPort(AtomicU16);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_http::init())
         .setup(|app| {
             let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
             std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
@@ -14,6 +18,11 @@ pub fn run() {
             let batcher = storage::WriteBatcher::new(config_dir.clone());
             app.manage(batcher);
             app.manage(coalescing::CoalescingBus::new());
+            // Start local CORS proxy for Kilo AI (whose API doesn't allow browser origins)
+            let kilo_port = tauri::async_runtime::block_on(
+                local_proxy::start("https://api.kilo.ai/api/gateway".to_string())
+            ).unwrap_or(0);
+            app.manage(KiloProxyPort(AtomicU16::new(kilo_port)));
             app.manage(pty_pool::PtyPool::new());
             app.manage(browser_pool::BrowserPool::new());
             app.manage(agent_registry::AgentRegistry::new());
@@ -132,6 +141,8 @@ pub fn run() {
             crate::commands::agent_force_yield,
             crate::commands::agent_gate_tool,
             crate::commands::write_clipboard_text,
+            crate::commands::fetch_json,
+            crate::commands::get_kilo_proxy_url,
             crate::commands::full_reset,
         ])
         .run(tauri::generate_context!())
@@ -143,6 +154,7 @@ mod agent_state_machine;
 mod browser_pool;
 mod coalescing;
 mod commands;
+mod local_proxy;
 mod orchestration;
 mod pty_pool;
 mod storage;
