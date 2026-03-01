@@ -7,6 +7,10 @@ import {
 } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
 
+/** Only auto-scroll when user is within this many px of the bottom. */
+const AUTO_SCROLL_THRESHOLD_PX = 80;
+const AT_BOTTOM_THRESHOLD_PX = 24;
+
 export interface TerminalLogEntry {
   command: string;
   cwd?: string;
@@ -46,6 +50,7 @@ export function TerminalLogCard({
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [liveLayout, setLiveLayout] = useState<SessionLayout | null>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
   const cardRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const lastEmittedLayout = useRef<SessionLayout>(layout);
@@ -65,10 +70,31 @@ export function TerminalLogCard({
   const entries = useMemo(() => parseEntries(layout.payload), [layout.payload]);
 
   useEffect(() => {
-    if (bodyRef.current) {
-      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    const el = bodyRef.current;
+    if (!el) return;
+    const nearBottom =
+      el.scrollTop + el.clientHeight >= el.scrollHeight - AUTO_SCROLL_THRESHOLD_PX;
+    if (nearBottom) {
+      el.scrollTop = el.scrollHeight;
+      setIsAtBottom(true);
     }
   }, [entries.length]);
+
+  const handleBodyScroll = useCallback(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const atBottom =
+      el.scrollTop + el.clientHeight >= el.scrollHeight - AT_BOTTOM_THRESHOLD_PX;
+    setIsAtBottom(atBottom);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const el = bodyRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+      setIsAtBottom(true);
+    }
+  }, []);
 
   const handlePointerDownDrag = useCallback(
     (e: React.PointerEvent) => {
@@ -201,7 +227,11 @@ export function TerminalLogCard({
       </div>
       {!layout.collapsed && (
         <>
-          <div ref={bodyRef} className="terminal-log-card-body">
+          <div
+            ref={bodyRef}
+            className="terminal-log-card-body"
+            onScroll={handleBodyScroll}
+          >
             {entries.length === 0 && (
               <p className="terminal-log-card-empty">No commands yet...</p>
             )}
@@ -217,6 +247,18 @@ export function TerminalLogCard({
                 )}
               </div>
             ))}
+            {!isAtBottom && entries.length > 0 && (
+              <button
+                type="button"
+                className="terminal-log-card-scroll-to-bottom"
+                onClick={(e) => { e.stopPropagation(); scrollToBottom(); }}
+                onPointerDown={(e) => e.stopPropagation()}
+                aria-label="Scroll to bottom"
+                title="Scroll to latest"
+              >
+                ↓ Bottom
+              </button>
+            )}
           </div>
           <div
             className="terminal-log-card-resize-handle se"

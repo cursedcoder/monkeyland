@@ -741,13 +741,13 @@ impl AgentRegistry {
 
     /// Returns (agent_id, task_id) for agents in Done state that have a task_id.
     /// The orchestration loop uses this to update Beads and clean up.
-    pub fn done_agents_with_tasks(&self) -> Result<Vec<(String, String)>, String> {
+    pub fn done_agents_with_tasks(&self) -> Result<Vec<(String, String, String)>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         Ok(inner
             .agents
             .values()
             .filter(|a| a.state == State::Done && a.task_id.is_some())
-            .map(|a| (a.id.clone(), a.task_id.clone().unwrap()))
+            .map(|a| (a.id.clone(), a.task_id.clone().unwrap(), a.role.clone()))
             .collect())
     }
 
@@ -822,6 +822,17 @@ impl AgentRegistry {
                 Ok(())
             }
         }
+    }
+
+    /// Set the yield diff_summary on a Yielded agent (e.g. after force-yield with diagnostics).
+    pub fn set_yield_summary(&self, agent_id: &str, summary: String) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = inner
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+        entry.yield_diff_summary = Some(summary);
+        Ok(())
     }
 
     /// Returns developers stuck in Running state longer than `max_running_secs`.

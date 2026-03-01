@@ -8,9 +8,14 @@ export interface BeadsTask {
   issue_type?: string;
   priority?: number;
   deps?: string[] | string;
+  blocked_by?: string[] | string;
   parent_id?: string;
   parentId?: string;
+  epic_id?: string;
+  epic_name?: string;
+  labels?: string[];
   assignee?: string;
+  reporter?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -77,8 +82,11 @@ export const BEADS_CARD_DEFAULT_W = 360;
 export const BEADS_CARD_DEFAULT_H = 220;
 export const BEADS_CARD_MIN_W = 300;
 export const BEADS_CARD_MIN_H = 180;
-export const BEADS_TASK_CARD_DEFAULT_W = 280;
-export const BEADS_TASK_CARD_DEFAULT_H = 160;
+export const BEADS_CARD_MAX_H = 600;
+export const BEADS_TASK_CARD_DEFAULT_W = 380;
+export const BEADS_TASK_CARD_DEFAULT_H = 280;
+export const BEADS_TASK_CARD_MIN_W = 320;
+export const BEADS_TASK_CARD_MIN_H = 220;
 export const GRID_STEP = 40;
 export const CULL_MARGIN = 100;
 
@@ -112,7 +120,7 @@ export function getMinSize(nodeType: CanvasNodeType): { w: number; h: number } {
     case "beads":
       return { w: BEADS_CARD_MIN_W, h: BEADS_CARD_MIN_H };
     case "beads_task":
-      return { w: BEADS_TASK_CARD_DEFAULT_W, h: BEADS_TASK_CARD_DEFAULT_H };
+      return { w: BEADS_TASK_CARD_MIN_W, h: BEADS_TASK_CARD_MIN_H };
     case "terminal_log":
       return { w: TERMINAL_LOG_MIN_W, h: TERMINAL_LOG_MIN_H };
     default:

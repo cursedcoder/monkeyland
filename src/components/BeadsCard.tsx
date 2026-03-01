@@ -1,9 +1,11 @@
 import React, { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { SessionLayout } from "../types";
 import {
   BEADS_CARD_MIN_W,
   BEADS_CARD_MIN_H,
+  BEADS_CARD_MAX_H,
   GRID_STEP,
 } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
@@ -25,9 +27,14 @@ export interface BeadsTask {
   issue_type?: string;
   priority?: number;
   deps?: string[] | string;
+  blocked_by?: string[] | string;
   parent_id?: string;
   parentId?: string;
+  epic_id?: string;
+  epic_name?: string;
+  labels?: string[];
   assignee?: string;
+  reporter?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -38,6 +45,7 @@ interface BeadsCardProps {
   onLayoutCommit: (layout: SessionLayout) => void;
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
   onAddTaskCard?: (task: BeadsTask) => void;
+  onClose?: () => void;
   scale?: number;
 }
 
@@ -55,12 +63,15 @@ function parseStatus(payload?: string): BeadsStatus | null {
   }
 }
 
-const STATUS_ICONS: Record<string, string> = {
-  done: "✅",
-  "in-progress": "🔄",
-  ready: "📋",
-  blocked: "🚫",
-  open: "⬜",
+const TYPE_ICONS: Record<string, string> = {
+  bug: "🐞",
+  story: "📘",
+  task: "📋",
+  epic: "⚡",
+  feature: "🚀",
+  subtask: "🔹",
+  chore: "🔧",
+  improvement: "📈",
 };
 
 export function BeadsCard({
@@ -69,6 +80,7 @@ export function BeadsCard({
   onLayoutCommit,
   onDragStart,
   onAddTaskCard,
+  onClose,
   scale = 1,
 }: BeadsCardProps) {
   const [isDragging, setIsDragging] = useState(false);
@@ -94,22 +106,45 @@ export function BeadsCard({
   const [refreshing, setRefreshing] = useState(false);
   const [tasks, setTasks] = useState<BeadsTask[]>(status?.tasks ?? []);
 
+  const epicId = useMemo(() => {
+    const epic = tasks.find(
+      (t) => (t.type === "epic" || t.issue_type === "epic"),
+    );
+    return epic?.id ?? null;
+  }, [tasks]);
+
   const handleRefresh = useCallback(async () => {
-    if (!status?.projectPath) return;
+    if (!status?.projectPath) {
+      // #region agent log
+      fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:handleRefresh',message:'refresh skipped no projectPath',data:{sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
+      // #endregion
+      return;
+    }
     setRefreshing(true);
+    // #region agent log
+    fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:handleRefresh',message:'refresh start',data:{sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
     try {
       const raw = await invoke<string>("beads_run", {
         projectPath: status.projectPath,
         args: ["list", "--json"],
       });
       const parsed = JSON.parse(raw) as BeadsTask[];
-      setTasks(Array.isArray(parsed) ? parsed : []);
+      const isArray = Array.isArray(parsed);
+      const nextTasks = isArray ? parsed : [];
+      setTasks(nextTasks);
+      // #region agent log
+      fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:handleRefresh',message:'refresh result',data:{rawLen:raw?.length,parsedIsArray:isArray,setToLength:nextTasks.length,sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
     } catch {
+      // #region agent log
+      fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:handleRefresh',message:'refresh failed',data:{sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
       // bd not available or no tasks yet
     } finally {
       setRefreshing(false);
     }
-  }, [status?.projectPath]);
+  }, [status?.projectPath, layout.session_id]);
 
   const handleOpenTask = useCallback(
     async (task: BeadsTask) => {
@@ -161,7 +196,15 @@ export function BeadsCard({
               : typeof detail.parent_id === "string"
                 ? detail.parent_id
                 : undefined,
+          blocked_by:
+            typeof detail.blocked_by === "string" || Array.isArray(detail.blocked_by)
+              ? (detail.blocked_by as string[] | string)
+              : undefined,
+          epic_id: typeof detail.epic_id === "string" ? detail.epic_id : undefined,
+          epic_name: typeof detail.epic_name === "string" ? detail.epic_name : undefined,
+          labels: Array.isArray(detail.labels) ? (detail.labels as string[]) : undefined,
           assignee: typeof detail.assignee === "string" ? detail.assignee : undefined,
+          reporter: typeof detail.reporter === "string" ? detail.reporter : undefined,
           created_at: typeof detail.created_at === "string" ? detail.created_at : undefined,
           updated_at: typeof detail.updated_at === "string" ? detail.updated_at : undefined,
         });
@@ -173,20 +216,69 @@ export function BeadsCard({
   );
 
   useEffect(() => {
-    if (status?.tasks) setTasks(status.tasks);
-  }, [status?.tasks]);
+    if (status?.tasks) {
+      setTasks(status.tasks);
+      // #region agent log
+      fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:effect',message:'effect sync status.tasks',data:{len:status.tasks.length,sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
+      // #endregion
+    }
+  }, [status?.tasks, layout.session_id]);
 
   useEffect(() => {
-    if (!status?.projectPath || layout.collapsed) return;
+    if (!status?.projectPath || layout.collapsed) {
+      // #region agent log
+      fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:interval',message:'interval not scheduled',data:{hasProjectPath:!!status?.projectPath,collapsed:layout.collapsed,sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
+      // #endregion
+      return;
+    }
+    // #region agent log
+    fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:interval',message:'interval scheduled',data:{sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
     const interval = setInterval(() => {
       handleRefresh();
     }, 10000);
     return () => clearInterval(interval);
-  }, [status?.projectPath, layout.collapsed, handleRefresh]);
+  }, [status?.projectPath, layout.collapsed, handleRefresh, layout.session_id]);
+
+  const [epicProgress, setEpicProgress] = useState<{ total: number; done: number; in_progress: number; open: number } | null>(null);
+
+  useEffect(() => {
+    const unlisten = listen<{
+      epic_id: string;
+      total: number;
+      done: number;
+      in_progress: number;
+      open: number;
+    }>("epic_progress", (event) => {
+      if (epicId && event.payload.epic_id === epicId) {
+        setEpicProgress(event.payload);
+      }
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, [epicId]);
+
+  // Sync the actual rendered height back into the layout so the canvas
+  // knows the card's real footprint (used by hit-testing / connectors).
+  useEffect(() => {
+    if (layout.collapsed || isResizing || !cardRef.current) return;
+    const el = cardRef.current;
+    const observer = new ResizeObserver(() => {
+      const renderedH = el.offsetHeight;
+      const clamped = Math.min(Math.max(renderedH, BEADS_CARD_MIN_H), BEADS_CARD_MAX_H);
+      const snapped = Math.round(clamped / GRID_STEP) * GRID_STEP;
+      if (snapped !== layoutRef.current.h) {
+        const next = { ...layoutRef.current, h: snapped };
+        onLayoutChangeRef.current(next);
+        onLayoutCommitRef.current(next);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [layout.collapsed, isResizing]);
 
   const handlePointerDownDrag = useCallback(
     (e: React.PointerEvent) => {
-      if (e.button !== 0 || (e.target as HTMLElement).closest("[data-resize-handle]")) return;
+      if (e.button !== 0 || (e.target as HTMLElement).closest("[data-resize-handle]") || (e.target as HTMLElement).closest("[data-no-drag]")) return;
       e.preventDefault();
       e.stopPropagation();
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -305,7 +397,8 @@ export function BeadsCard({
         left: displayLayout.x,
         top: displayLayout.y,
         width: displayLayout.w,
-        height: displayLayout.collapsed ? 48 : displayLayout.h,
+        height: displayLayout.collapsed ? 48 : "auto",
+        maxHeight: displayLayout.collapsed ? 48 : BEADS_CARD_MAX_H,
         cursor: "default",
         userSelect: isDragging ? "none" : "auto",
         ["--card-accent" as string]: cardColors.primary,
@@ -330,6 +423,21 @@ export function BeadsCard({
         >
           {layout.collapsed ? "▶" : "▼"}
         </button>
+        {onClose && (
+          <button
+            type="button"
+            className="beads-card-close"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            data-no-drag
+            aria-label="Close"
+          >
+            ×
+          </button>
+        )}
       </div>
       {!layout.collapsed && (
         <>
@@ -357,44 +465,65 @@ export function BeadsCard({
                     {refreshing ? "..." : "↻"}
                   </button>
                 </div>
+                {epicProgress && epicProgress.total > 0 && (
+                  <div className="beads-card-progress">
+                    <div className="beads-card-progress-bar">
+                      <div
+                        className="beads-card-progress-fill"
+                        style={{ width: `${Math.round((epicProgress.done / epicProgress.total) * 100)}%` }}
+                      />
+                    </div>
+                    <span className="beads-card-progress-label">
+                      {epicProgress.done}/{epicProgress.total} done
+                      {epicProgress.in_progress > 0 && ` · ${epicProgress.in_progress} active`}
+                    </span>
+                  </div>
+                )}
                 {tasks.length === 0 ? (
-                  <p className="beads-card-empty">No tasks yet</p>
+                  <>
+                    {/* #region agent log */}
+                    {(() => { fetch('http://127.0.0.1:7656/ingest/c0987eb9-66b3-4105-8651-2ef72c50151d',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'dbc0fa'},body:JSON.stringify({sessionId:'dbc0fa',location:'BeadsCard.tsx:render',message:'showing no tasks',data:{hasStatus:!!status,statusTasksLen:status?.tasks?.length??'undef',sessionId:layout.session_id},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{}); return null; })()}
+                    {/* #endregion */}
+                    <p className="beads-card-empty">No tasks yet</p>
+                  </>
                 ) : (
                   <div className="beads-card-task-list">
-                    {[...inProgressTasks, ...readyTasks, ...otherTasks, ...doneTasks].map((t) => (
-                      <div
-                        key={t.id}
-                        className="beads-card-task"
-                        data-status={t.status}
-                        onClick={() => void handleOpenTask(t)}
-                        style={{ cursor: "pointer" }}
-                      >
-                        <span className="beads-card-task-icon">{STATUS_ICONS[t.status] ?? "⬜"}</span>
-                        <span className="beads-card-task-title">{t.title || t.id}</span>
-                        <span className="beads-card-task-type">{t.type}</span>
-                      </div>
-                    ))}
+                    {[...inProgressTasks, ...readyTasks, ...otherTasks, ...doneTasks].map((t) => {
+                      const taskType = t.type || t.issue_type || "task";
+                      return (
+                        <div
+                          key={t.id}
+                          className="beads-card-task"
+                          data-status={t.status}
+                          onClick={() => void handleOpenTask(t)}
+                          style={{ cursor: "pointer" }}
+                        >
+                          <span className="beads-card-task-type-icon" data-type={taskType}>
+                            {TYPE_ICONS[taskType] ?? "📌"}
+                          </span>
+                          <span className="beads-card-task-key">{t.id}</span>
+                          <span className="beads-card-task-title">{t.title || t.id}</span>
+                          <span className="beads-card-task-status-badge" data-status={t.status}>
+                            {t.status === "in-progress" ? "In Progress"
+                              : t.status === "done" ? "Done"
+                              : t.status === "ready" ? "Ready"
+                              : t.status === "blocked" ? "Blocked"
+                              : t.status}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
             )}
           </div>
           <div
-            className="beads-card-resize-handle se"
-            data-resize-handle
-            onPointerDown={(e) => handlePointerDownResize(e, "se")}
-            title="Drag to resize"
-            aria-label="Resize card"
-          />
-          <div
-            className="beads-card-resize-handle s"
-            data-resize-handle
-            onPointerDown={(e) => handlePointerDownResize(e, "s")}
-          />
-          <div
             className="beads-card-resize-handle e"
             data-resize-handle
             onPointerDown={(e) => handlePointerDownResize(e, "e")}
+            title="Drag to resize width"
+            aria-label="Resize card width"
           />
         </>
       )}

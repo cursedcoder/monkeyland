@@ -76,6 +76,15 @@ pub struct ValidationRequestedPayload {
     pub diff_summary: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EpicProgressPayload {
+    pub epic_id: String,
+    pub total: u32,
+    pub done: u32,
+    pub in_progress: u32,
+    pub open: u32,
+}
+
 /// One tick: get ready tasks, spawn agents, claim in Beads, kill expired, process yield queue.
 pub async fn tick(
     app_handle: &tauri::AppHandle,
@@ -268,8 +277,11 @@ pub async fn tick(
     }
 
     // 5. Mark completed tasks in Beads (agents in Done state with a task_id)
+    //    SKIP epics: PM agents own epics, but we don't mark the epic as done when
+    //    the PM finishes planning. Epic closure is handled by step 6 (auto-close)
+    //    which checks whether all children are done.
     let done_agents = registry.done_agents_with_tasks()?;
-    for (agent_id, task_id) in done_agents {
+    for (agent_id, task_id, role) in done_agents {
         // Merge worktree branch into base before marking done, then remove worktree
         if let Ok(Some(_wt)) = registry.get_worktree_path(&agent_id) {
             let merge_path = path.to_path_buf();
@@ -303,16 +315,128 @@ pub async fn tick(
             }
         }
 
-        let done_args = vec![
-            "update".to_string(),
-            task_id.clone(),
-            "--status".to_string(),
-            "done".to_string(),
-        ];
-        let path_done = path.to_path_buf();
-        let _ = tokio::task::spawn_blocking(move || run_bd_sync(&path_done, &done_args)).await;
+        if role != "project_manager" {
+            let done_args = vec![
+                "update".to_string(),
+                task_id.clone(),
+                "--status".to_string(),
+                "done".to_string(),
+            ];
+            let path_done = path.to_path_buf();
+            let _ = tokio::task::spawn_blocking(move || run_bd_sync(&path_done, &done_args)).await;
+        } else {
+            eprintln!("[orch] skipping done-mark for epic task {task_id} (PM agent); auto-close will handle it");
+        }
+
         let _ = registry.kill(&agent_id);
         let _ = pool.kill(&agent_id);
+    }
+
+    // 6. Auto-close epics whose children are ALL done (and have at least 1 child)
+    {
+        let close_args = vec![
+            "epic".to_string(),
+            "close-eligible".to_string(),
+            "--json".to_string(),
+        ];
+        let path_epic = path.to_path_buf();
+        if let Ok(Ok(stdout)) = tokio::task::spawn_blocking({
+            let path_epic = path_epic.clone();
+            move || run_bd_sync(&path_epic, &close_args)
+        })
+        .await
+        {
+            if let Ok(arr) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                if let Some(epics) = arr.as_array() {
+                    for epic in epics {
+                        if let Some(epic_id) = epic.get("id").and_then(|v| v.as_str()) {
+                            // Guard: verify the epic actually has children before closing.
+                            // An epic with 0 children is vacuously "close-eligible" but the
+                            // PM may not have created tasks yet.
+                            let children_count = {
+                                let check_args = vec![
+                                    "children".to_string(),
+                                    epic_id.to_string(),
+                                    "--json".to_string(),
+                                ];
+                                let check_path = path_epic.clone();
+                                match tokio::task::spawn_blocking(move || run_bd_sync(&check_path, &check_args)).await {
+                                    Ok(Ok(children_stdout)) => {
+                                        serde_json::from_str::<serde_json::Value>(&children_stdout)
+                                            .ok()
+                                            .and_then(|v| v.as_array().map(|a| a.len()))
+                                            .unwrap_or(0)
+                                    }
+                                    _ => 0,
+                                }
+                            };
+                            if children_count == 0 {
+                                eprintln!("[orch] skipping auto-close for epic {} (no children yet)", epic_id);
+                                continue;
+                            }
+
+                            let close_id = epic_id.to_string();
+                            let path_close = path_epic.clone();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                run_bd_sync(&path_close, &[
+                                    "close".to_string(),
+                                    close_id,
+                                ])
+                            })
+                            .await;
+                            eprintln!("[orch] auto-closed epic {} ({} children all done)", epic_id, children_count);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 7. Emit epic progress to frontend
+    {
+        let status_args = vec![
+            "epic".to_string(),
+            "status".to_string(),
+            "--json".to_string(),
+        ];
+        let path_status = path.to_path_buf();
+        if let Ok(Ok(stdout)) = tokio::task::spawn_blocking({
+            let path_status = path_status.clone();
+            move || run_bd_sync(&path_status, &status_args)
+        })
+        .await
+        {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                let epics = if val.is_array() {
+                    val.as_array().cloned().unwrap_or_default()
+                } else {
+                    vec![val]
+                };
+                for epic in epics {
+                    let epic_id = epic.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                    if epic_id.is_empty() {
+                        continue;
+                    }
+                    let total = epic.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let done = epic.get("done").and_then(|v| v.as_u64())
+                        .or_else(|| epic.get("closed").and_then(|v| v.as_u64()))
+                        .unwrap_or(0);
+                    let in_progress = epic.get("in_progress").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let open = epic.get("open").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                    let _ = app_handle.emit(
+                        "epic_progress",
+                        EpicProgressPayload {
+                            epic_id: epic_id.to_string(),
+                            total: total as u32,
+                            done: done as u32,
+                            in_progress: in_progress as u32,
+                            open: open as u32,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     Ok(())

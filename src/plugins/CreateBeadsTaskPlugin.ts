@@ -80,6 +80,24 @@ export class CreateBeadsTaskPlugin extends Plugin {
         description: "Comma-separated IDs of tasks that must complete before this one can start",
         required: false,
       },
+      {
+        name: "labels",
+        type: "string",
+        description: "Comma-separated labels to tag the task (e.g. 'frontend,api,setup')",
+        required: false,
+      },
+      {
+        name: "acceptance_criteria",
+        type: "string",
+        description: "Acceptance criteria — what 'done' looks like. Separate from description for structured display.",
+        required: false,
+      },
+      {
+        name: "estimate_minutes",
+        type: "number",
+        description: "Time estimate in minutes (e.g. 30 for half an hour, 120 for 2 hours)",
+        required: false,
+      },
     ];
   }
 
@@ -92,6 +110,9 @@ export class CreateBeadsTaskPlugin extends Plugin {
       priority?: number;
       parent_id?: string;
       deps?: string;
+      labels?: string;
+      acceptance_criteria?: string;
+      estimate_minutes?: number;
     },
   ): Promise<{ result: string }> {
     const title = parameters.title?.trim();
@@ -129,6 +150,18 @@ export class CreateBeadsTaskPlugin extends Plugin {
 
     if (parameters.deps) {
       args.push("--deps", parameters.deps.split(",").map(s => s.trim()).filter(Boolean).join(","));
+    }
+
+    if (parameters.labels) {
+      args.push("--labels", parameters.labels.split(",").map(s => s.trim()).filter(Boolean).join(","));
+    }
+
+    if (parameters.acceptance_criteria) {
+      args.push("--acceptance", parameters.acceptance_criteria);
+    }
+
+    if (parameters.estimate_minutes != null && parameters.estimate_minutes > 0) {
+      args.push("--estimate", String(parameters.estimate_minutes));
     }
 
     try {

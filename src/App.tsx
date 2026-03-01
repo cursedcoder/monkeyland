@@ -10,6 +10,7 @@ import { TerminalToolPlugin } from "./plugins/TerminalToolPlugin";
 import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
 import { BeadsToolPlugin } from "./plugins/BeadsToolPlugin";
 import { CreateBeadsTaskPlugin } from "./plugins/CreateBeadsTaskPlugin";
+import { UpdateBeadsTaskPlugin } from "./plugins/UpdateBeadsTaskPlugin";
 import { YieldForReviewPlugin } from "./plugins/YieldForReviewPlugin";
 import { CompleteTaskPlugin } from "./plugins/CompleteTaskPlugin";
 import { WriteFileToolPlugin } from "./plugins/WriteFileToolPlugin";
@@ -514,6 +515,9 @@ export default function App() {
       if (allowed.has("create_beads_task")) {
         plugins.push(new CreateBeadsTaskPlugin(agentNodeId));
       }
+      if (allowed.has("update_beads_task")) {
+        plugins.push(new UpdateBeadsTaskPlugin(agentNodeId));
+      }
       if (allowed.has("dispatch_agent")) {
         plugins.push(new DispatchAgentPlugin(agentNodeId, (p) => dispatchAgentRef.current(p)));
       }
@@ -540,6 +544,221 @@ export default function App() {
     },
     [addBeadsNode, updateBeadsStatus, addTerminalLogNode, updateTerminalLog, addBrowserNode],
   );
+
+  /**
+   * Self-heal loop for stuck developers. Diagnoses the failure from terminal
+   * output, sends up to 2 targeted nudge attempts, then force-yields immediately.
+   */
+  const developerSelfHeal = useCallback(
+    async (
+      agentNodeId: string,
+      role: AgentRole,
+      userMessage: string,
+      taskId: string | null,
+      taskMeta: { title?: string; type?: string; priority?: number; description?: string } | undefined,
+      projectPath: string | null | undefined,
+      mi: { modelName: string; inputPricePerM: number; outputPricePerM: number },
+      initialText: string,
+      updatePayload: (update: Record<string, unknown>, persist?: boolean) => void,
+      setAccumulated: (text: string) => void,
+      getAccumulated: () => string,
+    ) => {
+      await new Promise((r) => setTimeout(r, 1000));
+      try {
+        const result = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role });
+        if (result === "already_done") {
+          updatePayload({ status: "in_review", answer: initialText, toolActivity: "Awaiting validation..." }, true);
+          return;
+        }
+        if (result !== "needs_nudge") return;
+
+        // Gather terminal diagnostics from the agent's terminal log card
+        const terminalDiag = getTerminalDiagnostics(agentNodeId);
+
+        const MAX_NUDGES = 2;
+        for (let attempt = 1; attempt <= MAX_NUDGES; attempt++) {
+          updatePayload({ status: "loading", toolActivity: `Self-healing (attempt ${attempt}/${MAX_NUDGES})...` });
+
+          const nudgeMsg = buildDiagnosticNudge(
+            attempt, MAX_NUDGES, userMessage, taskId, taskMeta, projectPath, terminalDiag,
+          );
+
+          const nudgeController = new AbortController();
+          abortControllers.current.set(agentNodeId, nudgeController);
+
+          let resolved = false;
+          await runAgent({
+            systemPrompt: getPromptForRole(role),
+            userMessage: nudgeMsg,
+            plugins: buildPlugins(role, agentNodeId, taskId, projectPath),
+            signal: nudgeController.signal,
+            callbacks: {
+              onChunk: (c) => {
+                if (c.type === "content" && c.text) {
+                  setAccumulated(getAccumulated() + c.text);
+                  updatePayload({ status: "loading", answer: getAccumulated(), toolActivity: "Generating…" });
+                }
+                if (c.type === "reasoning" && c.text) {
+                  setAccumulated(getAccumulated() + c.text);
+                  updatePayload({ status: "loading", answer: getAccumulated(), toolActivity: "Reasoning…" });
+                }
+                if (c.type === "tool") {
+                  const statusText =
+                    c.state === "running" ? (c.status || `Running ${c.name}...`) :
+                    c.state === "preparing" ? `Calling ${c.name}...` :
+                    (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
+                  if (statusText) updatePayload({ status: "loading", toolActivity: statusText });
+                }
+              },
+              onUsage: (usage) => {
+                costStore.reportUsage(
+                  agentNodeId, role, mi.modelName,
+                  usage.prompt_tokens, usage.completion_tokens,
+                  mi.inputPricePerM, mi.outputPricePerM,
+                );
+                invoke("agent_report_tokens", {
+                  agentId: agentNodeId,
+                  delta: usage.prompt_tokens + usage.completion_tokens,
+                }).catch(() => {});
+              },
+              onDone: async () => {
+                await new Promise((r) => setTimeout(r, 500));
+                try {
+                  const postNudge = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role });
+                  if (postNudge === "already_done") {
+                    updatePayload({ status: "in_review", answer: getAccumulated(), toolActivity: "Awaiting validation..." }, true);
+                    resolved = true;
+                  }
+                } catch { /* continue to next attempt */ }
+              },
+              onError: () => { /* continue to next attempt */ },
+              onStopped: () => {
+                updatePayload({ status: "stopped", answer: getAccumulated(), toolActivity: "" }, true);
+                resolved = true;
+              },
+            },
+          });
+          abortControllers.current.delete(agentNodeId);
+
+          if (resolved) return;
+        }
+
+        // All nudge attempts exhausted -- force-yield immediately instead of
+        // waiting for the 5-min safety net. Include terminal diagnostics so
+        // the validator has context about what went wrong.
+        updatePayload({ status: "loading", toolActivity: "Force-submitting for review..." });
+        try {
+          await invoke("agent_force_yield", { agentId: agentNodeId });
+          const summary = terminalDiag.length > 0
+            ? `Auto-submitted after ${MAX_NUDGES} failed nudge attempts.\n\nTerminal diagnostics:\n${terminalDiag}`
+            : `Auto-submitted after ${MAX_NUDGES} failed nudge attempts. No terminal output captured.`;
+          await invoke("agent_set_yield_summary", { agentId: agentNodeId, diffSummary: summary }).catch(() => {});
+          updatePayload({ status: "in_review", answer: getAccumulated(), toolActivity: "Force-submitted for validation..." }, true);
+        } catch {
+          updatePayload({
+            status: "error",
+            errorMessage: "Developer did not submit for review. Force-yield failed.",
+          }, true);
+        }
+      } catch { /* best effort */ }
+    },
+    [buildPlugins, costStore],
+  );
+
+  /** Extract recent terminal command output from this agent's terminal log card. */
+  function getTerminalDiagnostics(agentNodeId: string): string {
+    const termLogLayout = layoutsRef.current.find((l) => {
+      if (l.node_type !== "terminal_log") return false;
+      try {
+        const p = JSON.parse(l.payload ?? "{}") as { parentAgentId?: string };
+        return p.parentAgentId === agentNodeId;
+      } catch { return false; }
+    });
+    if (!termLogLayout) return "";
+    try {
+      const p = JSON.parse(termLogLayout.payload ?? "{}") as {
+        entries?: Array<{ command?: string; output?: string }>;
+      };
+      if (!p.entries?.length) return "";
+      // Take last 5 commands, truncate each output to keep it manageable
+      const recent = p.entries.slice(-5);
+      return recent.map((e) => {
+        const out = (e.output ?? "").slice(-500);
+        return `$ ${e.command ?? "?"}\n${out}`;
+      }).join("\n---\n");
+    } catch { return ""; }
+  }
+
+  /** Build a targeted nudge message by analyzing terminal output for common failure patterns. */
+  function buildDiagnosticNudge(
+    attempt: number,
+    maxAttempts: number,
+    userMessage: string,
+    taskId: string | null,
+    taskMeta: { title?: string; type?: string; priority?: number; description?: string } | undefined,
+    projectPath: string | null | undefined,
+    terminalDiag: string,
+  ): string {
+    const patterns: string[] = [];
+    const lower = terminalDiag.toLowerCase();
+
+    if (/y\/n|yes\/no|press enter|are you sure|confirm/i.test(terminalDiag)) {
+      patterns.push("DETECTED: Interactive prompt requiring user input. Use --yes or -y flags to skip prompts.");
+    }
+    if (/eaddrinuse|address already in use|port.*already/i.test(terminalDiag)) {
+      patterns.push("DETECTED: Port conflict. Kill the existing process or use a different port.");
+    }
+    if (/timed? ?out|timeout/i.test(lower)) {
+      patterns.push("DETECTED: Command timed out. Use background execution: nohup cmd > /tmp/out.log 2>&1 &");
+    }
+    if (/listening on|started server|ready on|compiled|waiting for/i.test(lower) && !/exit/i.test(lower)) {
+      patterns.push("DETECTED: A foreground server may be blocking. Run servers in background with nohup and &.");
+    }
+    if (/error|ERR!|ENOENT|not found|command not found|EACCES|permission denied/i.test(terminalDiag)) {
+      patterns.push("DETECTED: Command errors in terminal output. Fix the errors before submitting.");
+    }
+    if (/npm warn|deprecated/i.test(lower) && patterns.length === 0) {
+      patterns.push("NOTE: Warnings detected but no blocking errors. You can proceed to submit.");
+    }
+
+    const diagSection = patterns.length > 0
+      ? `\n## Diagnosis from your terminal output\n${patterns.join("\n")}\n`
+      : "";
+
+    const terminalSection = terminalDiag
+      ? `\n## Recent terminal output (last commands)\n\`\`\`\n${terminalDiag.slice(-1500)}\n\`\`\`\n`
+      : "";
+
+    const urgency = attempt >= maxAttempts
+      ? "THIS IS YOUR FINAL ATTEMPT. If you do not call yield_for_review, your work will be auto-submitted without your summary."
+      : `Attempt ${attempt}/${maxAttempts}. You must call yield_for_review when done.`;
+
+    return [
+      `# Self-Heal: Developer Task Recovery (attempt ${attempt}/${maxAttempts})`,
+      "",
+      urgency,
+      "",
+      "You are continuing the SAME developer task. Do NOT claim missing context or a fresh session.",
+      diagSection,
+      "## Your task",
+      `- task_id: ${taskId ?? "unknown"}`,
+      `- task_title: ${taskMeta?.title ?? "unknown"}`,
+      `- project_path: ${projectPath ?? "unknown"}`,
+      "",
+      "Original assignment:",
+      userMessage,
+      terminalSection,
+      "## What you must do NOW",
+      "",
+      "1. If there are errors or blocking issues in the terminal output above, FIX them:",
+      "   - Interactive prompts → rerun with --yes flag",
+      "   - Foreground servers → rerun with nohup in background",
+      "   - Build/compile errors → fix the code and rebuild",
+      "   - Port conflicts → kill the process or use a different port",
+      "2. Once implementation is complete and verified, call `yield_for_review` with an accurate diff_summary.",
+      "3. If implementation was already complete, just call `yield_for_review` immediately.",
+    ].join("\n");
+  }
 
   /**
    * Create an agent card on the canvas and start an LLM conversation.
@@ -668,112 +887,14 @@ export default function App() {
             if (role !== "developer") {
               updatePayload({ status: "done", answer: fullText, toolActivity: "" }, true);
             }
-            // Check if developer needs a nudge to yield
-            // Wait a moment for any pending tool calls to complete (race condition fix)
             if (role === "developer") {
-              await new Promise((r) => setTimeout(r, 1000));
-              try {
-                // Re-check state after delay - tool calls may have completed
-                const result = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role });
-                if (result === "already_done") {
-                  // Developer already yielded — awaiting validation, not truly "done"
-                  updatePayload({ status: "in_review", answer: fullText, toolActivity: "Awaiting validation..." }, true);
-                } else if (result === "needs_nudge") {
-                  // Developer didn't call yield_for_review - nudge them
-                  updatePayload({ status: "loading", toolActivity: "Prompting to submit..." });
-                  const nudgeController = new AbortController();
-                  abortControllers.current.set(agentNodeId, nudgeController);
-                  const nudgeMessage = [
-                    "Continue the SAME developer task. Do not claim missing context or a fresh session.",
-                    "You are still responsible for this task.",
-                    "",
-                    "Original assignment:",
-                    userMessage,
-                    "",
-                    "Current task metadata:",
-                    `- task_id: ${taskId ?? "unknown"}`,
-                    `- task_title: ${taskMeta?.title ?? "unknown"}`,
-                    `- project_path: ${projectPath ?? "unknown"}`,
-                    "",
-                    "Now do one of the following:",
-                    "1) If implementation is complete and verified, call yield_for_review with an accurate diff_summary.",
-                    "2) If not complete, continue implementation and then call yield_for_review.",
-                    "Never say you have no context.",
-                  ].join("\n");
-                  await runAgent({
-                    systemPrompt: getPromptForRole(role),
-                    userMessage: nudgeMessage,
-                    plugins: buildPlugins(role, agentNodeId, taskId, projectPath),
-                    signal: nudgeController.signal,
-                    callbacks: {
-                      onChunk: (c) => {
-                        if (c.type === "content" && c.text) {
-                          accumulatedText += c.text;
-                          updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "Generating…" });
-                        }
-                        if (c.type === "reasoning" && c.text) {
-                          accumulatedText += c.text;
-                          updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "Reasoning…" });
-                        }
-                        if (c.type === "tool") {
-                          const statusText =
-                            c.state === "running" ? (c.status || `Running ${c.name}...`) :
-                            c.state === "preparing" ? `Calling ${c.name}...` :
-                            (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
-                          if (statusText) updatePayload({ status: "loading", toolActivity: statusText });
-                        }
-                      },
-                      onUsage: (usage) => {
-                        costStore.reportUsage(
-                          agentNodeId, role, mi.modelName,
-                          usage.prompt_tokens, usage.completion_tokens,
-                          mi.inputPricePerM, mi.outputPricePerM,
-                        );
-                        invoke("agent_report_tokens", {
-                          agentId: agentNodeId,
-                          delta: usage.prompt_tokens + usage.completion_tokens,
-                        }).catch(() => {});
-                      },
-                      onDone: async () => {
-                        // Re-check state after the nudge turn. Do NOT force-yield here:
-                        // if the model is confused after a timeout, force-yield creates empty reviews.
-                        await new Promise((r) => setTimeout(r, 500));
-                        try {
-                          const postNudge = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role });
-                          if (postNudge === "already_done") {
-                            updatePayload({ status: "in_review", answer: accumulatedText, toolActivity: "Awaiting validation..." }, true);
-                          } else {
-                            updatePayload({
-                              status: "error",
-                              errorMessage:
-                                "Developer did not submit for review after retry. Rerun the task with non-interactive commands (for example use --yes, and background dev servers).",
-                            }, true);
-                          }
-                        } catch {
-                          updatePayload({
-                            status: "error",
-                            errorMessage:
-                              "Failed to finalize developer retry flow. Please rerun the task.",
-                          }, true);
-                        }
-                      },
-                      onError: (msg) => {
-                        updatePayload({
-                          status: "error",
-                          errorMessage:
-                            `Developer retry failed: ${msg}. Use non-interactive commands (--yes) and avoid foreground long-running servers.`,
-                        }, true);
-                      },
-                      onStopped: () => {
-                        updatePayload({ status: "stopped", answer: accumulatedText, toolActivity: "" }, true);
-                      },
-                    },
-                  });
-                  abortControllers.current.delete(agentNodeId);
-                }
-              } catch { /* best effort */ }
+              await developerSelfHeal(
+                agentNodeId, role, userMessage, taskId, taskMeta, projectPath,
+                mi, accumulatedText, updatePayload,
+                (text) => { accumulatedText = text; },
+                () => accumulatedText,
+              );
             } else {
-              // Non-developers: just notify backend for auto-complete
               invoke("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => {});
             }
           },
@@ -996,7 +1117,11 @@ export default function App() {
                 priority: typeof parsed.priority === "number" ? parsed.priority : undefined,
                 description: ((parsed.description ?? parsed.body) as string) ?? undefined,
               };
-              taskDescription = (taskMeta.description || taskMeta.title || taskDescription);
+              // Always include the task_id so PM agents can use it as parent_id
+              const bodyText = taskMeta.description || taskMeta.title || "";
+              taskDescription = task_id
+                ? `Epic ID: ${task_id}\n\n${bodyText}`.trim()
+                : bodyText || taskDescription;
             }
           } catch {
             taskDescription = jsonOut.trim() || taskDescription;

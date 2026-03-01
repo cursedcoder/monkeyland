@@ -16,6 +16,7 @@ interface CanvasProps {
   layouts: SessionLayout[];
   onLayoutChange: (nodeId: string, layout: SessionLayout) => void;
   onLayoutCommit: (nodeId: string, layout: SessionLayout) => void;
+  onRemoveLayout?: (nodeId: string) => void;
   onPromptChange?: (nodeId: string, text: string) => void;
   onLaunch?: (nodeId: string) => void;
   onStopAgent?: (nodeId: string) => void;
@@ -56,6 +57,7 @@ export function Canvas({
   layouts,
   onLayoutChange,
   onLayoutCommit,
+  onRemoveLayout,
   onPromptChange,
   onLaunch,
   onStopAgent,
@@ -355,6 +357,7 @@ export function Canvas({
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onDragStart={handleDragStart}
                 onAddTaskCard={(task) => onAddTaskCard?.(layout.session_id, task)}
+                onClose={onRemoveLayout ? () => onRemoveLayout(layout.session_id) : undefined}
                 scale={viewport.scale}
               />
             );
@@ -368,6 +371,7 @@ export function Canvas({
                 onLayoutChange={handleCardLayoutChange(layout.session_id)}
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onDragStart={handleDragStart}
+                onClose={onRemoveLayout ? () => onRemoveLayout(layout.session_id) : undefined}
                 scale={viewport.scale}
               />
             );

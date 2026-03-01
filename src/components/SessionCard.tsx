@@ -10,6 +10,11 @@ import {
 } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
 
+/** Only auto-scroll when user is within this many px of the bottom (lets them read without being yanked down). */
+const AUTO_SCROLL_THRESHOLD_PX = 80;
+/** Consider "at bottom" for showing/hiding the scroll-to-bottom button. */
+const AT_BOTTOM_THRESHOLD_PX = 24;
+
 const ROLE_LABELS: Record<AgentRole, string> = {
   workforce_manager: "Workforce",
   project_manager: "PM",
@@ -57,6 +62,8 @@ export function SessionCard({
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [liveLayout, setLiveLayout] = useState<SessionLayout | null>(null);
+  /** True when user is near the bottom; false when they've scrolled up (show "Scroll to bottom"). */
+  const [isAtBottom, setIsAtBottom] = useState(true);
   const cardRef = useRef<HTMLDivElement>(null);
   const bodyScrollRef = useRef<HTMLDivElement>(null);
   const lastEmittedLayout = useRef<SessionLayout>(layout);
@@ -176,7 +183,7 @@ export function SessionCard({
     onLayoutCommit({ ...layout, collapsed: !layout.collapsed });
   }, [layout, onLayoutChange, onLayoutCommit]);
 
-  // Auto-scroll to bottom and auto-grow height when LLM content updates
+  // Auto-scroll to bottom only when user is already near bottom (lets them scroll up to read)
   useEffect(() => {
     const el = bodyScrollRef.current;
     if (!el) return;
@@ -186,7 +193,12 @@ export function SessionCard({
         answer?: string;
       };
       if (p.status === "loading" || p.status === "done" || p.status === "in_review") {
-        el.scrollTop = el.scrollHeight;
+        const nearBottom =
+          el.scrollTop + el.clientHeight >= el.scrollHeight - AUTO_SCROLL_THRESHOLD_PX;
+        if (nearBottom) {
+          el.scrollTop = el.scrollHeight;
+          setIsAtBottom(true);
+        }
         // Auto-grow card height when content overflows (up to SESSION_CARD_MAX_H)
         const rafId = requestAnimationFrame(() => {
           if (!bodyScrollRef.current || layout.collapsed) return;
@@ -210,6 +222,22 @@ export function SessionCard({
       /* ignore */
     }
   }, [layout.payload, layout.collapsed, layout.h, layout, onLayoutChange, onLayoutCommit]);
+
+  const handleBodyScroll = useCallback(() => {
+    const el = bodyScrollRef.current;
+    if (!el) return;
+    const atBottom =
+      el.scrollTop + el.clientHeight >= el.scrollHeight - AT_BOTTOM_THRESHOLD_PX;
+    setIsAtBottom(atBottom);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const el = bodyScrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+      setIsAtBottom(true);
+    }
+  }, []);
 
   return (
     <div
@@ -306,6 +334,7 @@ export function SessionCard({
           <div
             ref={bodyScrollRef}
             className="session-card-body"
+            onScroll={handleBodyScroll}
             onPointerDown={(e) => {
               if (!(e.target as HTMLElement).closest("[data-resize-handle]"))
                 e.stopPropagation();
@@ -401,6 +430,18 @@ export function SessionCard({
               </div>
             );
           })()}
+            {!isAtBottom && (
+              <button
+                type="button"
+                className="session-card-scroll-to-bottom"
+                onClick={(e) => { e.stopPropagation(); scrollToBottom(); }}
+                onPointerDown={(e) => e.stopPropagation()}
+                aria-label="Scroll to bottom"
+                title="Scroll to latest"
+              >
+                ↓ Bottom
+              </button>
+            )}
           </div>
           <div
             className="session-card-resize-handle se"

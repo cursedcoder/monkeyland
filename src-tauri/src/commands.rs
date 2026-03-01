@@ -864,6 +864,16 @@ pub async fn agent_force_yield(
     registry.force_yield(&agent_id)
 }
 
+/// Set the yield summary on a force-yielded agent so the validator has context.
+#[tauri::command]
+pub async fn agent_set_yield_summary(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+    diff_summary: String,
+) -> Result<(), String> {
+    registry.set_yield_summary(&agent_id, diff_summary)
+}
+
 /// Explicit gate check. Frontend plugins can call this before executing any tool
 /// to get a clear error message if the agent is not allowed.
 #[tauri::command]
