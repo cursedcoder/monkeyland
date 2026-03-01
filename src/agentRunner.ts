@@ -1,7 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import { loadModels, igniteModel, Message, Attachment, Plugin } from "multi-llm-ts";
-import type { LlmChunk } from "multi-llm-ts";
+import { loadModels, type ChatModel } from "multi-llm-ts";
+import { Plugin } from "./plugins/Plugin";
 import type { LlmProviderId } from "./types";
+import { streamText, type ModelMessage, type Tool, stepCountIs } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 
 export interface LlmUsageData {
   prompt_tokens: number;
@@ -23,6 +27,11 @@ export interface AgentRunnerCallbacks {
   onStopped: (fullText: string) => void;
 }
 
+export interface Attachment {
+  data: string;
+  mimeType: string;
+}
+
 export interface AgentRunnerParams {
   systemPrompt: string;
   userMessage: string;
@@ -33,7 +42,7 @@ export interface AgentRunnerParams {
 }
 
 export interface LoadedModel {
-  engine: ReturnType<typeof igniteModel>;
+  model: any;
   modelName: string;
   inputPricePerM: number;
   outputPricePerM: number;
@@ -75,6 +84,68 @@ function fallbackPricing(modelId: string): { input: number; output: number } {
   return { input: 0, output: 0 };
 }
 
+export function getAiProviderModel(providerId: string, apiKey: string, modelId: string) {
+  switch (providerId) {
+    case "anthropic":
+      return createAnthropic({ apiKey })(modelId);
+    case "google":
+      return createGoogleGenerativeAI({ apiKey })(modelId);
+    case "openai":
+      return createOpenAI({ apiKey })(modelId);
+    case "kilo":
+      return createOpenAI({ baseURL: "https://api.kilo.ai/api/gateway", apiKey })(modelId);
+    case "openrouter":
+      return createOpenAI({ baseURL: "https://openrouter.ai/api/v1", apiKey })(modelId);
+    case "deepseek":
+      return createOpenAI({ baseURL: "https://api.deepseek.com/v1", apiKey })(modelId);
+    case "groq":
+      return createOpenAI({ baseURL: "https://api.groq.com/openai/v1", apiKey })(modelId);
+    case "lmstudio":
+      return createOpenAI({ baseURL: "http://localhost:1234/v1", apiKey: apiKey || "lmstudio" })(modelId);
+    case "ollama":
+      return createOpenAI({ baseURL: "http://localhost:11434/v1", apiKey: apiKey || "ollama" })(modelId);
+    case "cerebras":
+      return createOpenAI({ baseURL: "https://api.cerebras.ai/v1", apiKey })(modelId);
+    case "mistralai":
+      return createOpenAI({ baseURL: "https://api.mistral.ai/v1", apiKey })(modelId);
+    case "xai":
+      return createOpenAI({ baseURL: "https://api.x.ai/v1", apiKey })(modelId);
+    case "azure":
+      // Azure requires specific setup, fallback to OpenAI for now or use createAzure if installed
+      return createOpenAI({ apiKey })(modelId);
+    default:
+      return createOpenAI({ apiKey })(modelId);
+  }
+}
+
+export async function loadKiloModels(apiKey: string): Promise<ChatModel[]> {
+  try {
+    const response = await fetch("https://api.kilo.ai/api/gateway/models", {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch Kilo models: ${response.statusText}`);
+    }
+    const data = await response.json();
+    if (data && Array.isArray(data.data)) {
+      return data.data.map((m: any) => ({
+        id: m.id,
+        name: m.name || m.id,
+        pricing: m.pricing ? {
+          prompt: m.pricing.prompt,
+          completion: m.pricing.completion
+        } : undefined
+      }));
+    }
+    return [];
+  } catch (e) {
+    console.error("Error loading Kilo models:", e);
+    return [];
+  }
+}
+
 /**
  * Load the user's configured LLM settings and return a ready-to-use model.
  * Shared across all agent roles -- every agent uses the same provider/model/key.
@@ -84,24 +155,35 @@ async function loadLlmModel(): Promise<LoadedModel> {
   const apiKey = await invoke<string | null>("get_llm_api_key", {
     provider: settings.provider,
   });
-  if (!apiKey?.trim()) {
+  
+  // Some local providers might not need an API key
+  const isLocal = settings.provider === "lmstudio" || settings.provider === "ollama";
+  if (!isLocal && !apiKey?.trim()) {
     throw new Error("LLM not configured. Set up API key in settings.");
   }
 
-  const modelsResult = await loadModels(settings.provider as LlmProviderId, {
-    apiKey: apiKey.trim(),
-  });
-  const model = modelsResult?.chat?.find((m) => m.id === settings.model) ?? modelsResult?.chat?.[0];
-  if (!model) {
+  // We still use multi-llm-ts to fetch the model metadata/pricing for consistency with the wizard
+  let modelMeta: ChatModel | undefined;
+  
+  if (settings.provider === "kilo") {
+    const kiloModels = await loadKiloModels(apiKey?.trim() || "local");
+    modelMeta = kiloModels.find((m) => m.id === settings.model) ?? kiloModels[0];
+  } else {
+    const modelsResult = await loadModels(settings.provider as LlmProviderId, {
+      apiKey: apiKey?.trim() || "local",
+    });
+    modelMeta = modelsResult?.chat?.find((m) => m.id === settings.model) ?? modelsResult?.chat?.[0];
+  }
+  
+  // If not found in the list (e.g. manually typed), create a fallback meta
+  const actualModelId = modelMeta?.id || settings.model;
+  if (!actualModelId) {
     throw new Error("No model available.");
   }
 
-  const modelAny = model as Record<string, unknown>;
+  const modelAny = (modelMeta || {}) as Record<string, unknown>;
   const pricing = modelAny.pricing as Record<string, unknown> | undefined;
-  // Pricing formats vary by provider:
-  //   OpenRouter: { prompt: "0.000003", completion: "0.000015" } (string, $/token)
-  //   Other:      { input: 0.000003, output: 0.000015 } (number, $/token)
-  // We normalize to price-per-million-tokens for costStore.
+  
   let inputPricePerM = pricing
     ? (typeof pricing.input === "number" ? pricing.input * 1_000_000
        : typeof pricing.prompt === "string" ? parseFloat(pricing.prompt) * 1_000_000
@@ -114,14 +196,16 @@ async function loadLlmModel(): Promise<LoadedModel> {
     : 0;
 
   if (inputPricePerM === 0 && outputPricePerM === 0) {
-    const fb = fallbackPricing(model.id);
+    const fb = fallbackPricing(actualModelId);
     inputPricePerM = fb.input;
     outputPricePerM = fb.output;
   }
 
+  const aiModel = getAiProviderModel(settings.provider, apiKey?.trim() || "", actualModelId);
+
   return {
-    engine: igniteModel(settings.provider, model, { apiKey: apiKey.trim() }),
-    modelName: model.name ?? model.id,
+    model: aiModel,
+    modelName: modelMeta?.name ?? actualModelId,
     inputPricePerM,
     outputPricePerM,
   };
@@ -141,39 +225,74 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
     inputPricePerM: loaded.inputPricePerM,
     outputPricePerM: loaded.outputPricePerM,
   });
+  
   try {
+    const tools: Record<string, Tool> = {};
     for (const plugin of plugins) {
-      loaded.engine.addPlugin(plugin);
+      if (plugin.isEnabled()) {
+        tools[plugin.getName()] = plugin.toAiTool();
+      }
     }
 
-    const userMsg = attachment
-      ? new Message("user", userMessage, attachment)
-      : new Message("user", userMessage);
+    const messages: ModelMessage[] = [
+      { role: "system", content: systemPrompt }
+    ];
 
-    const stream = loaded.engine.generate(
-      [new Message("system", systemPrompt), userMsg],
-      { tools: true, usage: true, abortSignal: signal },
-    );
+    if (attachment) {
+      messages.push({
+        role: "user",
+        content: [
+          { type: "text", text: userMessage },
+          { 
+            type: "image", 
+            image: attachment.data,
+            mediaType: attachment.mimeType
+          }
+        ]
+      });
+    } else {
+      messages.push({ role: "user", content: userMessage });
+    }
 
-    for await (const chunk of stream as AsyncIterable<LlmChunk>) {
-      if (!chunk || typeof chunk !== "object" || !("type" in chunk)) continue;
-      const c = chunk as Record<string, unknown>;
-
-      callbacks.onChunk(c as { type: string; text?: string; name?: string; state?: string; status?: string });
-
-      if ((c.type === "content" || c.type === "reasoning") && typeof c.text === "string") {
-        fullText += c.text;
-      }
-
-      // Extract usage from dedicated "usage" chunks or from usage attached to other chunk types.
-      const usagePayload = (c.type === "usage" ? c.usage : c.usage) as Record<string, unknown> | undefined;
-      if (usagePayload && typeof usagePayload === "object") {
-        // Handle both OpenAI (prompt_tokens) and Anthropic (input_tokens) field names.
-        const prompt = Number(usagePayload.prompt_tokens ?? usagePayload.input_tokens ?? 0) || 0;
-        const completion = Number(usagePayload.completion_tokens ?? usagePayload.output_tokens ?? 0) || 0;
-        if (prompt > 0 || completion > 0) {
-          callbacks.onUsage?.({ prompt_tokens: prompt, completion_tokens: completion });
+    const result = streamText({
+      model: loaded.model,
+      messages,
+      tools: Object.keys(tools).length > 0 ? tools : undefined,
+      stopWhen: stepCountIs(10), // Allow the model to call tools and continue
+      abortSignal: signal,
+      onStepFinish: (event) => {
+        if (event.usage) {
+          callbacks.onUsage?.({
+            prompt_tokens: event.usage.inputTokens || 0,
+            completion_tokens: event.usage.outputTokens || 0
+          });
         }
+      }
+    });
+
+    for await (const chunk of result.fullStream) {
+      if (chunk.type === "text-delta") {
+        fullText += chunk.text;
+        callbacks.onChunk({ type: "content", text: chunk.text });
+      } else if (chunk.type === "reasoning-delta") {
+        fullText += chunk.text;
+        callbacks.onChunk({ type: "reasoning", text: chunk.text });
+      } else if (chunk.type === "tool-call") {
+        callbacks.onChunk({ 
+          type: "tool", 
+          name: chunk.toolName, 
+          state: "running",
+          text: `Running ${chunk.toolName}...` 
+        });
+      } else if (chunk.type === "tool-result") {
+        callbacks.onChunk({ 
+          type: "tool", 
+          name: chunk.toolName, 
+          state: "done",
+          status: "success"
+        });
+      } else if (chunk.type === "error") {
+        callbacks.onError(String(chunk.error));
       }
     }
 
@@ -186,5 +305,4 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
       callbacks.onError(msg);
     }
   }
-
 }

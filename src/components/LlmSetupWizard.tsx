@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { loadModels, igniteModel, Message } from "multi-llm-ts";
+import { loadModels } from "multi-llm-ts";
 import type { ChatModel } from "multi-llm-ts";
+import { loadKiloModels } from "../agentRunner";
+import { generateText } from "ai";
+import { getAiProviderModel } from "../agentRunner";
+import { CustomSelect } from "./CustomSelect";
 import {
   LLM_PROVIDER_IDS,
   LLM_PROVIDER_LABELS,
@@ -13,12 +17,14 @@ const TEST_PROMPT = "Hi";
 
 interface LlmSetupWizardProps {
   onComplete: () => void;
+  onClose?: () => void;
   initialProvider?: string;
   initialModel?: string;
 }
 
 export function LlmSetupWizard({
   onComplete,
+  onClose,
   initialProvider = "anthropic",
   initialModel = "",
 }: LlmSetupWizardProps) {
@@ -34,23 +40,95 @@ export function LlmSetupWizard({
   const [testError, setTestError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // When provider changes, try to load its saved API key and last used model
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const savedKey = await invoke<string | null>("get_llm_api_key", { provider });
+        if (active && savedKey) {
+          setApiKey(savedKey);
+        } else if (active) {
+          setApiKey("");
+        }
+      } catch {
+        if (active) setApiKey("");
+      }
+
+      if (active) {
+        // If this is the initial provider, we might want to use the initialModel.
+        // Otherwise, look up the last used model for this provider in localStorage.
+        if (provider === initialProvider && initialModel) {
+          setModelId(initialModel);
+        } else {
+          const savedModel = localStorage.getItem(`llm_model_${provider}`);
+          if (savedModel) {
+            setModelId(savedModel);
+          } else {
+            setModelId("");
+          }
+        }
+        
+        // Reset test status when provider changes
+        setTestStatus("idle");
+        setTestError(null);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [provider, initialProvider, initialModel]);
+
   const selectedModel = modelList.find((m) => m.id === modelId) ?? modelList[0];
   const canNext =
     step === 0 ||
     (step === 1 && apiKey.trim().length > 0) ||
-    (step === 2 && selectedModel != null) ||
+    (step === 2 && (selectedModel != null || modelId.trim().length > 0)) ||
     (step === 3 && testStatus === "ok");
 
   const loadModelsForProvider = useCallback(async () => {
     if (!apiKey.trim()) return;
     setModelsLoading(true);
     setModelList([]);
-    setModelId("");
     try {
-      const result = await loadModels(provider, { apiKey: apiKey.trim() });
-      if (result?.chat?.length) {
-        setModelList(result.chat);
-        setModelId(result.chat[0]?.id ?? "");
+      if (provider === "kilo") {
+        const models = await loadKiloModels(apiKey.trim());
+        if (models.length) {
+          setModelList(models);
+          
+          // Only set to the first model if we don't already have a valid modelId selected
+          setModelsLoading(false); // Do this before state updates just in case
+          setModelId((currentModelId) => {
+            const hasCurrent = models.some(m => m.id === currentModelId);
+            if (hasCurrent) return currentModelId;
+            
+            const savedModel = localStorage.getItem(`llm_model_${provider}`);
+            const hasSaved = models.some(m => m.id === savedModel);
+            if (hasSaved && savedModel) return savedModel;
+
+            return models[0]?.id ?? "";
+          });
+          return;
+        }
+      } else {
+        const result = await loadModels(provider as LlmProviderId, { apiKey: apiKey.trim() });
+        if (result?.chat?.length) {
+          setModelList(result.chat);
+          
+          // Only set to the first model if we don't already have a valid modelId selected
+          setModelsLoading(false); // Do this before state updates just in case
+          setModelId((currentModelId) => {
+            const hasCurrent = result.chat.some(m => m.id === currentModelId);
+            if (hasCurrent) return currentModelId;
+            
+            const savedModel = localStorage.getItem(`llm_model_${provider}`);
+            const hasSaved = result.chat.some(m => m.id === savedModel);
+            if (hasSaved && savedModel) return savedModel;
+
+            return result.chat[0]?.id ?? "";
+          });
+          return;
+        }
       }
     } catch (_) {
       setModelList([]);
@@ -66,31 +144,33 @@ export function LlmSetupWizard({
   }, [step, apiKey, loadModelsForProvider]);
 
   const handleTest = useCallback(async () => {
-    if (!apiKey.trim() || !selectedModel) return;
+    const finalModelId = selectedModel?.id || modelId.trim();
+    if (!apiKey.trim() || !finalModelId) return;
     setTestStatus("running");
     setTestError(null);
     try {
-      const llmModel = igniteModel(provider, selectedModel, { apiKey: apiKey.trim() });
-      // Use streaming so Anthropic (and other providers) don't require long-request handling
-      const stream = llmModel.generate([new Message("user", TEST_PROMPT)]);
-      for await (const _ of stream) {
-        // Consume at least one chunk to verify the connection works
-      }
+      const aiModel = getAiProviderModel(provider, apiKey.trim(), finalModelId);
+      await generateText({
+        model: aiModel,
+        prompt: TEST_PROMPT,
+      });
       setTestStatus("ok");
     } catch (e) {
       setTestStatus("error");
       setTestError(e instanceof Error ? e.message : String(e));
     }
-  }, [provider, selectedModel, apiKey]);
+  }, [provider, selectedModel, modelId, apiKey]);
 
   const handleSaveAndFinish = useCallback(async () => {
-    if (testStatus !== "ok" || !selectedModel) return;
+    const finalModelId = selectedModel?.id || modelId.trim();
+    if (testStatus !== "ok" || !finalModelId) return;
     setSaving(true);
     try {
       await invoke("set_llm_api_key", { provider, apiKey: apiKey.trim() });
       await invoke("save_llm_settings", {
-        payload: { provider, model: selectedModel.id },
+        payload: { provider, model: finalModelId },
       });
+      localStorage.setItem(`llm_model_${provider}`, finalModelId);
       await invoke("set_llm_setup_done");
       onComplete();
     } catch (e) {
@@ -98,7 +178,7 @@ export function LlmSetupWizard({
     } finally {
       setSaving(false);
     }
-  }, [provider, selectedModel, apiKey, testStatus, onComplete]);
+  }, [provider, selectedModel, modelId, apiKey, testStatus, onComplete]);
 
   const goNext = useCallback(() => {
     if (step < STEPS.length - 1) setStep((s) => s + 1);
@@ -109,8 +189,13 @@ export function LlmSetupWizard({
 
   return (
     <div className="llm-wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="llm-wizard-title">
-      <div className="llm-wizard-backdrop" onClick={() => {}} />
+      <div className="llm-wizard-backdrop" onClick={onClose ? onClose : () => {}} />
       <div className="llm-wizard-card">
+        {onClose && (
+          <button type="button" className="llm-wizard-close" onClick={onClose} aria-label="Close">
+            ×
+          </button>
+        )}
         <h2 id="llm-wizard-title" className="llm-wizard-title">
           Set up your LLM
         </h2>
@@ -165,19 +250,25 @@ export function LlmSetupWizard({
               {modelsLoading ? (
                 <p className="llm-wizard-loading">Loading models…</p>
               ) : modelList.length === 0 ? (
-                <p className="llm-wizard-hint">Go back and enter a valid API key, then return here.</p>
+                <>
+                  <p className="llm-wizard-hint">Could not load models automatically. Please type the model ID.</p>
+                  <input
+                    type="text"
+                    className="llm-wizard-input"
+                    placeholder="e.g. anthropic/claude-opus-4.6"
+                    value={modelId}
+                    onChange={(e) => setModelId(e.target.value)}
+                  />
+                </>
               ) : (
-                <select
-                  className="llm-wizard-select"
+                <CustomSelect
                   value={modelId}
-                  onChange={(e) => setModelId(e.target.value)}
-                >
-                  {modelList.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name || m.id}
-                    </option>
-                  ))}
-                </select>
+                  options={modelList.map((m) => ({
+                    value: m.id,
+                    label: m.name || m.id,
+                  }))}
+                  onChange={(value) => setModelId(value)}
+                />
               )}
             </>
           )}
@@ -193,7 +284,7 @@ export function LlmSetupWizard({
                   type="button"
                   className="llm-wizard-btn primary"
                   onClick={handleTest}
-                  disabled={!selectedModel}
+                  disabled={!selectedModel && !modelId.trim()}
                 >
                   Test connection
                 </button>

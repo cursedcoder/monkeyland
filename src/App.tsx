@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Attachment, type Plugin } from "multi-llm-ts";
+import type { Plugin } from "./plugins/Plugin";
 import { Canvas } from "./components/Canvas";
 import { LlmSettings } from "./components/LlmSettings";
 import { WorkforceOverlay } from "./components/WorkforceOverlay";
@@ -15,7 +15,7 @@ import { CompleteTaskPlugin } from "./plugins/CompleteTaskPlugin";
 import { WriteFileToolPlugin } from "./plugins/WriteFileToolPlugin";
 import { ReadFileToolPlugin } from "./plugins/ReadFileToolPlugin";
 import { DispatchAgentPlugin } from "./plugins/DispatchAgentPlugin";
-import { runAgent } from "./agentRunner";
+import { runAgent, type Attachment } from "./agentRunner";
 import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
 import type { ToolName } from "./agentPrompts";
 import { createCostStore, CostStoreContext } from "./costStore";
@@ -1159,7 +1159,7 @@ export default function App() {
             });
             const ssData = await ssResp.json() as { data?: string };
             if (ssData.data) {
-              screenshotAttachment = new Attachment(ssData.data, "image/jpeg");
+              screenshotAttachment = { data: ssData.data, mimeType: "image/jpeg" };
               updateValidatorPayload({
                 validationResults: { ...initialResults, visual: { status: "pending", reasons: [] } },
               });

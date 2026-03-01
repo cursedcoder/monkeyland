@@ -105,6 +105,7 @@ export interface LlmSettings {
 export const LLM_PROVIDER_IDS = [
   "anthropic",
   "openai",
+  "kilo",
   "azure",
   "cerebras",
   "deepseek",
@@ -123,6 +124,7 @@ export type LlmProviderId = (typeof LLM_PROVIDER_IDS)[number];
 export const LLM_PROVIDER_LABELS: Record<LlmProviderId, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
+  kilo: "Kilo AI",
   azure: "Azure AI",
   cerebras: "Cerebras",
   deepseek: "DeepSeek",

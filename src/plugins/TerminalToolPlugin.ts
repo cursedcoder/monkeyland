@@ -1,5 +1,4 @@
-import { Plugin } from "multi-llm-ts";
-import type { PluginParameter, PluginExecutionContext } from "multi-llm-ts";
+import { Plugin, type PluginParameter, type PluginExecutionContext } from "./Plugin";
 import { invoke } from "@tauri-apps/api/core";
 import type { TerminalLogEntry } from "../components/TerminalLogCard";
 
