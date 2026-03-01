@@ -598,7 +598,9 @@ export default function App() {
             }).catch(() => {});
           },
           onDone: async (fullText) => {
-            updatePayload({ status: "done", answer: fullText, toolActivity: "" }, true);
+            if (role !== "developer") {
+              updatePayload({ status: "done", answer: fullText, toolActivity: "" }, true);
+            }
             // Check if developer needs a nudge to yield
             // Wait a moment for any pending tool calls to complete (race condition fix)
             if (role === "developer") {
@@ -606,7 +608,10 @@ export default function App() {
               try {
                 // Re-check state after delay - tool calls may have completed
                 const result = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role });
-                if (result === "needs_nudge") {
+                if (result === "already_done") {
+                  // Developer already yielded — awaiting validation, not truly "done"
+                  updatePayload({ status: "in_review", answer: fullText, toolActivity: "Awaiting validation..." }, true);
+                } else if (result === "needs_nudge") {
                   // Developer didn't call yield_for_review - nudge them
                   updatePayload({ status: "loading", toolActivity: "Prompting to submit..." });
                   const nudgeController = new AbortController();
@@ -635,18 +640,18 @@ export default function App() {
                         }).catch(() => {});
                       },
                       onDone: async () => {
-                        updatePayload({ status: "done", answer: accumulatedText, toolActivity: "" }, true);
                         // If the nudge also failed to yield, force-yield as last resort
                         await new Promise((r) => setTimeout(r, 500));
                         try {
                           await invoke("agent_force_yield", { agentId: agentNodeId });
                         } catch { /* already yielded or done - expected */ }
+                        updatePayload({ status: "in_review", answer: accumulatedText, toolActivity: "Awaiting validation..." }, true);
                       },
                       onError: async () => {
-                        updatePayload({ status: "done", answer: accumulatedText, toolActivity: "" }, true);
                         try {
                           await invoke("agent_force_yield", { agentId: agentNodeId });
                         } catch { /* best effort */ }
+                        updatePayload({ status: "in_review", answer: accumulatedText, toolActivity: "Awaiting validation..." }, true);
                       },
                       onStopped: async () => {
                         updatePayload({ status: "stopped", answer: accumulatedText, toolActivity: "" }, true);
@@ -1074,18 +1079,18 @@ export default function App() {
 
       let screenshotAttachment: Attachment | undefined;
       if (isFrontendProject && resolvedProjectPath) {
+        const ssAbort = AbortSignal.timeout(20_000);
         try {
-          // Start dev server in background
           const devCmd = fileContents["package.json"]?.includes('"dev"') ? "npm run dev" : "npm start";
           await invoke<string>("terminal_exec", {
             payload: {
               session_id: `validator-dev-${validatorId}`,
-              command: `cd "${resolvedProjectPath}" && nohup ${devCmd} > /tmp/validator-dev.log 2>&1 & sleep 4 && echo "started"`,
+              command: `cd "${resolvedProjectPath}" && nohup ${devCmd} > /tmp/validator-dev.log 2>&1 & sleep 3 && echo "started"`,
               cwd: resolvedProjectPath,
+              timeout_ms: 10_000,
             },
           });
 
-          // Probe common ports
           const ports = [5173, 3000, 4321, 8080, 8000];
           let devServerUrl = "";
           for (const port of ports) {
@@ -1093,8 +1098,9 @@ export default function App() {
               const check = await invoke<string>("terminal_exec", {
                 payload: {
                   session_id: "ctx-gather",
-                  command: `curl -s -o /dev/null -w "%{http_code}" http://localhost:${port} 2>/dev/null || echo "0"`,
+                  command: `curl -s --connect-timeout 2 --max-time 3 -o /dev/null -w "%{http_code}" http://localhost:${port} 2>/dev/null || echo "0"`,
                   cwd: "/tmp",
+                  timeout_ms: 5_000,
                 },
               });
               if (check.trim().startsWith("2") || check.trim().startsWith("3")) {
@@ -1106,25 +1112,24 @@ export default function App() {
 
           if (devServerUrl) {
             const browserPort = await invoke<number>("browser_ensure_started", { agentId: validatorId });
-            // Create session
             await fetch(`http://127.0.0.1:${browserPort}/session`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ id: `validator-${validatorId}` }),
+              signal: ssAbort,
             });
-            // Navigate
             await fetch(`http://127.0.0.1:${browserPort}/session/validator-${validatorId}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ action: "navigate", params: { url: devServerUrl } }),
+              signal: ssAbort,
             });
-            // Wait for page to render
-            await new Promise((r) => setTimeout(r, 3000));
-            // Screenshot
+            await new Promise((r) => setTimeout(r, 2000));
             const ssResp = await fetch(`http://127.0.0.1:${browserPort}/session/validator-${validatorId}`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ action: "screenshot", params: {} }),
+              signal: ssAbort,
             });
             const ssData = await ssResp.json() as { data?: string };
             if (ssData.data) {
@@ -1289,7 +1294,34 @@ export default function App() {
         } catch { /* best effort */ }
       }
 
-      // ── 9. Handle retry flow (if validation failed) ──
+      // ── 9. Update developer card status based on validation outcome ──
+      if (lastOutcome?.all_passed) {
+        setLayouts((prev) => {
+          const next = prev.map((l) => {
+            if (l.session_id !== developer_agent_id) return l;
+            try {
+              const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+              return { ...l, payload: JSON.stringify({ ...p, status: "done", toolActivity: "Validation passed" }) };
+            } catch { return l; }
+          });
+          if (loaded.current) persistLayoutsRef.current(next);
+          return next;
+        });
+      } else if (lastOutcome && !lastOutcome.all_passed && lastOutcome.retry_count >= lastOutcome.max_retries) {
+        setLayouts((prev) => {
+          const next = prev.map((l) => {
+            if (l.session_id !== developer_agent_id) return l;
+            try {
+              const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+              return { ...l, payload: JSON.stringify({ ...p, status: "stopped", toolActivity: "Validation failed — max retries reached" }) };
+            } catch { return l; }
+          });
+          if (loaded.current) persistLayoutsRef.current(next);
+          return next;
+        });
+      }
+
+      // ── 10. Handle retry flow (if validation failed but retries remain) ──
       if (lastOutcome && !lastOutcome.all_passed && lastOutcome.retry_count < lastOutcome.max_retries) {
         const feedbackParts = [
           `## Validation Failed (attempt ${lastOutcome.retry_count}/${lastOutcome.max_retries})`,

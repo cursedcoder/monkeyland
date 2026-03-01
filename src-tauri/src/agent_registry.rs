@@ -77,7 +77,7 @@ fn default_role_configs() -> HashMap<String, RoleConfig> {
     m.insert(
         "validator".to_string(),
         RoleConfig {
-            ttl_secs: 120,
+            ttl_secs: 300,
             token_quota: 50_000,
             max_children: 0,
             max_count: 15,
@@ -293,6 +293,8 @@ impl AgentRegistry {
             }
         }
         inner.inbox.remove(agent_id);
+        // Clean up any pending validation state for this developer
+        inner.validation.remove(agent_id);
         Ok(true)
     }
 

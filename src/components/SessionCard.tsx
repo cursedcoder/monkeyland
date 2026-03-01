@@ -185,7 +185,7 @@ export function SessionCard({
         status?: string;
         answer?: string;
       };
-      if (p.status === "loading" || p.status === "done") {
+      if (p.status === "loading" || p.status === "done" || p.status === "in_review") {
         el.scrollTop = el.scrollHeight;
         // Auto-grow card height when content overflows (up to SESSION_CARD_MAX_H)
         const rafId = requestAnimationFrame(() => {
@@ -362,6 +362,22 @@ export function SessionCard({
                     <p className="session-card-response-error-msg">
                       {p.errorMessage ?? "Error"}
                     </p>
+                  </div>
+                );
+              }
+              if (p.status === "in_review") {
+                return (
+                  <div className="session-card-response">
+                    <p className="session-card-response-loading">
+                      {p.toolActivity || "Awaiting validation\u2026"}
+                    </p>
+                    {p.answer ? (
+                      <div className="session-card-response-text session-card-markdown">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {p.answer}
+                        </ReactMarkdown>
+                      </div>
+                    ) : null}
                   </div>
                 );
               }

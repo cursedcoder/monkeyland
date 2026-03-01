@@ -1582,8 +1582,9 @@
 .validator-card {
   position: absolute;
   border-radius: 10px;
-  background: var(--ml-card-bg, #1a1b26);
-  border: 1.5px solid var(--ml-border, #3b3d52);
+  background: var(--ml-bg-card);
+  border: 1.5px solid var(--ml-border);
+  box-shadow: var(--ml-shadow-card);
   overflow: hidden;
   user-select: none;
   touch-action: none;
@@ -1601,14 +1602,14 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid var(--ml-border, #3b3d52);
+  background: var(--ml-bg-card-header);
+  border-bottom: 1px solid var(--ml-border);
   cursor: grab;
 }
 .validator-card__title {
   font-size: 13px;
   font-weight: 600;
-  color: var(--ml-text, #c0caf5);
+  color: var(--ml-text);
   flex: 1;
 }
 .validator-card__status {
@@ -1618,21 +1619,21 @@
   border-radius: 4px;
 }
 .validator-card__status--loading {
-  color: #7aa2f7;
-  background: rgba(122, 162, 247, 0.12);
+  color: var(--ml-text-accent);
+  background: var(--ml-bg-card-alt);
 }
 .validator-card__status--pass {
-  color: #9ece6a;
-  background: rgba(158, 206, 106, 0.12);
+  color: var(--ml-success);
+  background: var(--ml-bg-card-alt);
 }
 .validator-card__status--fail {
-  color: #f7768e;
-  background: rgba(247, 118, 142, 0.12);
+  color: var(--ml-error);
+  background: var(--ml-bg-card-alt);
 }
 .validator-card__stop {
   background: none;
   border: none;
-  color: #f7768e;
+  color: var(--ml-error);
   cursor: pointer;
   font-size: 11px;
   padding: 2px 4px;
@@ -1640,7 +1641,7 @@
   line-height: 1;
 }
 .validator-card__stop:hover {
-  background: rgba(247, 118, 142, 0.15);
+  background: var(--ml-bg-card-alt);
 }
 
 .validator-card__checks {
@@ -1655,14 +1656,14 @@
   gap: 8px;
   padding: 5px 12px;
   font-size: 12px;
-  color: var(--ml-text, #c0caf5);
+  color: var(--ml-text);
   transition: background 0.1s;
 }
 .validator-check-row.expandable {
   cursor: pointer;
 }
 .validator-check-row.expandable:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--ml-bg-card-alt);
 }
 
 .validator-icon {
@@ -1677,18 +1678,18 @@
   flex-shrink: 0;
 }
 .validator-icon--pending {
-  border: 2px solid #565f89;
+  border: 2px solid var(--ml-text-muted);
   animation: validator-spin 1s linear infinite;
 }
 .validator-icon--pass {
-  background: rgba(158, 206, 106, 0.18);
-  color: #9ece6a;
-  border: 1.5px solid #9ece6a;
+  background: var(--ml-bg-card-alt);
+  color: var(--ml-success);
+  border: 1.5px solid var(--ml-success);
 }
 .validator-icon--fail {
-  background: rgba(247, 118, 142, 0.18);
-  color: #f7768e;
-  border: 1.5px solid #f7768e;
+  background: var(--ml-bg-card-alt);
+  color: var(--ml-error);
+  border: 1.5px solid var(--ml-error);
 }
 
 @keyframes validator-spin {
@@ -1700,13 +1701,13 @@
 }
 .validator-check-expand {
   font-size: 10px;
-  color: #565f89;
+  color: var(--ml-text-muted);
 }
 
 .validator-check-reasons {
   padding: 2px 12px 4px 40px;
   font-size: 11px;
-  color: #a9b1d6;
+  color: var(--ml-text-muted);
   line-height: 1.5;
 }
 .validator-check-reason {
