@@ -327,6 +327,14 @@ export default function App() {
     [persistLayouts]
   );
 
+  const handleRemoveLayout = useCallback((nodeId: string) => {
+    setLayouts((prev) => {
+      const next = prev.filter((l) => l.session_id !== nodeId);
+      if (loaded.current && next.length < prev.length) persistLayouts(next);
+      return next;
+    });
+  }, [persistLayouts]);
+
   const handlePromptChange = useCallback((nodeId: string, text: string) => {
     setLayouts((prev) => {
       const next = prev.map((l) =>
@@ -559,7 +567,7 @@ export default function App() {
             if (l.session_id !== agentNodeId) return l;
             try {
               const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
-              return { ...l, payload: JSON.stringify({ ...p, status: "loading", answer: "", toolActivity: "" }) };
+              return { ...l, payload: JSON.stringify({ ...p, status: "loading", answer: "", toolActivity: "Connecting…" }) };
             } catch {
               return l;
             }
@@ -586,6 +594,7 @@ export default function App() {
             taskDescription: taskMeta?.description ?? undefined,
             status: "loading",
             answer: "",
+            toolActivity: "Connecting…",
           }),
         };
         const next = repositionLayouts([...prev, newAgentLayout]);
@@ -628,15 +637,19 @@ export default function App() {
             mi.outputPricePerM = info.outputPricePerM;
           },
           onChunk: (c) => {
-            if ((c.type === "content" || c.type === "reasoning") && c.text) {
+            if (c.type === "content" && c.text) {
               accumulatedText += c.text;
-              updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "" });
+              updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "Generating…" });
+            }
+            if (c.type === "reasoning" && c.text) {
+              accumulatedText += c.text;
+              updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "Reasoning…" });
             }
             if (c.type === "tool") {
               const statusText =
                 c.state === "running" ? (c.status || `Running ${c.name}...`) :
                 c.state === "preparing" ? `Calling ${c.name}...` :
-                c.state === "completed" ? "" : "";
+                (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
               if (statusText) updatePayload({ status: "loading", toolActivity: statusText });
             }
           },
@@ -694,9 +707,20 @@ export default function App() {
                     signal: nudgeController.signal,
                     callbacks: {
                       onChunk: (c) => {
-                        if ((c.type === "content" || c.type === "reasoning") && c.text) {
+                        if (c.type === "content" && c.text) {
                           accumulatedText += c.text;
-                          updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "" });
+                          updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "Generating…" });
+                        }
+                        if (c.type === "reasoning" && c.text) {
+                          accumulatedText += c.text;
+                          updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "Reasoning…" });
+                        }
+                        if (c.type === "tool") {
+                          const statusText =
+                            c.state === "running" ? (c.status || `Running ${c.name}...`) :
+                            c.state === "preparing" ? `Calling ${c.name}...` :
+                            (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
+                          if (statusText) updatePayload({ status: "loading", toolActivity: statusText });
                         }
                       },
                       onUsage: (usage) => {
@@ -1691,6 +1715,7 @@ export default function App() {
           layouts={layouts}
           onLayoutChange={handleLayoutChange}
           onLayoutCommit={handleLayoutCommit}
+          onRemoveLayout={handleRemoveLayout}
           onPromptChange={handlePromptChange}
           onLaunch={handleLaunch}
           onStopAgent={handleStopAgent}
