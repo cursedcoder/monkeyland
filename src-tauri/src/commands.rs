@@ -1152,6 +1152,91 @@ mod tests {
         assert!(is_likely_interactive_without_flags("cargo test").is_none());
     }
 
+    #[test]
+    fn interactive_with_no_interactive_flag_allowed() {
+        assert!(is_likely_interactive_without_flags("npm create vite@latest --no-interactive").is_none());
+    }
+
+    #[test]
+    fn bun_init_and_pnpm_init_blocked() {
+        assert!(is_likely_interactive_without_flags("bun init").is_some());
+        assert!(is_likely_interactive_without_flags("pnpm init").is_some());
+        assert!(is_likely_interactive_without_flags("yarn init").is_some());
+    }
+
+    // --- shell_single_quote tests ---
+
+    #[test]
+    fn shell_single_quote_simple() {
+        assert_eq!(shell_single_quote("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_single_quote_with_embedded_quotes() {
+        let result = shell_single_quote("it's");
+        assert!(!result.is_empty());
+        assert!(result.starts_with('\''));
+        assert!(result.ends_with('\''));
+    }
+
+    #[test]
+    fn shell_single_quote_empty() {
+        assert_eq!(shell_single_quote(""), "''");
+    }
+
+    #[test]
+    fn shell_single_quote_spaces_and_special() {
+        let result = shell_single_quote("path with spaces/$VAR");
+        assert!(result.starts_with('\''));
+        assert!(result.ends_with('\''));
+    }
+
+    // --- Additional is_rm_rf_dangerous edge cases ---
+
+    #[test]
+    fn rm_rf_root_with_tab_is_dangerous() {
+        assert!(is_rm_rf_dangerous("rm -rf /\t"));
+    }
+
+    #[test]
+    fn rm_rf_root_with_pipe_is_dangerous() {
+        assert!(is_rm_rf_dangerous("rm -rf /|cat"));
+    }
+
+    #[test]
+    fn rm_rf_root_with_ampersand_is_dangerous() {
+        assert!(is_rm_rf_dangerous("rm -rf /&"));
+    }
+
+    #[test]
+    fn rm_rf_root_with_newline_is_dangerous() {
+        assert!(is_rm_rf_dangerous("rm -rf /\necho done"));
+    }
+
+    // --- is_destructive_command false positive / edge cases ---
+
+    #[test]
+    fn dd_without_dev_target_is_safe() {
+        assert!(
+            is_destructive_command("dd if=input.img of=output.img").is_none(),
+            "dd not targeting /dev should be safe"
+        );
+    }
+
+    #[test]
+    fn halt_substring_in_echo_is_known_false_positive() {
+        let result = is_destructive_command("echo halt > log.txt");
+        assert!(result.is_some(), "known false positive: 'halt' substring in echo");
+    }
+
+    #[test]
+    fn safe_dd_read_from_dev() {
+        assert!(
+            is_destructive_command("dd if=/dev/zero of=testfile bs=1M count=10").is_none(),
+            "dd reading from /dev but writing to file should be safe"
+        );
+    }
+
     #[tokio::test]
     async fn test_validator_cleanup_terminates_process() {
         let mut child = Command::new("/bin/bash")

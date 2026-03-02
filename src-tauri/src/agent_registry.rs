@@ -1636,6 +1636,216 @@ mod tests {
         // Completely unrelated path should be rejected
         assert!(registry.validate_path_for_terminal(&id, "/tmp/evil").is_err());
     }
+
+    // --- Token quota enforcement (state transitions) ---
+
+    #[test]
+    fn report_tokens_over_quota_transitions_to_stopped() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        registry.report_tokens(&id, 10_001).unwrap();
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.state, "Stopped", "agent should be Stopped after exceeding token quota");
+    }
+
+    #[test]
+    fn report_tokens_under_quota_stays_running() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        registry.report_tokens(&id, 9_999).unwrap();
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.state, "Running", "agent should stay Running under quota");
+    }
+
+    #[test]
+    fn report_tokens_nonexistent_agent_is_noop() {
+        let registry = AgentRegistry::new();
+        assert!(registry.report_tokens("ghost", 1000).is_ok());
+    }
+
+    #[test]
+    fn report_tokens_terminal_agent_not_double_stopped() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        registry.complete_task(&id).unwrap();
+        // Already Done — reporting tokens should not change state
+        registry.report_tokens(&id, 999_999).unwrap();
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.state, "Done", "terminal state should not change on token report");
+    }
+
+    // --- Message passing ---
+
+    #[test]
+    fn message_to_nonexistent_returns_false() {
+        let registry = AgentRegistry::new();
+        let result = registry.message("from", "ghost", "hello".into()).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn message_delivery_and_poll_drain() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        assert!(registry.message("sender", &id, "msg1".into()).unwrap());
+        assert!(registry.message("sender", &id, "msg2".into()).unwrap());
+
+        let msgs = registry.poll_messages(&id).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].payload, "msg1");
+        assert_eq!(msgs[1].payload, "msg2");
+        assert_eq!(msgs[0].from, "sender");
+
+        let msgs2 = registry.poll_messages(&id).unwrap();
+        assert!(msgs2.is_empty(), "poll should drain the inbox");
+    }
+
+    #[test]
+    fn poll_messages_nonexistent_returns_empty() {
+        let registry = AgentRegistry::new();
+        let msgs = registry.poll_messages("ghost").unwrap();
+        assert!(msgs.is_empty());
+    }
+
+    // --- validate_path edge cases ---
+
+    #[test]
+    fn validate_path_traversal_with_dotdot_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("developer", Some("bd-1".into()), None, Some(project.to_str().unwrap().into())).unwrap();
+
+        let escape = format!("{}/../../../etc/passwd", project.to_str().unwrap());
+        let result = registry.validate_path(&id, &escape);
+        assert!(result.is_err(), "path traversal with .. should be rejected");
+    }
+
+    #[test]
+    fn validate_path_root_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("developer", Some("bd-1".into()), None, Some(project.to_str().unwrap().into())).unwrap();
+
+        let result = registry.validate_path(&id, "/");
+        assert!(result.is_err(), "root path should be rejected");
+    }
+
+    #[test]
+    fn validate_path_no_sandbox_allows_all() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("operator", None, None, None).unwrap();
+        assert!(registry.validate_path(&id, "/any/path").is_ok(), "no sandbox should allow all");
+    }
+
+    #[test]
+    fn validate_path_empty_string_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("developer", Some("bd-1".into()), None, Some(project.to_str().unwrap().into())).unwrap();
+
+        let result = registry.validate_path(&id, "");
+        assert!(result.is_err(), "empty path should be rejected");
+    }
+
+    // --- Effective CWD ---
+
+    #[test]
+    fn get_effective_cwd_prefers_worktree() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("developer", Some("bd-1".into()), None, Some("/project".into())).unwrap();
+        assert_eq!(registry.get_effective_cwd(&id).unwrap(), Some("/project".to_string()));
+
+        registry.set_worktree_path(&id, "/worktree").unwrap();
+        assert_eq!(registry.get_effective_cwd(&id).unwrap(), Some("/worktree".to_string()));
+    }
+
+    // --- Spawn limits ---
+
+    #[test]
+    fn spawn_respects_max_count_per_role() {
+        let registry = AgentRegistry::new();
+        registry.set_role_max_count("worker", Some(2)).unwrap();
+        registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        registry.spawn("worker", Some("t-2".into()), None, None).unwrap();
+        let result = registry.spawn("worker", Some("t-3".into()), None, None);
+        assert!(result.is_err(), "should fail at max_count");
+        assert!(result.unwrap_err().contains("max_count"));
+    }
+
+    #[test]
+    fn spawn_max_children_enforced() {
+        let registry = AgentRegistry::new();
+        registry.set_role_max_count("operator", Some(100)).unwrap();
+        let parent = registry.spawn("operator", None, None, None).unwrap();
+        // Operator max_children is 0 by default
+        let result = registry.spawn("operator", None, Some(parent.clone()), None);
+        assert!(result.is_err(), "operator with max_children=0 should reject children");
+        assert!(result.unwrap_err().contains("max_children"));
+    }
+
+    // --- can_spawn_role ---
+
+    #[test]
+    fn can_spawn_role_unknown_role_returns_false() {
+        let registry = AgentRegistry::new();
+        assert!(!registry.can_spawn_role("nonexistent_role").unwrap());
+    }
+
+    // --- agents_in_review_without_validators ---
+
+    #[test]
+    fn agents_in_review_without_validators_detected() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+        let yp = YieldPayload { status: "done".into(), diff_summary: None, git_branch: None };
+        registry.yield_for_review(&id, yp).unwrap();
+        registry.start_validation(&id, Some("bd-1".into())).unwrap();
+
+        let stuck = registry.agents_in_review_without_validators().unwrap();
+        assert_eq!(stuck.len(), 1);
+        assert_eq!(stuck[0].0, id);
+    }
+
+    // --- Yield with max retries exceeded ---
+
+    #[test]
+    fn yield_after_max_retries_blocks_agent() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+
+        for _ in 0..3 {
+            let yp = YieldPayload { status: "done".into(), diff_summary: None, git_branch: None };
+            registry.yield_for_review(&id, yp).unwrap();
+            registry.start_validation(&id, Some("bd-1".into())).unwrap();
+            registry
+                .validation_submit(&id, "code_review", false, vec!["bad".into()])
+                .unwrap();
+            registry.validation_submit(&id, "business_logic", true, vec![]).unwrap();
+            registry.validation_submit(&id, "scope", true, vec![]).unwrap();
+        }
+
+        // retry_count is now 3 — next yield should be rejected
+        let yp = YieldPayload { status: "done".into(), diff_summary: None, git_branch: None };
+        let result = registry.yield_for_review(&id, yp);
+        assert!(result.is_err(), "yield after 3 retries should be rejected");
+        assert!(result.unwrap_err().contains("Max validation retries"));
+
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.state, "Blocked", "agent should be Blocked after max retries");
+    }
 }
 
 // Test-only helpers for manipulating agent internals (timestamp backdating, etc.)

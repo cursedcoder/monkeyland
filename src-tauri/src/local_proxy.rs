@@ -140,3 +140,149 @@ pub async fn start(target_base: String) -> Result<u16, String> {
 
     Ok(port)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::get;
+
+    async fn start_mock_upstream() -> u16 {
+        let app = Router::new()
+            .route(
+                "/test",
+                get(|| async {
+                    axum::Json(serde_json::json!({"ok": true}))
+                }),
+            )
+            .route(
+                "/echo-status",
+                get(|| async {
+                    Response::builder()
+                        .status(201)
+                        .header("x-custom", "upstream-header")
+                        .body(Body::from("created"))
+                        .unwrap()
+                }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn proxy_starts_and_returns_port() {
+        let upstream_port = start_mock_upstream().await;
+        let port = start(format!("http://127.0.0.1:{upstream_port}"))
+            .await
+            .unwrap();
+        assert!(port > 0);
+    }
+
+    #[tokio::test]
+    async fn proxy_forwards_get_with_cors() {
+        let upstream_port = start_mock_upstream().await;
+        let proxy_port = start(format!("http://127.0.0.1:{upstream_port}"))
+            .await
+            .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{proxy_port}/test"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "*"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn proxy_preserves_upstream_status_code() {
+        let upstream_port = start_mock_upstream().await;
+        let proxy_port = start(format!("http://127.0.0.1:{upstream_port}"))
+            .await
+            .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{proxy_port}/echo-status"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 201, "proxy should preserve upstream status code");
+    }
+
+    #[tokio::test]
+    async fn proxy_options_preflight() {
+        let upstream_port = start_mock_upstream().await;
+        let proxy_port = start(format!("http://127.0.0.1:{upstream_port}"))
+            .await
+            .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("http://127.0.0.1:{proxy_port}/test"),
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 204);
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "*"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-methods")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "*"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_unreachable_target_returns_500() {
+        let proxy_port = start("http://127.0.0.1:19999".to_string())
+            .await
+            .unwrap();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{proxy_port}/test"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 500);
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "*"
+        );
+    }
+}

@@ -156,6 +156,12 @@ fn close_eligible_epic_ids_sync(project_path: &Path) -> Result<Vec<String>, Stri
         return Ok(Vec::new());
     };
 
+    Ok(close_eligible_from_task_list(items))
+}
+
+/// Parse a full task list to find epic IDs whose children are ALL done.
+/// Extracted from `close_eligible_epic_ids_sync` for testability.
+fn close_eligible_from_task_list(items: &[serde_json::Value]) -> Vec<String> {
     let mut epics = HashSet::new();
     let mut child_statuses: HashMap<String, Vec<String>> = HashMap::new();
     for item in items {
@@ -189,7 +195,7 @@ fn close_eligible_epic_ids_sync(project_path: &Path) -> Result<Vec<String>, Stri
     let mut eligible = Vec::new();
     for epic_id in epics {
         let Some(children) = child_statuses.get(&epic_id) else {
-            continue; // no children yet, don't close
+            continue;
         };
         if !children.is_empty() && children.iter().all(|s| s == "done") {
             eligible.push(epic_id);
@@ -197,7 +203,7 @@ fn close_eligible_epic_ids_sync(project_path: &Path) -> Result<Vec<String>, Stri
     }
     eligible.sort();
     eligible.dedup();
-    Ok(eligible)
+    eligible
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2528,6 +2534,278 @@ mod tests {
              but it was allowed. The sandbox uses starts_with() on the \
              raw path instead of the canonicalized path."
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // close_eligible_from_task_list unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn close_eligible_all_children_done() {
+        let items: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+            {"id": "epic-1", "issue_type": "epic", "status": "in_progress"},
+            {"id": "task-1", "type": "task", "status": "done", "parent": "epic-1"},
+            {"id": "task-2", "type": "task", "status": "done", "parent": "epic-1"}
+        ]"#,
+        )
+        .unwrap();
+        let eligible = close_eligible_from_task_list(&items);
+        assert_eq!(eligible, vec!["epic-1"]);
+    }
+
+    #[test]
+    fn close_eligible_not_all_done() {
+        let items: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+            {"id": "epic-1", "issue_type": "epic", "status": "in_progress"},
+            {"id": "task-1", "type": "task", "status": "done", "parent": "epic-1"},
+            {"id": "task-2", "type": "task", "status": "ready", "parent": "epic-1"}
+        ]"#,
+        )
+        .unwrap();
+        let eligible = close_eligible_from_task_list(&items);
+        assert!(eligible.is_empty());
+    }
+
+    #[test]
+    fn close_eligible_epic_no_children_not_eligible() {
+        let items: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"id": "epic-1", "issue_type": "epic", "status": "open"}]"#,
+        )
+        .unwrap();
+        let eligible = close_eligible_from_task_list(&items);
+        assert!(eligible.is_empty());
+    }
+
+    #[test]
+    fn close_eligible_multiple_epics_mixed() {
+        let items: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+            {"id": "epic-1", "issue_type": "epic", "status": "in_progress"},
+            {"id": "epic-2", "issue_type": "epic", "status": "in_progress"},
+            {"id": "task-1", "type": "task", "status": "done", "parent": "epic-1"},
+            {"id": "task-2", "type": "task", "status": "done", "parent": "epic-2"},
+            {"id": "task-3", "type": "task", "status": "ready", "parent": "epic-2"}
+        ]"#,
+        )
+        .unwrap();
+        let eligible = close_eligible_from_task_list(&items);
+        assert_eq!(eligible, vec!["epic-1"]);
+    }
+
+    #[test]
+    fn close_eligible_empty_list() {
+        let eligible = close_eligible_from_task_list(&[]);
+        assert!(eligible.is_empty());
+    }
+
+    #[test]
+    fn close_eligible_type_alias_both_accepted() {
+        let items: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+            {"id": "e1", "type": "epic"},
+            {"id": "t1", "issue_type": "task", "status": "done", "parent": "e1"}
+        ]"#,
+        )
+        .unwrap();
+        let eligible = close_eligible_from_task_list(&items);
+        assert_eq!(eligible, vec!["e1"], "type alias should work same as issue_type");
+    }
+
+    #[test]
+    fn close_eligible_items_without_id_skipped() {
+        let items: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+            {"issue_type": "epic"},
+            {"id": "e1", "issue_type": "epic"},
+            {"id": "t1", "type": "task", "status": "done", "parent": "e1"}
+        ]"#,
+        )
+        .unwrap();
+        let eligible = close_eligible_from_task_list(&items);
+        assert_eq!(eligible, vec!["e1"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // role_for_task unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn role_for_task_epic_maps_to_pm() {
+        assert_eq!(role_for_task("epic", 2), "project_manager");
+        assert_eq!(role_for_task("Epic", 1), "project_manager");
+        assert_eq!(role_for_task("EPIC", 0), "project_manager");
+    }
+
+    #[test]
+    fn role_for_task_default_is_developer() {
+        assert_eq!(role_for_task("task", 2), "developer");
+        assert_eq!(role_for_task("bug", 1), "developer");
+        assert_eq!(role_for_task("", 2), "developer");
+        assert_eq!(role_for_task("unknown_type", 2), "developer");
+    }
+
+    // -----------------------------------------------------------------------
+    // Safety mode: caps spawns per tick to 2
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn safety_mode_caps_spawns_per_tick() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        meta_db.set_setting("safety_mode_enabled", "1").unwrap();
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        env.set_ready_tasks(
+            r#"[
+            {"id":"bd-s1","issue_type":"task","priority":2},
+            {"id":"bd-s2","issue_type":"task","priority":2},
+            {"id":"bd-s3","issue_type":"task","priority":2},
+            {"id":"bd-s4","issue_type":"task","priority":2},
+            {"id":"bd-s5","issue_type":"task","priority":2}
+        ]"#,
+        );
+
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let spawned = env.events_named("agent_spawned");
+        assert_eq!(
+            spawned.len(),
+            2,
+            "safety mode should cap at 2 spawns per tick, got {}",
+            spawned.len()
+        );
+
+        let snap = metrics.snapshot(0);
+        assert!(snap.safety_mode_enabled);
+    }
+
+    // -----------------------------------------------------------------------
+    // Merge retry exhaustion: task marked blocked after MAX_MERGE_RETRIES
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn merge_retry_exhausted_marks_task_blocked() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        // Create conflicting branches so merge fails
+        std::fs::write(repo.path().join("clash.txt"), "base").unwrap();
+        git(repo.path(), &["add", "clash.txt"]);
+        git(repo.path(), &["commit", "-m", "seed"]);
+        git(repo.path(), &["checkout", "-b", "task/bd-exhaust"]);
+        std::fs::write(repo.path().join("clash.txt"), "task version").unwrap();
+        git(repo.path(), &["add", "clash.txt"]);
+        git(repo.path(), &["commit", "-m", "task change"]);
+        git(repo.path(), &["checkout", "main"]);
+        std::fs::write(repo.path().join("clash.txt"), "conflicting base").unwrap();
+        git(repo.path(), &["add", "clash.txt"]);
+        git(repo.path(), &["commit", "-m", "base conflict"]);
+
+        // Enqueue with retry_count at the limit
+        merge_queue.push(MergeEntry {
+            agent_id: "dead-agent".to_string(),
+            task_id: "bd-exhaust".to_string(),
+            retry_count: MAX_MERGE_RETRIES,
+        });
+
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let statuses = env.events_named("merge_status");
+        assert!(
+            statuses
+                .iter()
+                .any(|e| e["status"] == "failed" && e["task_id"] == "bd-exhaust"),
+            "merge should be marked permanently failed after retry exhaustion"
+        );
+
+        let blocked_calls = env.bd_calls_matching("bd-exhaust").iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"blocked".to_string())
+        });
+        assert!(
+            blocked_calls,
+            "task should be marked blocked in Beads after retry exhaustion"
+        );
+
+        let ma_spawns: Vec<_> = env
+            .events_named("agent_spawned")
+            .into_iter()
+            .filter(|e| e["role"] == "merge_agent")
+            .collect();
+        assert_eq!(
+            ma_spawns.len(),
+            0,
+            "no merge agent should be spawned when retries are exhausted"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // OrchestrationState transitions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn orchestration_state_transitions() {
+        let state = OrchestrationState::new();
+        assert_eq!(state.get(), 0);
+        assert!(!state.is_running());
+
+        state.set_running();
+        assert_eq!(state.get(), 1);
+        assert!(state.is_running());
+
+        state.set_paused();
+        assert_eq!(state.get(), 2);
+        assert!(!state.is_running());
+    }
+
+    // -----------------------------------------------------------------------
+    // MergeQueue retry count tracking
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn merge_queue_retry_count_set_and_take() {
+        let q = MergeQueue::new();
+        assert_eq!(q.take_retry_count("bd-1"), 0, "default retry count is 0");
+        q.set_retry_count("bd-1", 2);
+        assert_eq!(q.take_retry_count("bd-1"), 2);
+        assert_eq!(
+            q.take_retry_count("bd-1"),
+            0,
+            "take should consume the count"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // OrchestrationMetrics accumulation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn metrics_accumulate_correctly() {
+        let m = OrchestrationMetrics::new();
+        m.inc_merge_retry();
+        m.inc_merge_retry();
+        m.inc_validation_timeout_block();
+        m.set_safety_mode_enabled(true);
+        let snap = m.snapshot(5);
+        assert_eq!(snap.merge_retry_count, 2);
+        assert_eq!(snap.validation_timeout_blocks, 1);
+        assert_eq!(snap.merge_queue_depth, 5);
+        assert!(snap.safety_mode_enabled);
     }
 
     // -----------------------------------------------------------------------

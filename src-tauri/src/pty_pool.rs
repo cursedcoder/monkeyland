@@ -251,3 +251,123 @@ fn pty_reader_loop(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- RingBuffer unit tests ---
+
+    #[test]
+    fn ring_buffer_push_and_drain() {
+        let mut rb = RingBuffer::new();
+        rb.push(b"hello");
+        assert_eq!(rb.drain(), b"hello");
+        assert!(rb.drain().is_empty(), "drain should empty the buffer");
+    }
+
+    #[test]
+    fn ring_buffer_overflow_drops_oldest() {
+        let mut rb = RingBuffer::new();
+        let first = vec![0xAA; RING_BUFFER_CAP];
+        rb.push(&first);
+        let overflow = vec![0xBB; 100];
+        rb.push(&overflow);
+        let result = rb.drain();
+        assert_eq!(result.len(), RING_BUFFER_CAP);
+        assert!(result.ends_with(&[0xBB; 100]), "newest bytes must be preserved");
+        assert_eq!(result[0], 0xAA, "oldest surviving byte from first push");
+    }
+
+    #[test]
+    fn ring_buffer_peek_nondestructive() {
+        let mut rb = RingBuffer::new();
+        rb.push(b"peek");
+        assert_eq!(rb.peek(), b"peek");
+        assert_eq!(rb.peek(), b"peek", "peek must not consume data");
+        assert_eq!(rb.drain(), b"peek");
+        assert!(rb.peek().is_empty());
+    }
+
+    #[test]
+    fn ring_buffer_empty_operations() {
+        let mut rb = RingBuffer::new();
+        assert!(rb.drain().is_empty());
+        assert!(rb.peek().is_empty());
+        rb.push(b"");
+        assert!(rb.drain().is_empty());
+    }
+
+    #[test]
+    fn ring_buffer_many_small_pushes() {
+        let mut rb = RingBuffer::new();
+        for i in 0u16..1000 {
+            rb.push(&i.to_le_bytes());
+        }
+        let result = rb.drain();
+        assert_eq!(result.len(), 2000);
+    }
+
+    #[test]
+    fn ring_buffer_exact_capacity_no_truncation() {
+        let mut rb = RingBuffer::new();
+        let data = vec![0x42; RING_BUFFER_CAP];
+        rb.push(&data);
+        let result = rb.drain();
+        assert_eq!(result.len(), RING_BUFFER_CAP);
+        assert!(result.iter().all(|&b| b == 0x42));
+    }
+
+    #[test]
+    fn ring_buffer_massive_single_push_keeps_tail() {
+        let mut rb = RingBuffer::new();
+        let huge: Vec<u8> = (0..RING_BUFFER_CAP * 3).map(|i| (i % 256) as u8).collect();
+        rb.push(&huge);
+        let result = rb.drain();
+        assert_eq!(result.len(), RING_BUFFER_CAP, "must cap at RING_BUFFER_CAP");
+        assert_eq!(
+            result,
+            &huge[huge.len() - RING_BUFFER_CAP..],
+            "should retain the tail of the input"
+        );
+    }
+
+    // --- PtyPool thin tests (no real PTY needed) ---
+
+    #[test]
+    fn pool_drain_all_empty() {
+        let pool = PtyPool::new();
+        let drained = pool.drain_all().unwrap();
+        assert!(drained.is_empty());
+    }
+
+    #[test]
+    fn pool_write_nonexistent_session_errors() {
+        let pool = PtyPool::new();
+        assert!(pool.write("ghost", b"data").is_err());
+    }
+
+    #[test]
+    fn pool_resize_nonexistent_session_errors() {
+        let pool = PtyPool::new();
+        assert!(pool.resize("ghost", 120, 40).is_err());
+    }
+
+    #[test]
+    fn pool_kill_nonexistent_is_ok() {
+        let pool = PtyPool::new();
+        assert!(pool.kill("ghost").is_ok());
+    }
+
+    #[test]
+    fn pool_get_buffer_nonexistent_errors() {
+        let pool = PtyPool::new();
+        assert!(pool.get_buffer("ghost").is_err());
+    }
+
+    #[test]
+    fn pool_exec_command_nonexistent_errors() {
+        let pool = PtyPool::new();
+        assert!(pool.exec_command("ghost", "echo hi").is_err());
+    }
+}
