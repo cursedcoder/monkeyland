@@ -562,7 +562,10 @@ export default function App() {
         plugins.push(new YieldForReviewPlugin(agentNodeId, taskId));
       }
       if (allowed.has("complete_task") && taskId) {
-        plugins.push(new CompleteTaskPlugin(agentNodeId, taskId));
+        // merge_agents must NOT mark the Beads task "done" — the orchestration
+        // loop does that after a successful git merge.  Passing null skips the
+        // Beads update while still allowing the agent state transition.
+        plugins.push(new CompleteTaskPlugin(agentNodeId, role === "merge_agent" ? null : taskId));
       }
 
       return plugins;
@@ -1259,7 +1262,7 @@ export default function App() {
             project_path: payload.project_path ?? projectPath,
             worktree_path:
               payload.worktree_path ??
-              (role === "developer" && (payload.project_path ?? projectPath)
+              ((role === "developer" || role === "merge_agent") && (payload.project_path ?? projectPath)
                 ? worktreePathFor(payload.project_path ?? projectPath ?? "", layout.session_id)
                 : null),
           },

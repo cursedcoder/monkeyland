@@ -30,11 +30,26 @@ export function normalizeValidatorOutput(rawText: string): ParsedValidatorResult
   try {
     parsed = JSON.parse(cleaned) as Partial<ParsedValidatorResults>;
   } catch {
-    return {
-      code_review: failedResult("Could not parse validator output"),
-      business_logic: failedResult("Could not parse validator output"),
-      scope: failedResult("Could not parse validator output"),
-    };
+    // LLM may have emitted text around the JSON — extract the outermost { ... }
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        parsed = JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)) as Partial<ParsedValidatorResults>;
+      } catch {
+        return {
+          code_review: failedResult("Could not parse validator output"),
+          business_logic: failedResult("Could not parse validator output"),
+          scope: failedResult("Could not parse validator output"),
+        };
+      }
+    } else {
+      return {
+        code_review: failedResult("Could not parse validator output"),
+        business_logic: failedResult("Could not parse validator output"),
+        scope: failedResult("Could not parse validator output"),
+      };
+    }
   }
 
   const out: ParsedValidatorResults = {
