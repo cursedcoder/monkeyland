@@ -321,11 +321,12 @@ impl SessionDb {
     /// Max seq in events (0 if empty). Used for snapshot seq_at.
     pub fn max_seq(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let max: Option<i64> = conn
-            .query_row("SELECT MAX(seq) FROM events", [], |row| row.get(0))
-            .optional()
+        let max: i64 = conn
+            .query_row("SELECT COALESCE(MAX(seq), 0) FROM events", [], |row| {
+                row.get(0)
+            })
             .map_err(|e| e.to_string())?;
-        Ok(max.unwrap_or(0))
+        Ok(max)
     }
 
     /// Nearest snapshot at or before seq_at.
@@ -500,6 +501,16 @@ impl WriteBatcher {
         Ok(())
     }
 
+    /// Get a count of buffered events for a session (test helper).
+    #[cfg(test)]
+    pub fn buffered_count(&self, session_id: &str) -> usize {
+        self.buffers
+            .lock()
+            .ok()
+            .and_then(|b| b.get(session_id).map(|v| v.len()))
+            .unwrap_or(0)
+    }
+
     /// Close session: compact and remove from cache.
     pub fn close_session(&self, session_id: &str) -> Result<(), String> {
         let mut buffers = self.buffers.lock().map_err(|e| e.to_string())?;
@@ -511,6 +522,16 @@ impl WriteBatcher {
         let mut snapshot_state = self.snapshot_state.lock().map_err(|e| e.to_string())?;
         snapshot_state.remove(session_id);
         Ok(())
+    }
+
+    /// Check if a session DB is cached (test helper).
+    #[cfg(test)]
+    pub fn has_session_db(&self, session_id: &str) -> bool {
+        self.session_dbs
+            .lock()
+            .ok()
+            .map(|dbs| dbs.contains_key(session_id))
+            .unwrap_or(false)
     }
 
     pub fn get_terminal_buffer(&self, session_id: &str) -> Result<String, String> {
@@ -533,5 +554,338 @@ impl WriteBatcher {
         let max_seq = db.max_seq()?;
         let snap = db.get_snapshot_at(max_seq)?;
         Ok(snap.map(|s| s.terminal_buffer).unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_meta_db() -> (tempfile::TempDir, MetaDb) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = MetaDb::open(&dir.path().join("meta.db")).unwrap();
+        (dir, db)
+    }
+
+    fn temp_session_db() -> (tempfile::TempDir, SessionDb) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = SessionDb::open(&dir.path().join("session.db")).unwrap();
+        (dir, db)
+    }
+
+    // --- MetaDb tests ---
+
+    #[test]
+    fn meta_db_open_creates_tables() {
+        let (_dir, db) = temp_meta_db();
+        assert!(db.list_sessions().unwrap().is_empty());
+        assert!(db.load_canvas_layouts().unwrap().is_empty());
+        assert!(db.get_setting("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn meta_db_open_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meta.db");
+        let db1 = MetaDb::open(&path).unwrap();
+        db1.set_setting("key", "value1").unwrap();
+        drop(db1);
+        // Re-open same file — migrations should not fail
+        let db2 = MetaDb::open(&path).unwrap();
+        assert_eq!(db2.get_setting("key").unwrap().unwrap(), "value1");
+    }
+
+    #[test]
+    fn settings_get_set_upsert() {
+        let (_dir, db) = temp_meta_db();
+        assert!(db.get_setting("theme").unwrap().is_none());
+        db.set_setting("theme", "dark").unwrap();
+        assert_eq!(db.get_setting("theme").unwrap().unwrap(), "dark");
+        // Upsert
+        db.set_setting("theme", "light").unwrap();
+        assert_eq!(db.get_setting("theme").unwrap().unwrap(), "light");
+    }
+
+    #[test]
+    fn canvas_layout_save_load_round_trip() {
+        let (_dir, db) = temp_meta_db();
+        let layouts = vec![
+            SessionLayoutRow {
+                session_id: "s1".into(),
+                x: 10.0, y: 20.0, w: 300.0, h: 400.0,
+                collapsed: false, node_type: "agent".into(), payload: "{}".into(),
+            },
+            SessionLayoutRow {
+                session_id: "s2".into(),
+                x: 100.0, y: 200.0, w: 500.0, h: 600.0,
+                collapsed: true, node_type: "terminal".into(), payload: r#"{"cmd":"ls"}"#.into(),
+            },
+        ];
+        db.save_canvas_layouts(&layouts).unwrap();
+        let loaded = db.load_canvas_layouts().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].session_id, "s1");
+        assert_eq!(loaded[1].session_id, "s2");
+        assert!((loaded[0].x - 10.0).abs() < f64::EPSILON);
+        assert!(loaded[1].collapsed);
+        assert_eq!(loaded[1].node_type, "terminal");
+    }
+
+    #[test]
+    fn canvas_layout_save_replaces_all_previous() {
+        let (_dir, db) = temp_meta_db();
+        let first = vec![SessionLayoutRow {
+            session_id: "old".into(),
+            x: 0.0, y: 0.0, w: 100.0, h: 100.0,
+            collapsed: false, node_type: "agent".into(), payload: "{}".into(),
+        }];
+        db.save_canvas_layouts(&first).unwrap();
+        assert_eq!(db.load_canvas_layouts().unwrap().len(), 1);
+
+        let second = vec![
+            SessionLayoutRow {
+                session_id: "new1".into(),
+                x: 0.0, y: 0.0, w: 100.0, h: 100.0,
+                collapsed: false, node_type: "agent".into(), payload: "{}".into(),
+            },
+            SessionLayoutRow {
+                session_id: "new2".into(),
+                x: 0.0, y: 0.0, w: 100.0, h: 100.0,
+                collapsed: false, node_type: "agent".into(), payload: "{}".into(),
+            },
+        ];
+        db.save_canvas_layouts(&second).unwrap();
+        let loaded = db.load_canvas_layouts().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(!loaded.iter().any(|l| l.session_id == "old"));
+    }
+
+    #[test]
+    fn create_session_if_missing_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = MetaDb::open(&dir.path().join("meta.db")).unwrap();
+        db.create_session_if_missing(dir.path(), "sess-1", "Session 1").unwrap();
+        db.create_session_if_missing(dir.path(), "sess-1", "Session 1 Again").unwrap();
+        let sessions = db.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        // Name should be the original (INSERT OR IGNORE)
+        assert_eq!(sessions[0].name, "Session 1");
+    }
+
+    #[test]
+    fn list_sessions_ordered_by_created_desc() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = MetaDb::open(&dir.path().join("meta.db")).unwrap();
+        db.create_session_if_missing(dir.path(), "older", "Older").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.create_session_if_missing(dir.path(), "newer", "Newer").unwrap();
+        let sessions = db.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].id, "newer");
+        assert_eq!(sessions[1].id, "older");
+    }
+
+    // --- SessionDb tests ---
+
+    #[test]
+    fn session_db_empty_state() {
+        let (_dir, db) = temp_session_db();
+        assert_eq!(db.event_count().unwrap(), 0);
+        assert_eq!(db.max_seq().unwrap(), 0);
+        assert!(db.get_snapshot_at(100).unwrap().is_none());
+        assert!(db.events_after(0, 100).unwrap().is_empty());
+    }
+
+    #[test]
+    fn insert_and_query_events() {
+        let (_dir, db) = temp_session_db();
+        let events = vec![
+            EventRow { id: "a".into(), seq: 1, ts_us: 1000, type_: "chunk".into(), payload: "{}".into() },
+            EventRow { id: "b".into(), seq: 2, ts_us: 2000, type_: "chunk".into(), payload: "{}".into() },
+            EventRow { id: "c".into(), seq: 3, ts_us: 3000, type_: "tool".into(), payload: "{}".into() },
+        ];
+        db.insert_events(&events).unwrap();
+        assert_eq!(db.event_count().unwrap(), 3);
+        assert_eq!(db.max_seq().unwrap(), 3);
+
+        let after_1 = db.events_after(1, 100).unwrap();
+        assert_eq!(after_1.len(), 2);
+        assert_eq!(after_1[0].seq, 2);
+        assert_eq!(after_1[1].seq, 3);
+    }
+
+    #[test]
+    fn events_after_respects_limit() {
+        let (_dir, db) = temp_session_db();
+        let events: Vec<EventRow> = (1..=10)
+            .map(|i| EventRow {
+                id: format!("e{i}"), seq: i, ts_us: i * 1000,
+                type_: "chunk".into(), payload: "{}".into(),
+            })
+            .collect();
+        db.insert_events(&events).unwrap();
+        let limited = db.events_after(0, 3).unwrap();
+        assert_eq!(limited.len(), 3);
+        assert_eq!(limited[0].seq, 1);
+        assert_eq!(limited[2].seq, 3);
+    }
+
+    #[test]
+    fn insert_empty_events_is_noop() {
+        let (_dir, db) = temp_session_db();
+        db.insert_events(&[]).unwrap();
+        assert_eq!(db.event_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn snapshot_round_trip() {
+        let (_dir, db) = temp_session_db();
+        let events = vec![
+            EventRow { id: "a".into(), seq: 1, ts_us: 1000, type_: "chunk".into(), payload: "{}".into() },
+        ];
+        db.insert_events(&events).unwrap();
+
+        let snap = SnapshotRow {
+            seq_at: 1, ts_us: 1000,
+            terminal_buffer: "$ ls\nfoo bar".into(),
+            browser_url: "http://localhost:3000".into(),
+            browser_screenshot_path: "/tmp/ss.png".into(),
+            agent_phase: "running".into(),
+        };
+        db.insert_snapshot(&snap).unwrap();
+
+        let loaded = db.get_snapshot_at(1).unwrap().unwrap();
+        assert_eq!(loaded.seq_at, 1);
+        assert_eq!(loaded.terminal_buffer, "$ ls\nfoo bar");
+        assert_eq!(loaded.browser_url, "http://localhost:3000");
+        assert_eq!(loaded.agent_phase, "running");
+    }
+
+    #[test]
+    fn get_snapshot_at_returns_nearest_before() {
+        let (_dir, db) = temp_session_db();
+        let events: Vec<EventRow> = (1..=20)
+            .map(|i| EventRow {
+                id: format!("e{i}"), seq: i, ts_us: i * 1000,
+                type_: "chunk".into(), payload: "{}".into(),
+            })
+            .collect();
+        db.insert_events(&events).unwrap();
+
+        for seq in [5, 10, 15] {
+            db.insert_snapshot(&SnapshotRow {
+                seq_at: seq, ts_us: seq * 1000,
+                terminal_buffer: format!("snap-{seq}"),
+                browser_url: String::new(),
+                browser_screenshot_path: String::new(),
+                agent_phase: "idle".into(),
+            }).unwrap();
+        }
+
+        // Query at seq 12 should return snapshot at 10
+        let snap = db.get_snapshot_at(12).unwrap().unwrap();
+        assert_eq!(snap.seq_at, 10);
+        assert_eq!(snap.terminal_buffer, "snap-10");
+
+        // Query at seq 4 should return none (snapshot at 5 is after)
+        let snap = db.get_snapshot_at(4).unwrap();
+        assert!(snap.is_none());
+
+        // Query at seq 15 should return snapshot at 15
+        let snap = db.get_snapshot_at(15).unwrap().unwrap();
+        assert_eq!(snap.seq_at, 15);
+    }
+
+    #[test]
+    fn compact_keeps_last_20_snapshots() {
+        let (_dir, db) = temp_session_db();
+        // Insert 25 snapshots with corresponding events
+        for i in 1..=25i64 {
+            db.insert_events(&[EventRow {
+                id: format!("e{i}"), seq: i, ts_us: i * 1000,
+                type_: "chunk".into(), payload: "{}".into(),
+            }]).unwrap();
+            db.insert_snapshot(&SnapshotRow {
+                seq_at: i, ts_us: i * 1000,
+                terminal_buffer: format!("buf-{i}"),
+                browser_url: String::new(),
+                browser_screenshot_path: String::new(),
+                agent_phase: "idle".into(),
+            }).unwrap();
+        }
+        assert_eq!(db.event_count().unwrap(), 25);
+        db.compact().unwrap();
+        // Events before cutoff (snapshot 5 = 25-20) should be deleted
+        let count = db.event_count().unwrap();
+        assert!(count < 25, "compact should remove old events, got {count}");
+    }
+
+    // --- WriteBatcher tests ---
+
+    #[test]
+    fn write_batcher_push_and_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_db = MetaDb::open(&dir.path().join("meta.db")).unwrap();
+        let batcher = WriteBatcher::new(dir.path().to_path_buf());
+
+        let event = EventRow {
+            id: "e1".into(), seq: 1, ts_us: 1000,
+            type_: "chunk".into(), payload: "{}".into(),
+        };
+        batcher.push("sess-1", event).unwrap();
+        assert_eq!(batcher.buffered_count("sess-1"), 1);
+
+        batcher.flush(&meta_db, None).unwrap();
+        assert_eq!(batcher.buffered_count("sess-1"), 0);
+
+        // Session should have been created in meta
+        let sessions = meta_db.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "sess-1");
+
+        // Session DB should exist and have the event
+        assert!(batcher.has_session_db("sess-1"));
+    }
+
+    #[test]
+    fn write_batcher_multiple_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_db = MetaDb::open(&dir.path().join("meta.db")).unwrap();
+        let batcher = WriteBatcher::new(dir.path().to_path_buf());
+
+        for (sid, seq) in [("s1", 1), ("s2", 2), ("s1", 3)] {
+            batcher.push(sid, EventRow {
+                id: format!("e{seq}"), seq, ts_us: seq * 1000,
+                type_: "chunk".into(), payload: "{}".into(),
+            }).unwrap();
+        }
+        batcher.flush(&meta_db, None).unwrap();
+        let sessions = meta_db.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn write_batcher_close_session_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_db = MetaDb::open(&dir.path().join("meta.db")).unwrap();
+        let batcher = WriteBatcher::new(dir.path().to_path_buf());
+
+        batcher.push("sess-close", EventRow {
+            id: "e1".into(), seq: 1, ts_us: 1000,
+            type_: "chunk".into(), payload: "{}".into(),
+        }).unwrap();
+        batcher.flush(&meta_db, None).unwrap();
+        assert!(batcher.has_session_db("sess-close"));
+
+        batcher.close_session("sess-close").unwrap();
+        assert!(!batcher.has_session_db("sess-close"));
+        assert_eq!(batcher.buffered_count("sess-close"), 0);
+    }
+
+    #[test]
+    fn get_terminal_buffer_returns_empty_for_unknown_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let batcher = WriteBatcher::new(dir.path().to_path_buf());
+        assert_eq!(batcher.get_terminal_buffer("nonexistent").unwrap(), "");
     }
 }

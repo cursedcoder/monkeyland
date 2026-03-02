@@ -1049,10 +1049,107 @@ mod tests {
     }
 
     #[test]
+    fn test_process_kill_detects_kill_9_variants() {
+        assert!(is_process_kill_command("kill -9 12345").is_some());
+        assert!(is_process_kill_command("kill -KILL 12345").is_some());
+        assert!(is_process_kill_command("kill -SIGKILL 12345").is_some());
+    }
+
+    #[test]
+    fn test_process_kill_ignores_non_kill_with_kill_substring() {
+        // "skill" contains "kill" as a substring — should NOT be detected
+        // (pkill/killall/kill are checked via contains, so "skill" won't match "kill " at start)
+        assert!(is_process_kill_command("echo 'kill nothing'").is_none());
+    }
+
+    #[test]
     fn test_validator_cleanup_session_guard() {
         assert!(is_validator_cleanup_session("validator-dev-abc"));
         assert!(!is_validator_cleanup_session("ctx-gather"));
         assert!(!is_validator_cleanup_session("exec-123"));
+    }
+
+    // --- is_rm_rf_dangerous tests ---
+
+    #[test]
+    fn rm_rf_root_is_dangerous() {
+        assert!(is_rm_rf_dangerous("rm -rf /"));
+        assert!(is_rm_rf_dangerous("rm -rf /*"));
+        assert!(is_rm_rf_dangerous("rm -rf / ; echo done"));
+    }
+
+    #[test]
+    fn rm_rf_home_is_dangerous() {
+        assert!(is_rm_rf_dangerous("rm -rf ~"));
+        assert!(is_rm_rf_dangerous("rm -rf $HOME"));
+    }
+
+    #[test]
+    fn rm_rf_subdirectory_is_safe() {
+        assert!(!is_rm_rf_dangerous("rm -rf /tmp/build"));
+        assert!(!is_rm_rf_dangerous("rm -rf ./node_modules"));
+        assert!(!is_rm_rf_dangerous("rm -rf dist/"));
+    }
+
+    #[test]
+    fn rm_rf_root_with_trailing_path_is_safe() {
+        assert!(!is_rm_rf_dangerous("rm -rf /var/log/old"));
+    }
+
+    // --- is_destructive_command tests ---
+
+    #[test]
+    fn destructive_commands_blocked() {
+        assert!(is_destructive_command("shutdown -h now").is_some());
+        assert!(is_destructive_command("reboot").is_some());
+        assert!(is_destructive_command("mkfs.ext4 /dev/sda1").is_some());
+        assert!(is_destructive_command("dd if=/dev/zero of=/dev/sda").is_some());
+    }
+
+    #[test]
+    fn fork_bomb_blocked() {
+        assert!(is_destructive_command(":(){ :|:& };:").is_some());
+    }
+
+    #[test]
+    fn shell_config_modification_blocked() {
+        assert!(is_destructive_command("echo 'alias ll=ls' >> .bashrc").is_some());
+        assert!(is_destructive_command("echo 'export PATH' >> .zshrc").is_some());
+        assert!(is_destructive_command("cat > .profile").is_some());
+    }
+
+    #[test]
+    fn safe_commands_not_blocked() {
+        assert!(is_destructive_command("npm install").is_none());
+        assert!(is_destructive_command("cargo build").is_none());
+        assert!(is_destructive_command("git status").is_none());
+        assert!(is_destructive_command("ls -la").is_none());
+    }
+
+    // --- is_likely_interactive_without_flags tests ---
+
+    #[test]
+    fn interactive_scaffold_commands_blocked() {
+        assert!(is_likely_interactive_without_flags("npm create vite@latest").is_some());
+        assert!(is_likely_interactive_without_flags("npx create-react-app my-app").is_some());
+        assert!(is_likely_interactive_without_flags("pnpm create next-app").is_some());
+        assert!(is_likely_interactive_without_flags("yarn create vite").is_some());
+        assert!(is_likely_interactive_without_flags("bun create vite").is_some());
+        assert!(is_likely_interactive_without_flags("npm init").is_some());
+    }
+
+    #[test]
+    fn interactive_with_yes_flag_allowed() {
+        assert!(is_likely_interactive_without_flags("npm create vite@latest --yes").is_none());
+        assert!(is_likely_interactive_without_flags("npm init -y").is_none());
+        assert!(is_likely_interactive_without_flags("yes | npm create vite").is_none());
+    }
+
+    #[test]
+    fn non_interactive_commands_allowed() {
+        assert!(is_likely_interactive_without_flags("npm install express").is_none());
+        assert!(is_likely_interactive_without_flags("npm run build").is_none());
+        assert!(is_likely_interactive_without_flags("cargo test").is_none());
     }
 
     #[tokio::test]

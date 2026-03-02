@@ -1256,6 +1256,386 @@ mod tests {
         let result = registry.gate_tool("missing-agent", "terminal_exec");
         assert!(result.is_err());
     }
+
+    // --- Spawn tests ---
+
+    #[test]
+    fn spawn_returns_unique_ids() {
+        let registry = AgentRegistry::new();
+        let id1 = registry.spawn("operator", None, None, None).unwrap();
+        let id2 = registry.spawn("operator", None, None, None).unwrap();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn spawn_unknown_role_is_rejected() {
+        let registry = AgentRegistry::new();
+        let result = registry.spawn("hacker", None, None, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown role"));
+    }
+
+    #[test]
+    fn spawn_enforces_max_count() {
+        let registry = AgentRegistry::new();
+        // workforce_manager has max_count=1
+        let _id1 = registry.spawn("workforce_manager", None, None, None).unwrap();
+        let result = registry.spawn("workforce_manager", None, None, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("max_count"));
+    }
+
+    #[test]
+    fn spawn_developer_requires_task_id() {
+        let registry = AgentRegistry::new();
+        let result = registry.spawn("developer", None, None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn spawn_developer_with_task_id_succeeds() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+        assert!(!id.is_empty());
+    }
+
+    #[test]
+    fn spawn_increments_parent_children_count() {
+        let registry = AgentRegistry::new();
+        let parent = registry.spawn("project_manager", Some("t-1".into()), None, None).unwrap();
+        let _child = registry.spawn("operator", None, Some(parent.clone()), None).unwrap();
+        let status = registry.status().unwrap();
+        assert_eq!(status.used_slots, 2);
+    }
+
+    #[test]
+    fn spawn_rejects_when_parent_at_max_children() {
+        let registry = AgentRegistry::new();
+        // Worker has max_children=0
+        let worker = registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        let result = registry.spawn("operator", None, Some(worker), None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("max_children"));
+    }
+
+    // --- Kill tests ---
+
+    #[test]
+    fn kill_removes_agent_and_decrements_parent() {
+        let registry = AgentRegistry::new();
+        let parent = registry.spawn("project_manager", Some("t-1".into()), None, None).unwrap();
+        let child = registry.spawn("operator", None, Some(parent.clone()), None).unwrap();
+        assert_eq!(registry.status().unwrap().used_slots, 2);
+
+        registry.kill(&child).unwrap();
+        assert_eq!(registry.status().unwrap().used_slots, 1);
+    }
+
+    #[test]
+    fn kill_nonexistent_returns_false() {
+        let registry = AgentRegistry::new();
+        assert!(!registry.kill("ghost").unwrap());
+    }
+
+    #[test]
+    fn kill_cleans_up_inbox_and_validation() {
+        let registry = AgentRegistry::new();
+        let dev = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+        // Send a message to the developer
+        let sender = registry.spawn("project_manager", Some("t-1".into()), None, None).unwrap();
+        registry.message(&sender, &dev, "hello".into()).unwrap();
+        // Start validation
+        registry.yield_for_review(&dev, YieldPayload {
+            status: "done".into(), git_branch: None, diff_summary: None,
+        }).unwrap();
+        registry.start_validation(&dev, Some("bd-1".into())).unwrap();
+
+        // Kill should clean up everything
+        registry.kill(&dev).unwrap();
+        assert_eq!(registry.status().unwrap().used_slots, 1); // only sender remains
+    }
+
+    // --- Token quota tests ---
+
+    #[test]
+    fn report_tokens_accumulates() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("operator", None, None, None).unwrap();
+        registry.report_tokens(&id, 100).unwrap();
+        registry.report_tokens(&id, 200).unwrap();
+        let quota = registry.quota(&id).unwrap().unwrap();
+        assert_eq!(quota.tokens_used, 300);
+    }
+
+    #[test]
+    fn report_tokens_exceeding_quota_stops_agent() {
+        let registry = AgentRegistry::new();
+        // Worker has token_quota=10_000
+        let id = registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        registry.report_tokens(&id, 10_000).unwrap();
+        // Agent should be Stopped now — gate_tool should fail
+        let result = registry.gate_tool(&id, "terminal_exec");
+        assert!(result.is_err());
+    }
+
+    // --- Yield and validation lifecycle tests ---
+
+    #[test]
+    fn full_validation_pass_lifecycle() {
+        let registry = AgentRegistry::new();
+        let dev = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+
+        // Yield for review
+        registry.yield_for_review(&dev, YieldPayload {
+            status: "done".into(), git_branch: Some("feat/x".into()), diff_summary: Some("added x".into()),
+        }).unwrap();
+
+        // Start validation (transitions Yielded → InReview)
+        registry.start_validation(&dev, Some("bd-1".into())).unwrap();
+
+        // Submit 3 passing results
+        let r1 = registry.validation_submit(&dev, "code_review", true, vec![]).unwrap();
+        assert!(r1.is_none()); // Not complete yet
+        let r2 = registry.validation_submit(&dev, "business_logic", true, vec![]).unwrap();
+        assert!(r2.is_none());
+        let r3 = registry.validation_submit(&dev, "scope", true, vec![]).unwrap();
+        assert!(r3.is_some());
+        let outcome = r3.unwrap();
+        assert!(outcome.all_passed);
+        assert_eq!(outcome.retry_count, 0);
+    }
+
+    #[test]
+    fn validation_failure_sends_back_to_running() {
+        let registry = AgentRegistry::new();
+        let dev = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+
+        registry.yield_for_review(&dev, YieldPayload {
+            status: "done".into(), git_branch: None, diff_summary: None,
+        }).unwrap();
+        registry.start_validation(&dev, Some("bd-1".into())).unwrap();
+
+        registry.validation_submit(&dev, "code_review", true, vec![]).unwrap();
+        registry.validation_submit(&dev, "business_logic", false, vec!["bug found".into()]).unwrap();
+        let outcome = registry.validation_submit(&dev, "scope", true, vec![]).unwrap().unwrap();
+
+        assert!(!outcome.all_passed);
+        assert_eq!(outcome.retry_count, 1);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].role, "business_logic");
+    }
+
+    #[test]
+    fn duplicate_validator_role_is_ignored() {
+        let registry = AgentRegistry::new();
+        let dev = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+        registry.yield_for_review(&dev, YieldPayload {
+            status: "done".into(), git_branch: None, diff_summary: None,
+        }).unwrap();
+        registry.start_validation(&dev, Some("bd-1".into())).unwrap();
+
+        registry.validation_submit(&dev, "code_review", true, vec![]).unwrap();
+        // Submit same role again — should be ignored
+        let dup = registry.validation_submit(&dev, "code_review", false, vec![]).unwrap();
+        assert!(dup.is_none());
+    }
+
+    #[test]
+    fn yield_blocked_after_3_retries() {
+        let registry = AgentRegistry::new();
+        let dev = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+
+        for attempt in 0..3u32 {
+            registry.yield_for_review(&dev, YieldPayload {
+                status: "done".into(), git_branch: None, diff_summary: None,
+            }).unwrap();
+            registry.start_validation(&dev, Some("bd-1".into())).unwrap();
+
+            registry.validation_submit(&dev, "code_review", true, vec![]).unwrap();
+            registry.validation_submit(&dev, "business_logic", false, vec!["nope".into()]).unwrap();
+            let outcome = registry.validation_submit(&dev, "scope", true, vec![]).unwrap().unwrap();
+            assert_eq!(outcome.retry_count, attempt + 1);
+
+            if attempt == 2 {
+                // 3rd failure → Blocked
+                assert!(!outcome.all_passed);
+            }
+        }
+
+        // 4th yield attempt should be rejected
+        let result = registry.yield_for_review(&dev, YieldPayload {
+            status: "done".into(), git_branch: None, diff_summary: None,
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Max validation retries"));
+    }
+
+    // --- Complete task tests ---
+
+    #[test]
+    fn developer_cannot_self_complete() {
+        let registry = AgentRegistry::new();
+        let dev = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+        let result = registry.complete_task(&dev);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("yield_for_review"));
+    }
+
+    #[test]
+    fn non_developer_can_complete() {
+        let registry = AgentRegistry::new();
+        let worker = registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        assert!(registry.complete_task(&worker).is_ok());
+    }
+
+    // --- Turn ended tests ---
+
+    #[test]
+    fn turn_ended_developer_returns_needs_nudge() {
+        let registry = AgentRegistry::new();
+        let dev = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+        let result = registry.handle_turn_ended(&dev, "developer").unwrap();
+        assert_eq!(result, "needs_nudge");
+    }
+
+    #[test]
+    fn turn_ended_worker_auto_completes() {
+        let registry = AgentRegistry::new();
+        let worker = registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        let result = registry.handle_turn_ended(&worker, "worker").unwrap();
+        assert_eq!(result, "completed");
+    }
+
+    #[test]
+    fn turn_ended_nonexistent_returns_not_found() {
+        let registry = AgentRegistry::new();
+        let result = registry.handle_turn_ended("ghost", "worker").unwrap();
+        assert_eq!(result, "not_found");
+    }
+
+    // --- Force yield tests ---
+
+    #[test]
+    fn force_yield_transitions_running_to_yielded() {
+        let registry = AgentRegistry::new();
+        let dev = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+        registry.force_yield(&dev).unwrap();
+        let queue = registry.yield_queue().unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].0, dev);
+    }
+
+    #[test]
+    fn force_yield_noop_for_terminal_states() {
+        let registry = AgentRegistry::new();
+        let worker = registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        registry.complete_task(&worker).unwrap();
+        // Force yield on Done agent is a no-op
+        assert!(registry.force_yield(&worker).is_ok());
+    }
+
+    // --- Restore tests ---
+
+    #[test]
+    fn restore_agents_skips_invalid() {
+        let registry = AgentRegistry::new();
+        let inputs = vec![
+            RestoreAgentInput { id: "".into(), role: "worker".into(), task_id: None, parent_id: None, state: "running".into(), project_path: None, worktree_path: None },
+            RestoreAgentInput { id: "a1".into(), role: "unknown_role".into(), task_id: None, parent_id: None, state: "running".into(), project_path: None, worktree_path: None },
+            RestoreAgentInput { id: "a2".into(), role: "worker".into(), task_id: None, parent_id: None, state: "invalid_state".into(), project_path: None, worktree_path: None },
+            RestoreAgentInput { id: "a3".into(), role: "worker".into(), task_id: None, parent_id: None, state: "running".into(), project_path: None, worktree_path: None },
+        ];
+        let restored = registry.restore_agents(inputs).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0], "a3");
+    }
+
+    #[test]
+    fn restore_recomputes_parent_children_counts() {
+        let registry = AgentRegistry::new();
+        let inputs = vec![
+            RestoreAgentInput { id: "parent".into(), role: "project_manager".into(), task_id: None, parent_id: None, state: "running".into(), project_path: None, worktree_path: None },
+            RestoreAgentInput { id: "child1".into(), role: "operator".into(), task_id: None, parent_id: Some("parent".into()), state: "running".into(), project_path: None, worktree_path: None },
+            RestoreAgentInput { id: "child2".into(), role: "operator".into(), task_id: None, parent_id: Some("parent".into()), state: "running".into(), project_path: None, worktree_path: None },
+        ];
+        registry.restore_agents(inputs).unwrap();
+        let status = registry.status().unwrap();
+        assert_eq!(status.used_slots, 3);
+    }
+
+    // --- TTL expiry tests ---
+
+    #[test]
+    fn expired_agent_ids_detects_ttl_exceeded() {
+        let registry = AgentRegistry::new();
+        // Worker has ttl_secs=120
+        let id = registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        assert!(registry.expired_agent_ids().unwrap().is_empty());
+
+        registry.test_backdate_spawn(&id, std::time::Duration::from_secs(200));
+        let expired = registry.expired_agent_ids().unwrap();
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].0, id);
+    }
+
+    // --- Stuck developer detection ---
+
+    #[test]
+    fn stuck_running_developers_detected() {
+        let registry = AgentRegistry::new();
+        let dev = registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+        assert!(registry.stuck_running_developers(60).unwrap().is_empty());
+
+        registry.test_backdate_state_entered(&dev, std::time::Duration::from_secs(120));
+        let stuck = registry.stuck_running_developers(60).unwrap();
+        assert_eq!(stuck.len(), 1);
+        assert_eq!(stuck[0], dev);
+    }
+
+    // --- Clear all tests ---
+
+    #[test]
+    fn clear_all_removes_everything() {
+        let registry = AgentRegistry::new();
+        registry.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        registry.spawn("operator", None, None, None).unwrap();
+        let cleared = registry.clear_all().unwrap();
+        assert_eq!(cleared.len(), 2);
+        assert_eq!(registry.status().unwrap().used_slots, 0);
+    }
+
+    // --- Claimed task IDs ---
+
+    #[test]
+    fn claimed_task_ids_returns_active_tasks() {
+        let registry = AgentRegistry::new();
+        registry.spawn("developer", Some("bd-1".into()), None, None).unwrap();
+        registry.spawn("developer", Some("bd-2".into()), None, None).unwrap();
+        registry.spawn("operator", None, None, None).unwrap(); // no task_id
+        let claimed = registry.claimed_task_ids().unwrap();
+        assert_eq!(claimed.len(), 2);
+        assert!(claimed.contains(&"bd-1".to_string()));
+        assert!(claimed.contains(&"bd-2".to_string()));
+    }
+
+    // --- Validate path for terminal ---
+
+    #[test]
+    fn validate_path_for_terminal_allows_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("myapp");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("developer", Some("bd-1".into()), None, Some(project.to_str().unwrap().into())).unwrap();
+
+        // Parent of project dir should be allowed (for scaffolding)
+        assert!(registry.validate_path_for_terminal(&id, dir.path().to_str().unwrap()).is_ok());
+        // Project dir itself should be allowed
+        assert!(registry.validate_path_for_terminal(&id, project.to_str().unwrap()).is_ok());
+        // Completely unrelated path should be rejected
+        assert!(registry.validate_path_for_terminal(&id, "/tmp/evil").is_err());
+    }
 }
 
 // Test-only helpers for manipulating agent internals (timestamp backdating, etc.)

@@ -67,7 +67,8 @@ export class DispatchAgentPlugin extends Plugin {
     if (!desc) {
       return { result: "Error: task_description is required." };
     }
-    if (parameters.role === "developer" || parameters.role === "worker") {
+    const roleLower = parameters.role?.toLowerCase();
+    if (roleLower === "developer" || roleLower === "worker") {
       return {
         result: `Error: cannot dispatch a '${parameters.role}' without a Beads task. Use the Beads workflow (open_project_with_beads → create_beads_task) for code work.`,
       };
