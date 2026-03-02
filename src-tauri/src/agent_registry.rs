@@ -107,6 +107,8 @@ pub struct AgentEntry {
     pub spawned_at: Instant,
     pub token_used: u64,
     pub state: State,
+    /// Tracks when the agent last entered its current state (for stuck-agent safety nets).
+    pub state_entered_at: Instant,
     pub children_count: u32,
     pub yield_git_branch: Option<String>,
     pub yield_diff_summary: Option<String>,
@@ -309,14 +311,16 @@ impl AgentRegistry {
         let id = ulid::Ulid::new().to_string();
         let initial = agent_state_machine::try_transition(State::Spawned, Event::Start, role)
             .map_err(|e| format!("State machine rejected spawn: {e}"))?;
+        let now = Instant::now();
         let entry = AgentEntry {
             id: id.clone(),
             role: role.to_string(),
             task_id,
             parent_id: parent_id.clone(),
-            spawned_at: Instant::now(),
+            spawned_at: now,
             token_used: 0,
             state: initial,
+            state_entered_at: now,
             children_count: 0,
             yield_git_branch: None,
             yield_diff_summary: None,
@@ -356,6 +360,7 @@ impl AgentRegistry {
                 None => continue,
             };
 
+            let now = Instant::now();
             inner.agents.insert(
                 a.id.clone(),
                 AgentEntry {
@@ -363,9 +368,10 @@ impl AgentRegistry {
                     role: a.role,
                     task_id: a.task_id,
                     parent_id: a.parent_id,
-                    spawned_at: Instant::now(),
+                    spawned_at: now,
                     token_used: 0,
                     state,
+                    state_entered_at: now,
                     children_count: 0,
                     yield_git_branch: None,
                     yield_diff_summary: None,
@@ -536,6 +542,7 @@ impl AgentRegistry {
             e.token_used = new_total;
             if new_total >= quota && !e.state.is_terminal() {
                 e.state = State::Stopped;
+                e.state_entered_at = Instant::now();
             }
         }
         Ok(())
@@ -556,6 +563,7 @@ impl AgentRegistry {
 
         let new_state = agent_state_machine::try_transition(e.state, Event::Yield, &e.role)?;
         e.state = new_state;
+        e.state_entered_at = Instant::now();
         e.yield_git_branch = payload.git_branch;
         e.yield_diff_summary = payload.diff_summary;
         Ok(())
@@ -591,8 +599,8 @@ impl AgentRegistry {
         Ok(msgs)
     }
 
-    /// Returns agent IDs that have exceeded their TTL (caller should kill them).
-    pub fn expired_agent_ids(&self) -> Result<Vec<String>, String> {
+    /// Returns (agent_id, task_id) pairs for agents that have exceeded their TTL.
+    pub fn expired_agent_ids(&self) -> Result<Vec<(String, Option<String>)>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let mut expired = Vec::new();
         for (id, entry) in inner.agents.iter() {
@@ -604,7 +612,7 @@ impl AgentRegistry {
                 None => continue,
             };
             if entry.spawned_at.elapsed() >= Duration::from_secs(config.ttl_secs) {
-                expired.push(id.clone());
+                expired.push((id.clone(), entry.task_id.clone()));
             }
         }
         Ok(expired)
@@ -643,6 +651,7 @@ impl AgentRegistry {
             let new_state =
                 agent_state_machine::try_transition(e.state, Event::StartReview, &e.role)?;
             e.state = new_state;
+            e.state_entered_at = Instant::now();
         }
         inner.validation.insert(
             developer_agent_id.to_string(),
@@ -698,6 +707,7 @@ impl AgentRegistry {
                 let new_state =
                     agent_state_machine::try_transition(e.state, Event::ValidationPass, &e.role)?;
                 e.state = new_state;
+                e.state_entered_at = Instant::now();
             } else {
                 e.validation_retry_count += 1;
                 retry_count = e.validation_retry_count;
@@ -708,6 +718,7 @@ impl AgentRegistry {
                 };
                 let new_state = agent_state_machine::try_transition(e.state, event, &e.role)?;
                 e.state = new_state;
+                e.state_entered_at = Instant::now();
             }
         }
         Ok(Some(ValidationOutcome {
@@ -779,6 +790,7 @@ impl AgentRegistry {
         }
         // Force transition
         entry.state = State::InReview;
+        entry.state_entered_at = Instant::now();
 
         // Drop the mutable borrow before inserting into validation
         drop(entry);
@@ -834,6 +846,7 @@ impl AgentRegistry {
         let new_state =
             agent_state_machine::try_transition(entry.state, Event::Complete, &entry.role)?;
         entry.state = new_state;
+        entry.state_entered_at = Instant::now();
         Ok(())
     }
 
@@ -896,6 +909,7 @@ impl AgentRegistry {
             match agent_state_machine::try_transition(entry.state, Event::Complete, &entry.role) {
                 Ok(new_state) => {
                     entry.state = new_state;
+                    entry.state_entered_at = Instant::now();
                     Ok("completed".to_string())
                 }
                 Err(_) => Ok("already_done".to_string()),
@@ -919,6 +933,7 @@ impl AgentRegistry {
             }
             State::Running | State::Spawned => {
                 entry.state = State::Yielded;
+                entry.state_entered_at = Instant::now();
                 eprintln!(
                     "[registry] force_yield: {} transitioned to Yielded",
                     agent_id
@@ -949,7 +964,7 @@ impl AgentRegistry {
             if entry.role != "developer" || entry.state != State::Running {
                 continue;
             }
-            if entry.spawned_at.elapsed() > cutoff {
+            if entry.state_entered_at.elapsed() > cutoff {
                 out.push(id.clone());
             }
         }
@@ -966,7 +981,7 @@ impl AgentRegistry {
             if entry.role != "developer" || entry.state != State::InReview {
                 continue;
             }
-            if entry.spawned_at.elapsed() > cutoff {
+            if entry.state_entered_at.elapsed() > cutoff {
                 out.push(id.clone());
             }
         }
@@ -987,6 +1002,7 @@ impl AgentRegistry {
         let new_state =
             agent_state_machine::try_transition(entry.state, Event::ValidationBlock, &entry.role)?;
         entry.state = new_state;
+        entry.state_entered_at = Instant::now();
         inner.validation.remove(agent_id);
         eprintln!(
             "[registry] force_block_validation: {} → Blocked (validators timed out)",

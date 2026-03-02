@@ -201,6 +201,9 @@ pub struct MergeQueue {
     queue: Mutex<VecDeque<MergeEntry>>,
     queued_tasks: Mutex<HashSet<String>>,
     git_lock: TokioMutex<()>,
+    /// Tracks retry counts for tasks with active merge agents.
+    /// Set when a merge agent is spawned; consumed when the merge agent completes.
+    retry_counts: Mutex<HashMap<String, u8>>,
 }
 
 impl MergeQueue {
@@ -209,6 +212,7 @@ impl MergeQueue {
             queue: Mutex::new(VecDeque::new()),
             queued_tasks: Mutex::new(HashSet::new()),
             git_lock: TokioMutex::new(()),
+            retry_counts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -241,6 +245,23 @@ impl MergeQueue {
 
     pub fn depth(&self) -> usize {
         self.queue.lock().unwrap().len()
+    }
+
+    /// Record the retry count for a task with an active merge agent.
+    pub fn set_retry_count(&self, task_id: &str, count: u8) {
+        self.retry_counts
+            .lock()
+            .unwrap()
+            .insert(task_id.to_string(), count);
+    }
+
+    /// Consume and return the retry count for a task (returns 0 if unset).
+    pub fn take_retry_count(&self, task_id: &str) -> u8 {
+        self.retry_counts
+            .lock()
+            .unwrap()
+            .remove(task_id)
+            .unwrap_or(0)
     }
 }
 
@@ -444,14 +465,27 @@ pub async fn tick(
         spawned_this_tick += 1;
     }
 
-    // 3. Kill expired agents (clean up worktree without merging)
+    // 3. Kill expired agents (clean up worktree without merging, release Beads claim)
     let expired = registry.expired_agent_ids()?;
-    for id in expired {
+    for (id, task_id) in expired {
         if let Ok(Some(_wt)) = registry.get_worktree_path(&id) {
             let wt_path = path.to_path_buf();
             let wt_id = id.clone();
             let _ = tokio::task::spawn_blocking(move || crate::worktree::remove(&wt_path, &wt_id))
                 .await;
+        }
+        // Release the Beads task claim so the task can be re-assigned.
+        if let Some(tid) = &task_id {
+            let unclaim_args = vec![
+                "update".to_string(),
+                tid.clone(),
+                "--status".to_string(),
+                "ready".to_string(),
+            ];
+            let unclaim_path = path.to_path_buf();
+            let _ =
+                tokio::task::spawn_blocking(move || run_bd_sync(&unclaim_path, &unclaim_args))
+                    .await;
         }
         let _ = registry.kill(&id);
         let _ = pool.kill(&id);
@@ -529,9 +563,10 @@ pub async fn tick(
     }
 
     // 5. Enqueue done agents for merge (or kill non-merging roles immediately).
-    //    Developer agents get their worktree removed and pushed onto the merge queue.
+    //    Developer agents get their worktree removed and pushed onto the merge queue,
+    //    then killed so they aren't re-processed on the next tick.
     //    PM agents are killed immediately (epics handled by auto-close in step 6).
-    //    Merge agents are cleaned up — the original task is already re-queued by handle_merge_conflict.
+    //    Merge agents re-enqueue the task for another merge attempt (retry tracked externally).
     let done_agents = registry.done_agents_with_tasks()?;
     for (agent_id, task_id, role) in done_agents {
         if role == "project_manager" {
@@ -541,7 +576,7 @@ pub async fn tick(
             continue;
         }
         if role == "merge_agent" {
-            eprintln!("[orch] merge agent {agent_id} done for task {task_id}; cleaning up");
+            eprintln!("[orch] merge agent {agent_id} done for task {task_id}; re-enqueueing for merge");
             if let Ok(Some(_wt)) = registry.get_worktree_path(&agent_id) {
                 let rm_path = path.to_path_buf();
                 let rm_agent = agent_id.clone();
@@ -549,6 +584,24 @@ pub async fn tick(
                     crate::worktree::remove(&rm_path, &rm_agent)
                 })
                 .await;
+            }
+            let retry = merge_queue.take_retry_count(&task_id);
+            if merge_queue.push(MergeEntry {
+                agent_id: agent_id.clone(),
+                task_id: task_id.clone(),
+                retry_count: retry,
+            }) {
+                let _ = app_handle.emit(
+                    "merge_status",
+                    MergeStatusPayload {
+                        task_id: task_id.clone(),
+                        status: "merging".to_string(),
+                        detail: Some(format!(
+                            "Merge agent completed; retrying merge (attempt {})",
+                            retry + 1
+                        )),
+                    },
+                );
             }
             let _ = registry.kill(&agent_id);
             let _ = pool.kill(&agent_id);
@@ -606,12 +659,16 @@ pub async fn tick(
             let _ = app_handle.emit(
                 "merge_status",
                 MergeStatusPayload {
-                    task_id,
+                    task_id: task_id.clone(),
                     status: "merging".to_string(),
                     detail: None,
                 },
             );
         }
+        // Kill the developer now so done_agents_with_tasks won't return it on
+        // subsequent ticks. The MergeEntry carries all the info the merge train needs.
+        let _ = registry.kill(&agent_id);
+        let _ = pool.kill(&agent_id);
     }
 
     // 5b. Merge train: process multiple queued entries per tick to reduce backlog latency.
@@ -1034,15 +1091,11 @@ async fn handle_merge_conflict(
         },
     );
 
-    // Re-queue the original entry with incremented retry count.
-    // When the merge agent completes (enters Done), the next tick will pick it up
-    // via done_agents_with_tasks and re-enqueue for merge.
+    // Track the retry count externally. When the merge agent completes (enters Done),
+    // step 5 will re-enqueue the task for merge using this count.
+    // We do NOT re-queue immediately — that would race with the active merge agent.
     metrics.inc_merge_retry();
-    let _ = merge_queue.push(MergeEntry {
-        agent_id,
-        task_id,
-        retry_count: entry.retry_count + 1,
-    });
+    merge_queue.set_retry_count(&task_id, entry.retry_count + 1);
 }
 
 #[cfg(test)]

@@ -53,7 +53,7 @@ export class DispatchAgentPlugin extends Plugin {
       {
         name: "role",
         type: "string",
-        description: "Agent role: 'operator' (default — browse, run commands, read files), 'developer' (write code), or 'worker' (fast, bounded).",
+        description: "Agent role: 'operator' (default and only option — browse, run commands, read files). For code work, use the Beads workflow instead.",
         required: false,
       },
     ];
@@ -67,7 +67,12 @@ export class DispatchAgentPlugin extends Plugin {
     if (!desc) {
       return { result: "Error: task_description is required." };
     }
-    const role = (parameters.role === "developer" ? "developer" : parameters.role === "worker" ? "worker" : "operator") as "operator" | "developer" | "worker";
+    if (parameters.role === "developer" || parameters.role === "worker") {
+      return {
+        result: `Error: cannot dispatch a '${parameters.role}' without a Beads task. Use the Beads workflow (open_project_with_beads → create_beads_task) for code work.`,
+      };
+    }
+    const role = "operator" as const;
 
     try {
       const agentId = await this.dispatchAgent({
