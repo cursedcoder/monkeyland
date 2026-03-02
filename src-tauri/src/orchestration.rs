@@ -1363,22 +1363,178 @@ mod tests {
         // first already changed shared.txt on main.
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
 
+        // Determine which task merged cleanly and which conflicted.
+        // done_agents_with_tasks() iterates a HashMap so ordering is
+        // non-deterministic — either A or B can win the merge race.
         let merge_statuses = env.events_named("merge_status");
-        let done_count = merge_statuses.iter().filter(|e| e["status"] == "done").count();
-        let conflict_count = merge_statuses.iter().filter(|e| e["status"] == "conflict").count();
+        let winner_task = merge_statuses
+            .iter()
+            .find(|e| e["status"] == "done")
+            .expect("exactly one merge should succeed")["task_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let loser_task = merge_statuses
+            .iter()
+            .find(|e| e["status"] == "conflict")
+            .expect("exactly one merge should conflict")["task_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(winner_task, loser_task);
+        let winner_content = if winner_task == "bd-A" {
+            "change from A"
+        } else {
+            "change from B"
+        };
+        let loser_content = if loser_task == "bd-A" {
+            "change from A"
+        } else {
+            "change from B"
+        };
 
-        // At least one should be done and one should conflict
+        // --- 1. Git state on main ---
+
+        let content = std::fs::read_to_string(repo.path().join("shared.txt")).unwrap();
+        assert_eq!(
+            content, winner_content,
+            "main should contain the winner's change"
+        );
+        assert_ne!(
+            content, loser_content,
+            "loser's change must not silently overwrite the winner"
+        );
+
+        let head = git(repo.path(), &["symbolic-ref", "--short", "HEAD"]);
+        let head_str = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(head_str, "main", "HEAD should be on main, not detached");
+
         assert!(
-            done_count >= 1,
-            "first merge should succeed (got {} done, {} conflict)",
-            done_count,
-            conflict_count
+            !repo.path().join(".git/MERGE_HEAD").exists(),
+            "MERGE_HEAD should not exist — merge must be cleanly finished or aborted"
+        );
+
+        // --- 2. Task branch state ---
+
+        let winner_branch = format!("task/{winner_task}");
+        let loser_branch = format!("task/{loser_task}");
+
+        let winner_exists = git(repo.path(), &["rev-parse", "--verify", &winner_branch]);
+        assert!(
+            !winner_exists.status.success(),
+            "{winner_branch} should be deleted after clean merge"
+        );
+
+        let loser_exists = git(repo.path(), &["rev-parse", "--verify", &loser_branch]);
+        assert!(
+            loser_exists.status.success(),
+            "{loser_branch} should still exist for merge agent"
+        );
+
+        // --- 3. Filesystem state (worktrees) ---
+
+        assert!(
+            !std::path::Path::new(&wt_a).exists(),
+            "A's worktree should be removed from disk"
         );
         assert!(
-            conflict_count >= 1,
-            "second merge should conflict (got {} done, {} conflict)",
-            done_count,
-            conflict_count
+            !std::path::Path::new(&wt_b).exists(),
+            "B's worktree should be removed from disk"
+        );
+
+        let wt_list = git(repo.path(), &["worktree", "list", "--porcelain"]);
+        let wt_stdout = String::from_utf8_lossy(&wt_list.stdout).to_string();
+        assert!(
+            !wt_stdout.contains(&id_a),
+            "A's worktree entry should be pruned from git"
+        );
+        assert!(
+            !wt_stdout.contains(&id_b),
+            "B's worktree entry should be pruned from git"
+        );
+
+        // --- 4. Beads (bd) calls ---
+
+        let bd_done_winner = env.bd_calls_matching(&winner_task).iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
+        });
+        assert!(
+            bd_done_winner,
+            "bd update {winner_task} --status done should have been called"
+        );
+
+        let bd_done_loser = env.bd_calls_matching(&loser_task).iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
+        });
+        assert!(
+            !bd_done_loser,
+            "bd update {loser_task} --status done should NOT be called (still in conflict)"
+        );
+
+        // --- 5. Registry state ---
+
+        let snap = registry.debug_snapshot().unwrap();
+        let live_devs: Vec<_> = snap.agents.iter().filter(|a| a.role == "developer").collect();
+        assert_eq!(
+            live_devs.len(),
+            0,
+            "both developers should be killed after merge tick"
+        );
+
+        let merge_agents: Vec<_> = snap
+            .agents
+            .iter()
+            .filter(|a| a.role == "merge_agent")
+            .collect();
+        if !merge_agents.is_empty() {
+            assert_eq!(
+                merge_agents[0].task_id.as_deref(),
+                Some(loser_task.as_str()),
+                "merge agent should be for the conflicting task {loser_task}"
+            );
+        }
+
+        // --- 6. Merge agent spawn event verification ---
+
+        let ma_spawns: Vec<_> = env
+            .events_named("agent_spawned")
+            .into_iter()
+            .filter(|e| e["role"] == "merge_agent")
+            .collect();
+        assert_eq!(
+            ma_spawns.len(),
+            1,
+            "exactly one merge agent should be spawned"
+        );
+        assert_eq!(
+            ma_spawns[0]["task_id"].as_str(),
+            Some(loser_task.as_str()),
+            "merge agent should target the conflicting task"
+        );
+        let mc = &ma_spawns[0]["merge_context"];
+        assert!(
+            mc["conflict_diff"]
+                .as_str()
+                .map_or(false, |d| !d.is_empty()),
+            "merge_context.conflict_diff should be non-empty"
+        );
+
+        // --- 7. Merge agent worktree created successfully ---
+
+        let ma_id = ma_spawns[0]["agent_id"].as_str().unwrap().to_string();
+        let ma_wt = registry.get_worktree_path(&ma_id).unwrap();
+        assert!(
+            ma_wt.is_some(),
+            "merge agent should have its own worktree, not fall back to project root"
+        );
+        let ma_wt_path = ma_wt.unwrap();
+        assert!(
+            std::path::Path::new(&ma_wt_path).exists(),
+            "merge agent worktree should exist on disk (no stale lock preventing creation)"
+        );
+        assert_ne!(
+            ma_wt_path, project_path,
+            "merge agent worktree must not be the project root (that would stomp other agents)"
         );
     }
 

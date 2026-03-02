@@ -185,6 +185,14 @@ pub fn rebase_onto_base(project_path: &Path, task_id: &str) -> Result<bool, Stri
         .current_dir(project_path)
         .output();
 
+    // `git rebase <base> <branch>` checks out <branch> first; after abort HEAD
+    // is still on the task branch. Switch back to base so subsequent git
+    // operations (merge, worktree add) run against the correct branch.
+    let _ = Command::new("git")
+        .args(["checkout", &base])
+        .current_dir(project_path)
+        .output();
+
     Ok(false)
 }
 
