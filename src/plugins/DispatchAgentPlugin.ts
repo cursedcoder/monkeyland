@@ -4,7 +4,7 @@ export type DispatchAgentFn = (params: {
   role: "operator" | "developer" | "worker";
   taskDescription: string;
   parentAgentId: string;
-}) => string;
+}) => Promise<string>;
 
 /**
  * WM tool to spawn an agent directly for quick/non-project tasks.
@@ -70,7 +70,7 @@ export class DispatchAgentPlugin extends Plugin {
     const role = (parameters.role === "developer" ? "developer" : parameters.role === "worker" ? "worker" : "operator") as "operator" | "developer" | "worker";
 
     try {
-      const agentId = this.dispatchAgent({
+      const agentId = await this.dispatchAgent({
         role,
         taskDescription: desc,
         parentAgentId: this.agentNodeId,

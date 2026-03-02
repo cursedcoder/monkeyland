@@ -74,6 +74,11 @@ export function TerminalLogCard({
     () => (showFullHistory ? entries : entries.slice(-MAX_RENDERED_ENTRIES)),
     [entries, showFullHistory],
   );
+  const latestEntryFingerprint = useMemo(() => {
+    const last = renderedEntries[renderedEntries.length - 1];
+    if (!last) return "none";
+    return `${renderedEntries.length}:${last.ts}:${last.output.length}`;
+  }, [renderedEntries]);
 
   useEffect(() => {
     if (entries.length <= MAX_RENDERED_ENTRIES) {
@@ -85,12 +90,16 @@ export function TerminalLogCard({
     const el = bodyRef.current;
     if (!el) return;
     const nearBottom =
+      isAtBottom ||
       el.scrollTop + el.clientHeight >= el.scrollHeight - AUTO_SCROLL_THRESHOLD_PX;
-    if (nearBottom) {
-      el.scrollTop = el.scrollHeight;
+    if (!nearBottom) return;
+    requestAnimationFrame(() => {
+      const current = bodyRef.current;
+      if (!current) return;
+      current.scrollTop = current.scrollHeight;
       setIsAtBottom(true);
-    }
-  }, [entries.length]);
+    });
+  }, [isAtBottom, latestEntryFingerprint]);
 
   const handleBodyScroll = useCallback(() => {
     const el = bodyRef.current;

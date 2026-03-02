@@ -5,6 +5,7 @@ import type { TerminalLogEntry } from "../components/TerminalLogCard";
 const MAX_TERMINAL_LOG_ENTRIES = 200;
 const MAX_TERMINAL_OUTPUT_CHARS = 12_000;
 const MAX_TERMINAL_TOTAL_CHARS = 250_000;
+const LIVE_UPDATE_INTERVAL_MS = 800;
 
 export type AddTerminalLogNodeFn = (agentNodeId: string) => string;
 export type UpdateTerminalLogFn = (nodeId: string, entries: TerminalLogEntry[]) => void;
@@ -97,29 +98,70 @@ export class TerminalToolPlugin extends Plugin {
       this.logNodeId = this.addLogNode(this.agentNodeId);
     }
 
-    const output = await invoke<string>("terminal_exec", {
-      payload: {
-        session_id: this.sessionId,
-        command: parameters.command,
-        timeout_ms: 120_000,
-        cwd: parameters.cwd ?? this.defaultCwd ?? null,
-        agent_id: this.agentNodeId,
-      },
-    });
-
     const entry: TerminalLogEntry = {
       command: parameters.command,
       cwd: parameters.cwd,
-      output:
-        output.length > MAX_TERMINAL_OUTPUT_CHARS
-          ? `... [output truncated, showing last ${MAX_TERMINAL_OUTPUT_CHARS} chars]\n${output.slice(-MAX_TERMINAL_OUTPUT_CHARS)}`
-          : output,
+      output: "Running command...",
       ts: Date.now(),
     };
     this.entries.push(entry);
     this.pruneEntries();
     this.updateLog(this.logNodeId, [...this.entries]);
 
-    return { output };
+    const entryIndex = this.entries.length - 1;
+    const startedAt = Date.now();
+    let tick = 0;
+    const liveTimer = window.setInterval(() => {
+      const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+      const dots = ".".repeat((tick % 3) + 1);
+      tick += 1;
+      if (this.entries[entryIndex]) {
+        this.entries[entryIndex] = {
+          ...this.entries[entryIndex],
+          output: `Running command${dots}\nElapsed: ${elapsed}s`,
+          ts: Date.now(),
+        };
+        this.updateLog(this.logNodeId!, [...this.entries]);
+      }
+    }, LIVE_UPDATE_INTERVAL_MS);
+
+    try {
+      const output = await invoke<string>("terminal_exec", {
+        payload: {
+          session_id: this.sessionId,
+          command: parameters.command,
+          timeout_ms: 120_000,
+          cwd: parameters.cwd ?? this.defaultCwd ?? null,
+          agent_id: this.agentNodeId,
+        },
+      });
+
+      if (this.entries[entryIndex]) {
+        this.entries[entryIndex] = {
+          ...this.entries[entryIndex],
+          output:
+            output.length > MAX_TERMINAL_OUTPUT_CHARS
+              ? `... [output truncated, showing last ${MAX_TERMINAL_OUTPUT_CHARS} chars]\n${output.slice(-MAX_TERMINAL_OUTPUT_CHARS)}`
+              : output,
+          ts: Date.now(),
+        };
+      }
+      this.pruneEntries();
+      this.updateLog(this.logNodeId, [...this.entries]);
+      return { output };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (this.entries[entryIndex]) {
+        this.entries[entryIndex] = {
+          ...this.entries[entryIndex],
+          output: `Command failed:\n${msg}`,
+          ts: Date.now(),
+        };
+        this.updateLog(this.logNodeId, [...this.entries]);
+      }
+      throw e;
+    } finally {
+      window.clearInterval(liveTimer);
+    }
   }
 }

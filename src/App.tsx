@@ -40,6 +40,9 @@ import {
 
 const REPOSITION_ORIGIN = { x: 80, y: 80 };
 const STREAM_PAYLOAD_FLUSH_MS = 60;
+const DEBUG_HISTORY_INTERVAL_MS = 15_000;
+const DEBUG_HISTORY_MAX_SAMPLES = 120;
+const DEBUG_HISTORY_COPY_SAMPLES = 40;
 
 
 
@@ -451,21 +454,37 @@ export default function App() {
 
   const updateBeadsStatus = useCallback((nodeId: string, status: import("./components/BeadsCard").BeadsStatus) => {
     setLayouts((prev) => {
+      let changed = false;
       const next = prev.map((l) => {
         if (l.session_id !== nodeId) return l;
         try {
           const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
-          return { ...l, payload: JSON.stringify({ ...p, beadsStatus: status }) };
+          const nextPayload = JSON.stringify({ ...p, beadsStatus: status });
+          if (nextPayload === (l.payload ?? "")) return l;
+          changed = true;
+          return { ...l, payload: nextPayload };
         } catch {
           return l;
         }
       });
-      return next;
+      return changed ? next : prev;
     });
   }, []);
 
   const addBrowserNode = useCallback(
     (agentNodeId: string, port: number): string => {
+      // Reuse existing browser card for this agent (self-heal retries create new plugin instances).
+      const existing = layoutsRef.current.find((l) => {
+        if (l.node_type !== "browser") return false;
+        try {
+          const p = JSON.parse(l.payload ?? "{}") as { parentAgentId?: string };
+          return p.parentAgentId === agentNodeId;
+        } catch {
+          return false;
+        }
+      });
+      if (existing) return existing.session_id;
+
       const browserId = generateNodeId();
       setLayouts((prev) => {
         const browserLayout: SessionLayout = {
@@ -491,8 +510,8 @@ export default function App() {
    * Dispatch an agent directly from the WM (no Beads, no orchestration loop).
    * Uses a ref so it can call startAgentConversation which is defined later.
    */
-  const dispatchAgentRef = useRef<(p: { role: "operator" | "developer" | "worker"; taskDescription: string; parentAgentId: string }) => string>(
-    () => { throw new Error("dispatchAgent not ready"); },
+  const dispatchAgentRef = useRef<(p: { role: "operator" | "developer" | "worker"; taskDescription: string; parentAgentId: string }) => Promise<string>>(
+    async () => { throw new Error("dispatchAgent not ready"); },
   );
 
   /**
@@ -957,7 +976,20 @@ export default function App() {
         /* ignore */
       }
 
-      const wmNodeId = generateNodeId();
+      let wmNodeId: string;
+      try {
+        const result = await invoke<{ agent_id: string }>("agent_spawn", {
+          payload: {
+            role: "workforce_manager",
+            task_id: null,
+            parent_agent_id: null,
+          },
+        });
+        wmNodeId = result.agent_id;
+      } catch (e) {
+        console.error("Failed to spawn workforce manager:", e);
+        return;
+      }
       activeWmNodeId.current = wmNodeId;
 
       await startAgentConversation({
@@ -1103,8 +1135,15 @@ export default function App() {
   startAgentConversationRef.current = startAgentConversation;
 
   // Wire up dispatchAgentRef so WM's dispatch_agent tool can spawn agents.
-  dispatchAgentRef.current = (p) => {
-    const agentId = generateNodeId();
+  dispatchAgentRef.current = async (p) => {
+    const result = await invoke<{ agent_id: string }>("agent_spawn", {
+      payload: {
+        role: p.role,
+        task_id: null,
+        parent_agent_id: p.parentAgentId,
+      },
+    });
+    const agentId = result.agent_id;
     startAgentConversationRef.current({
       agentNodeId: agentId,
       role: p.role as AgentRole,
@@ -1309,6 +1348,7 @@ export default function App() {
       const SKIP_PATTERNS = [
         /lock\.json$/i, /lock\.yaml$/i, /yarn\.lock$/i, /pnpm-lock/i,
         /^dist\//i, /^build\//i, /^\.next\//i, /^out\//i,
+        /^node_modules\//i,
         /\.min\.(js|css)$/i, /\.map$/i, /\.chunk\./i,
         /^\.beads\//i, /^\.git\//i,
         /\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot)$/i,
@@ -1327,7 +1367,7 @@ export default function App() {
             fileListOut = await invoke<string>("terminal_exec", {
               payload: {
                 session_id: "ctx-gather",
-                command: "{ git ls-files 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | sort -u",
+                  command: "{ git ls-files -co --exclude-standard 2>/dev/null || true; } | awk 'NF' | sort -u | while IFS= read -r f; do git check-ignore -q --no-index \"$f\" && continue; printf '%s\\n' \"$f\"; done",
                 cwd: resolvedProjectPath,
               },
             });
@@ -1416,7 +1456,7 @@ export default function App() {
           const spawnOut = await invoke<string>("terminal_exec", {
             payload: {
               session_id: `validator-dev-${validatorId}`,
-              command: `cd "${resolvedProjectPath}" && nohup ${devCmd} > /tmp/validator-dev-${validatorId}.log 2>&1 & echo $!`,
+              command: `cd "${resolvedProjectPath}" && ((setsid nohup ${devCmd} > /tmp/validator-dev-${validatorId}.log 2>&1 < /dev/null & echo $!) || (nohup ${devCmd} > /tmp/validator-dev-${validatorId}.log 2>&1 < /dev/null & echo $!))`,
               cwd: resolvedProjectPath,
               timeout_ms: 10_000,
             },
@@ -1763,8 +1803,17 @@ export default function App() {
     });
   }, [persistLayouts]);
 
+  type DebugHistorySample = {
+    capturedAt: string;
+    reason: string;
+    payload: Record<string, unknown>;
+  };
+
   const [debugCopied, setDebugCopied] = useState(false);
-  const handleCopyDebug = useCallback(async () => {
+  const debugHistoryRef = useRef<DebugHistorySample[]>([]);
+  const debugHistoryCaptureInFlightRef = useRef(false);
+
+  const buildDebugPayload = useCallback(async () => {
     const snap = layoutsRef.current.map((l) => {
       let parsed: Record<string, unknown> = {};
       try { parsed = JSON.parse(l.payload ?? "{}"); } catch { /* */ }
@@ -1804,7 +1853,7 @@ export default function App() {
     let safetyMode: boolean | null = null;
     try { safetyMode = await invoke<boolean>("get_safety_mode"); } catch { /* */ }
 
-    const debug = {
+    return {
       ts: new Date().toISOString(),
       beadsProject,
       orchState,
@@ -1816,7 +1865,48 @@ export default function App() {
       nodes: snap,
       backend: backendState,
     };
+  }, [costStore]);
 
+  const appendDebugHistory = useCallback(async (reason: string) => {
+    if (debugHistoryCaptureInFlightRef.current) return;
+    debugHistoryCaptureInFlightRef.current = true;
+    try {
+      const payload = await buildDebugPayload();
+      debugHistoryRef.current.push({
+        capturedAt: new Date().toISOString(),
+        reason,
+        payload,
+      });
+      if (debugHistoryRef.current.length > DEBUG_HISTORY_MAX_SAMPLES) {
+        debugHistoryRef.current = debugHistoryRef.current.slice(-DEBUG_HISTORY_MAX_SAMPLES);
+      }
+    } finally {
+      debugHistoryCaptureInFlightRef.current = false;
+    }
+  }, [buildDebugPayload]);
+
+  useEffect(() => {
+    appendDebugHistory("startup").catch(() => {});
+    const intervalId = window.setInterval(() => {
+      appendDebugHistory("interval").catch(() => {});
+    }, DEBUG_HISTORY_INTERVAL_MS);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [appendDebugHistory]);
+
+  const handleCopyDebug = useCallback(async () => {
+    const current = await buildDebugPayload();
+    const history = debugHistoryRef.current.slice(-DEBUG_HISTORY_COPY_SAMPLES);
+    const debug = {
+      ...current,
+      backgroundHistory: {
+        intervalMs: DEBUG_HISTORY_INTERVAL_MS,
+        sampleCount: debugHistoryRef.current.length,
+        includedSamples: history.length,
+        samples: history,
+      },
+    };
     const text = JSON.stringify(debug, null, 2);
     try {
       // Prefer Tauri command so clipboard works in the webview (navigator.clipboard often restricted)
@@ -1839,9 +1929,10 @@ export default function App() {
         }
       }
     }
+    appendDebugHistory("copy_debug").catch(() => {});
     setDebugCopied(true);
     setTimeout(() => setDebugCopied(false), 2000);
-  }, []);
+  }, [appendDebugHistory, buildDebugPayload]);
 
   return (
     <CostStoreContext.Provider value={costStore}>

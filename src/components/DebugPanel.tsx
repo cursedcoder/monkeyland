@@ -65,7 +65,11 @@ function persistRoleLimits(limits: Record<string, string>) {
   }
 }
 
-export function DebugPanel({ onCopyDebug, debugCopied, onStopAll }: DebugPanelProps) {
+export function DebugPanel({
+  onCopyDebug,
+  debugCopied,
+  onStopAll,
+}: DebugPanelProps) {
   const [open, setOpen] = useState(false);
   const { totalCostUsd, costLimitUsd, setCostLimit } = useCostStore();
   const [costLimitInput, setCostLimitInput] = useState("");

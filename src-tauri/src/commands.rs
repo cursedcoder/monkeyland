@@ -756,6 +756,10 @@ fn is_validator_cleanup_session(session_id: &str) -> bool {
     session_id.starts_with("validator-dev-")
 }
 
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 /// Execute a command via `bash -c` as a subprocess, capturing clean stdout+stderr.
 /// If payload.agent_id is set, gated by the state machine and cwd is validated against sandbox.
 #[tauri::command]
@@ -880,10 +884,32 @@ pub async fn validator_cleanup_process_tree(
         return Err("Invalid pid for validator cleanup".to_string());
     }
 
-    let cmd = format!(
-        "kill {} >/dev/null 2>&1 || true; pkill -TERM -P {} >/dev/null 2>&1 || true",
-        payload.pid, payload.pid
-    );
+    let mut cleanup_steps = vec![
+        // Terminate the whole process group first (works when spawn used setsid).
+        format!("kill -TERM -- -{} >/dev/null 2>&1 || true", payload.pid),
+        // Backward-compatible cleanup when only the direct pid exists.
+        format!("kill {} >/dev/null 2>&1 || true", payload.pid),
+        format!("pkill -TERM -P {} >/dev/null 2>&1 || true", payload.pid),
+    ];
+    if let Some(dir) = payload.cwd.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let escaped = shell_single_quote(dir);
+        // Safety net for orphaned vite workers detached from npm parent.
+        cleanup_steps.push(format!(
+            "pkill -TERM -f {}/node_modules/.bin/vite >/dev/null 2>&1 || true",
+            escaped
+        ));
+    }
+    cleanup_steps.push("sleep 0.25".to_string());
+    cleanup_steps.push(format!("kill -KILL -- -{} >/dev/null 2>&1 || true", payload.pid));
+    cleanup_steps.push(format!("pkill -KILL -P {} >/dev/null 2>&1 || true", payload.pid));
+    if let Some(dir) = payload.cwd.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let escaped = shell_single_quote(dir);
+        cleanup_steps.push(format!(
+            "pkill -KILL -f {}/node_modules/.bin/vite >/dev/null 2>&1 || true",
+            escaped
+        ));
+    }
+    let cmd = cleanup_steps.join("; ");
     let cwd = payload.cwd.clone();
     let timeout = Duration::from_millis(5_000);
 

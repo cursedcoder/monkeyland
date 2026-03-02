@@ -104,8 +104,11 @@ export function BeadsCard({
   const displayLayout = liveLayout ?? layout;
 
   const status = useMemo(() => parseStatus(layout.payload), [layout.payload]);
+  const projectPath = status?.projectPath;
+  const initResult = status?.initResult ?? "";
 
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<BeadsTask[]>(status?.tasks ?? []);
 
   const epicId = useMemo(() => {
@@ -116,31 +119,46 @@ export function BeadsCard({
   }, [tasks]);
 
   const handleRefresh = useCallback(async () => {
-    if (!status?.projectPath) {
+    if (!projectPath) {
       return;
     }
     setRefreshing(true);
+    setRefreshError(null);
     try {
-      const raw = await invoke<string>("beads_run", {
-        projectPath: status.projectPath,
-        args: ["list", "--json"],
+      // Prefer a full list so child tasks under epics are visible.
+      let raw = await invoke<string>("beads_run", {
+        projectPath,
+        args: ["list", "--json", "--all", "--limit", "0"],
       });
-      const parsed = JSON.parse(raw) as BeadsTask[];
-      const isArray = Array.isArray(parsed);
-      const nextTasks = isArray ? parsed : [];
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        // Fallback for older bd versions/outputs.
+        raw = await invoke<string>("beads_run", {
+          projectPath,
+          args: ["list", "--json"],
+        });
+        parsed = JSON.parse(raw);
+      }
+      const nextTasks = Array.isArray(parsed) ? (parsed as BeadsTask[]) : [];
       setTasks(nextTasks);
-      onStatusChange?.({
-        projectPath: status.projectPath,
-        initResult: status.initResult ?? "",
-        tasks: nextTasks,
-        lastRefresh: Date.now(),
-      });
-    } catch {
-      // bd not available or no tasks yet
+      const prevTasks = status?.tasks ?? [];
+      if (JSON.stringify(prevTasks) !== JSON.stringify(nextTasks)) {
+        onStatusChange?.({
+          projectPath,
+          initResult,
+          tasks: nextTasks,
+          lastRefresh: Date.now(),
+        });
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setRefreshError(msg);
     } finally {
       setRefreshing(false);
     }
-  }, [onStatusChange, status]);
+  }, [initResult, onStatusChange, projectPath]);
 
   const handleOpenTask = useCallback(
     async (task: BeadsTask) => {
@@ -218,14 +236,15 @@ export function BeadsCard({
   }, [status?.tasks]);
 
   useEffect(() => {
-    if (!status?.projectPath || layout.collapsed) {
+    if (!projectPath || layout.collapsed) {
       return;
     }
+    void handleRefresh();
     const interval = setInterval(() => {
-      handleRefresh();
+      void handleRefresh();
     }, 10000);
     return () => clearInterval(interval);
-  }, [status?.projectPath, layout.collapsed, handleRefresh]);
+  }, [projectPath, layout.collapsed, handleRefresh]);
 
   const [epicProgress, setEpicProgress] = useState<{ total: number; done: number; in_progress: number; open: number } | null>(null);
 
@@ -475,6 +494,11 @@ export function BeadsCard({
                     {refreshing ? "..." : "↻"}
                   </button>
                 </div>
+                {refreshError && (
+                  <p className="beads-card-empty" style={{ color: "#f7768e", marginBottom: 8 }}>
+                    Refresh failed: {refreshError}
+                  </p>
+                )}
                 {epicProgress && epicProgress.total > 0 && (
                   <div className="beads-card-progress">
                     <div className="beads-card-progress-bar">

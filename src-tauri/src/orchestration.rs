@@ -4,7 +4,7 @@ use crate::agent_registry::AgentRegistry;
 use crate::pty_pool::PtyPool;
 use crate::storage::MetaDb;
 use serde::Serialize;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -55,6 +55,91 @@ pub fn run_bd_sync(project_path: &Path, args: &[String]) -> Result<String, Strin
         return Err(format!("bd failed: {}", stderr.trim()));
     }
     Ok(stdout)
+}
+
+/// Return epic IDs that are eligible to close.
+///
+/// Preferred path uses `bd epic close-eligible --json`.
+/// Fallback path computes eligibility from `bd list --json --all --limit 0`
+/// so we still work on older/newer Beads CLIs where epic subcommands differ.
+fn close_eligible_epic_ids_sync(project_path: &Path) -> Result<Vec<String>, String> {
+    let preferred = vec![
+        "epic".to_string(),
+        "close-eligible".to_string(),
+        "--json".to_string(),
+    ];
+    if let Ok(stdout) = run_bd_sync(project_path, &preferred) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(arr) = val.as_array() {
+                let mut ids: Vec<String> = arr
+                    .iter()
+                    .filter_map(|epic| epic.get("id").and_then(|v| v.as_str()))
+                    .map(|s| s.to_string())
+                    .collect();
+                ids.sort();
+                ids.dedup();
+                return Ok(ids);
+            }
+        }
+    }
+
+    // Fallback: derive close-eligible epics from full task list.
+    let list_args = vec![
+        "list".to_string(),
+        "--json".to_string(),
+        "--all".to_string(),
+        "--limit".to_string(),
+        "0".to_string(),
+    ];
+    let stdout = run_bd_sync(project_path, &list_args)?;
+    let val: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse bd list json for epic fallback: {e}"))?;
+    let Some(items) = val.as_array() else {
+        return Ok(Vec::new());
+    };
+
+    let mut epics = HashSet::new();
+    let mut child_statuses: HashMap<String, Vec<String>> = HashMap::new();
+    for item in items {
+        let issue_type = item
+            .get("issue_type")
+            .or_else(|| item.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+
+        if issue_type == "epic" {
+            epics.insert(id.to_string());
+        }
+
+        if let Some(parent) = item.get("parent").and_then(|v| v.as_str()) {
+            let status = item
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_lowercase();
+            child_statuses
+                .entry(parent.to_string())
+                .or_default()
+                .push(status);
+        }
+    }
+
+    let mut eligible = Vec::new();
+    for epic_id in epics {
+        let Some(children) = child_statuses.get(&epic_id) else {
+            continue; // no children yet, don't close
+        };
+        if !children.is_empty() && children.iter().all(|s| s == "done") {
+            eligible.push(epic_id);
+        }
+    }
+    eligible.sort();
+    eligible.dedup();
+    Ok(eligible)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -470,6 +555,39 @@ pub async fn tick(
             continue;
         }
 
+        // Fallback path: if this developer never got an isolated worktree/branch
+        // (for example repo bootstrap/unborn HEAD scenarios), avoid merge-train
+        // retries on a missing task/<id> branch and finalize the task directly.
+        let has_worktree = registry
+            .get_worktree_path(&agent_id)
+            .ok()
+            .flatten()
+            .is_some();
+        if !has_worktree {
+            eprintln!(
+                "[orch] task {task_id} (agent {agent_id}) completed without worktree; finalizing without merge"
+            );
+            let done_args = vec![
+                "update".to_string(),
+                task_id.clone(),
+                "--status".to_string(),
+                "done".to_string(),
+            ];
+            let path_done = path.to_path_buf();
+            let _ = tokio::task::spawn_blocking(move || run_bd_sync(&path_done, &done_args)).await;
+            let _ = registry.kill(&agent_id);
+            let _ = pool.kill(&agent_id);
+            let _ = app_handle.emit(
+                "merge_status",
+                MergeStatusPayload {
+                    task_id,
+                    status: "done".to_string(),
+                    detail: Some("No isolated worktree branch; finalized directly".to_string()),
+                },
+            );
+            continue;
+        }
+
         // Remove worktree (frees the branch for rebase/merge from main repo dir)
         if let Ok(Some(_wt)) = registry.get_worktree_path(&agent_id) {
             let rm_path = path.to_path_buf();
@@ -621,69 +739,57 @@ pub async fn tick(
         }
     }
 
-    // 6. Auto-close epics whose children are ALL done (and have at least 1 child)
+    // 6. Auto-close epics whose children are ALL done (and have at least 1 child).
+    //    If direct close is unavailable, fallback to status update.
+    //    If both fail, append a PM nudge note.
     {
-        let close_args = vec![
-            "epic".to_string(),
-            "close-eligible".to_string(),
-            "--json".to_string(),
-        ];
         let path_epic = path.to_path_buf();
-        if let Ok(Ok(stdout)) = tokio::task::spawn_blocking({
+        if let Ok(Ok(epic_ids)) = tokio::task::spawn_blocking({
             let path_epic = path_epic.clone();
-            move || run_bd_sync(&path_epic, &close_args)
+            move || close_eligible_epic_ids_sync(&path_epic)
         })
         .await
         {
-            if let Ok(arr) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                if let Some(epics) = arr.as_array() {
-                    for epic in epics {
-                        if let Some(epic_id) = epic.get("id").and_then(|v| v.as_str()) {
-                            // Guard: verify the epic actually has children before closing.
-                            // An epic with 0 children is vacuously "close-eligible" but the
-                            // PM may not have created tasks yet.
-                            let children_count = {
-                                let check_args = vec![
-                                    "children".to_string(),
-                                    epic_id.to_string(),
-                                    "--json".to_string(),
-                                ];
-                                let check_path = path_epic.clone();
-                                match tokio::task::spawn_blocking(move || {
-                                    run_bd_sync(&check_path, &check_args)
-                                })
-                                .await
-                                {
-                                    Ok(Ok(children_stdout)) => {
-                                        serde_json::from_str::<serde_json::Value>(&children_stdout)
-                                            .ok()
-                                            .and_then(|v| v.as_array().map(|a| a.len()))
-                                            .unwrap_or(0)
-                                    }
-                                    _ => 0,
-                                }
-                            };
-                            if children_count == 0 {
-                                eprintln!(
-                                    "[orch] skipping auto-close for epic {} (no children yet)",
-                                    epic_id
-                                );
-                                continue;
-                            }
+            for epic_id in epic_ids {
+                let close_args = vec!["close".to_string(), epic_id.clone()];
+                let close_path = path_epic.clone();
+                let close_ok =
+                    matches!(tokio::task::spawn_blocking(move || run_bd_sync(&close_path, &close_args)).await, Ok(Ok(_)));
 
-                            let close_id = epic_id.to_string();
-                            let path_close = path_epic.clone();
-                            let _ = tokio::task::spawn_blocking(move || {
-                                run_bd_sync(&path_close, &["close".to_string(), close_id])
-                            })
-                            .await;
-                            eprintln!(
-                                "[orch] auto-closed epic {} ({} children all done)",
-                                epic_id, children_count
-                            );
-                        }
-                    }
+                if close_ok {
+                    eprintln!("[orch] auto-closed epic {} via `bd close`", epic_id);
+                    continue;
                 }
+
+                // Fallback for Beads versions without `bd close` command.
+                let done_args = vec![
+                    "update".to_string(),
+                    epic_id.clone(),
+                    "--status".to_string(),
+                    "done".to_string(),
+                ];
+                let done_path = path_epic.clone();
+                let mark_done_ok =
+                    matches!(tokio::task::spawn_blocking(move || run_bd_sync(&done_path, &done_args)).await, Ok(Ok(_)));
+
+                if mark_done_ok {
+                    eprintln!("[orch] auto-closed epic {} via status fallback", epic_id);
+                    continue;
+                }
+
+                // Last resort: nudge PM in epic notes for manual closure.
+                let note_args = vec![
+                    "update".to_string(),
+                    epic_id.clone(),
+                    "--append-notes".to_string(),
+                    "System note: all child tasks are done. If no new work came up, please close this epic.".to_string(),
+                ];
+                let note_path = path_epic.clone();
+                let _ = tokio::task::spawn_blocking(move || run_bd_sync(&note_path, &note_args)).await;
+                eprintln!(
+                    "[orch] could not auto-close epic {}; appended PM nudge note",
+                    epic_id
+                );
             }
         }
     }
