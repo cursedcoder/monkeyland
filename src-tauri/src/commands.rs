@@ -1055,6 +1055,26 @@ mod tests {
     use super::*;
     use std::process::Command;
     use std::time::Duration;
+    use tauri::Manager;
+
+    fn test_app() -> tauri::App<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        crate::manage_state(&app, &dir_path, 0).unwrap();
+        // Leak the tempdir so it persists for the lifetime of the app
+        std::mem::forget(dir);
+        app
+    }
+
+    fn test_app_with_dir() -> (tauri::App<tauri::test::MockRuntime>, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let app = tauri::test::mock_app();
+        crate::manage_state(&app, &dir_path, 0).unwrap();
+        std::mem::forget(dir);
+        (app, dir_path)
+    }
 
     #[test]
     fn test_process_kill_commands_are_detected() {
@@ -1532,6 +1552,628 @@ mod tests {
         assert_eq!(p.state, "running");
         assert!(p.project_path.is_none());
         assert!(p.worktree_path.is_none());
+    }
+
+    // =====================================================================
+    // Tauri mock-runtime command handler tests
+    // =====================================================================
+
+    // --- Group A: MetaDb commands ---
+
+    #[tokio::test]
+    async fn cmd_save_load_canvas_layout_roundtrip() {
+        let app = test_app();
+        let db = app.state::<crate::storage::MetaDb>();
+
+        let payload = CanvasLayoutPayload {
+            layouts: vec![
+                SessionLayout {
+                    session_id: "s1".into(),
+                    x: 10.0, y: 20.0, w: 300.0, h: 200.0,
+                    collapsed: false,
+                    node_type: "agent".into(),
+                    payload: "".into(),
+                },
+                SessionLayout {
+                    session_id: "s2".into(),
+                    x: 50.0, y: 60.0, w: 400.0, h: 100.0,
+                    collapsed: true,
+                    node_type: "log".into(),
+                    payload: "data".into(),
+                },
+            ],
+        };
+        save_canvas_layout(db.clone(), payload).await.unwrap();
+
+        let loaded = load_canvas_layout(db).await.unwrap();
+        assert_eq!(loaded.layouts.len(), 2);
+        let s1 = loaded.layouts.iter().find(|l| l.session_id == "s1").unwrap();
+        assert_eq!(s1.x, 10.0);
+        assert_eq!(s1.node_type, "agent");
+        let s2 = loaded.layouts.iter().find(|l| l.session_id == "s2").unwrap();
+        assert!(s2.collapsed);
+        assert_eq!(s2.payload, "data");
+    }
+
+    #[tokio::test]
+    async fn cmd_load_canvas_layout_empty() {
+        let app = test_app();
+        let db = app.state::<crate::storage::MetaDb>();
+        let loaded = load_canvas_layout(db).await.unwrap();
+        assert!(loaded.layouts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cmd_save_load_llm_settings() {
+        let app = test_app();
+        let db = app.state::<crate::storage::MetaDb>();
+
+        let defaults = load_llm_settings(db.clone()).await.unwrap();
+        assert_eq!(defaults.provider, "anthropic");
+        assert!(defaults.model.contains("claude"));
+
+        save_llm_settings(db.clone(), LlmSettingsPayload {
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+        }).await.unwrap();
+
+        let updated = load_llm_settings(db).await.unwrap();
+        assert_eq!(updated.provider, "openai");
+        assert_eq!(updated.model, "gpt-4o");
+    }
+
+    #[tokio::test]
+    async fn cmd_get_set_llm_api_key() {
+        let app = test_app();
+        let db = app.state::<crate::storage::MetaDb>();
+
+        let none_key = get_llm_api_key(db.clone(), "anthropic".into()).await.unwrap();
+        assert!(none_key.is_none());
+
+        set_llm_api_key(db.clone(), "anthropic".into(), "sk-test-123".into()).await.unwrap();
+
+        let key = get_llm_api_key(db, "anthropic".into()).await.unwrap();
+        assert_eq!(key, Some("sk-test-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn cmd_llm_setup_done() {
+        let app = test_app();
+        let db = app.state::<crate::storage::MetaDb>();
+
+        let before = get_llm_setup_done(db.clone()).await.unwrap();
+        assert!(!before);
+
+        set_llm_setup_done(db.clone()).await.unwrap();
+
+        let after = get_llm_setup_done(db).await.unwrap();
+        assert!(after);
+    }
+
+    #[tokio::test]
+    async fn cmd_safety_mode_toggle() {
+        let app = test_app();
+        let db = app.state::<crate::storage::MetaDb>();
+
+        let initial = get_safety_mode(db.clone()).await.unwrap();
+        assert!(!initial);
+
+        set_safety_mode(db.clone(), true).await.unwrap();
+        assert!(get_safety_mode(db.clone()).await.unwrap());
+
+        set_safety_mode(db.clone(), false).await.unwrap();
+        assert!(!get_safety_mode(db).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn cmd_beads_project_path() {
+        let app = test_app();
+        let db = app.state::<crate::storage::MetaDb>();
+        let reg = app.state::<AgentRegistry>();
+
+        let none_path = get_beads_project_path(db.clone()).await.unwrap();
+        assert!(none_path.is_none() || none_path.as_deref() == Some(""));
+
+        set_beads_project_path(db.clone(), reg.clone(), Some("/tmp/project".into()), None)
+            .await.unwrap();
+        let path = get_beads_project_path(db.clone()).await.unwrap();
+        assert_eq!(path, Some("/tmp/project".to_string()));
+
+        set_beads_project_path(db.clone(), reg, None, None).await.unwrap();
+        let cleared = get_beads_project_path(db).await.unwrap();
+        assert_eq!(cleared, Some("".to_string()));
+    }
+
+    // --- Group B: Agent registry commands ---
+
+    #[tokio::test]
+    async fn cmd_agent_status_empty() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let status = agent_status(reg).await.unwrap();
+        assert_eq!(status.used_slots, 0);
+    }
+
+    #[tokio::test]
+    async fn cmd_debug_snapshot_empty() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let snap = debug_snapshot(reg).await.unwrap();
+        assert!(snap.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cmd_set_role_config() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        set_role_config(reg.clone(), "developer".into(), Some(2)).await.unwrap();
+        set_role_config(reg, "developer".into(), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_quota_and_tokens() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+
+        let id = reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
+
+        let q = agent_quota(reg.clone(), id.clone()).await.unwrap().unwrap();
+        assert_eq!(q.tokens_used, 0);
+
+        agent_report_tokens(reg.clone(), id.clone(), 500).await.unwrap();
+        let q2 = agent_quota(reg, id).await.unwrap().unwrap();
+        assert_eq!(q2.tokens_used, 500);
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_yield_flow() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+
+        let id = reg.spawn("developer", Some("t-1".into()), None, None).unwrap();
+
+        agent_yield(reg.clone(), id.clone(), YieldPayload {
+            status: "ready".into(),
+            git_branch: Some("feat/test".into()),
+            diff_summary: Some("added tests".into()),
+        }).await.unwrap();
+
+        let snap = debug_snapshot(reg).await.unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.state, "Yielded");
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_message_and_poll() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+
+        let a1 = reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        let a2 = reg.spawn("worker", Some("t-2".into()), None, None).unwrap();
+
+        let sent = agent_message(reg.clone(), a1.clone(), a2.clone(), "hello".into()).await.unwrap();
+        assert!(sent);
+
+        let msgs = agent_poll_messages(reg, a2).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].payload, "hello");
+    }
+
+    #[tokio::test]
+    async fn cmd_validation_submit_accumulates() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+
+        let dev_id = reg.spawn("developer", Some("t-1".into()), None, None).unwrap();
+        reg.yield_for_review(&dev_id, YieldPayload {
+            status: "ready".into(),
+            git_branch: None,
+            diff_summary: None,
+        }).unwrap();
+        reg.start_validation(&dev_id, Some("t-1".into())).unwrap();
+
+        let r1 = validation_submit(reg.clone(), ValidationSubmitPayload {
+            developer_agent_id: dev_id.clone(),
+            validator_role: "v1".into(),
+            pass: true,
+            reasons: vec![],
+        }).await.unwrap();
+        assert!(r1.is_none());
+
+        let r2 = validation_submit(reg.clone(), ValidationSubmitPayload {
+            developer_agent_id: dev_id.clone(),
+            validator_role: "v2".into(),
+            pass: true,
+            reasons: vec![],
+        }).await.unwrap();
+        assert!(r2.is_none());
+
+        let r3 = validation_submit(reg, ValidationSubmitPayload {
+            developer_agent_id: dev_id,
+            validator_role: "v3".into(),
+            pass: true,
+            reasons: vec![],
+        }).await.unwrap();
+        assert!(r3.is_some());
+        assert!(r3.unwrap().all_passed);
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_complete_task_worker() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+
+        let id = reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        agent_complete_task(reg, id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_turn_ended_worker_completes() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+
+        let id = reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        let result = agent_turn_ended(reg, id, "worker".into()).await.unwrap();
+        assert_eq!(result, "completed");
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_turn_ended_nonexistent() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let result = agent_turn_ended(reg, "nonexistent".into(), "worker".into()).await.unwrap();
+        assert_eq!(result, "not_found");
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_force_yield_and_set_summary() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+
+        let id = reg.spawn("developer", Some("t-1".into()), None, None).unwrap();
+        agent_force_yield(reg.clone(), id.clone()).await.unwrap();
+
+        agent_set_yield_summary(reg.clone(), id.clone(), "force yielded summary".into())
+            .await.unwrap();
+
+        let snap = debug_snapshot(reg).await.unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.state, "Yielded");
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_gate_tool_running() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+
+        let id = reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
+        agent_gate_tool(reg, id, "terminal_exec".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_gate_tool_nonexistent() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let result = agent_gate_tool(reg, "ghost".into(), "terminal_exec".into()).await;
+        assert!(result.is_err());
+    }
+
+    // --- Group C: Orchestration commands ---
+
+    #[tokio::test]
+    async fn cmd_orch_start_pause_get_state() {
+        let app = test_app();
+        let state = app.state::<OrchestrationState>();
+
+        let initial = orch_get_state(state.clone()).await.unwrap();
+        assert_eq!(initial, 0);
+
+        orch_start(state.clone()).await.unwrap();
+        assert_eq!(orch_get_state(state.clone()).await.unwrap(), 1);
+
+        orch_pause(state.clone()).await.unwrap();
+        assert_eq!(orch_get_state(state).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn cmd_orch_get_metrics_fresh() {
+        let app = test_app();
+        let metrics = app.state::<OrchestrationMetrics>();
+        let mq = app.state::<MergeQueue>();
+
+        let snap = orch_get_metrics(metrics, mq).await.unwrap();
+        assert_eq!(snap.merge_queue_depth, 0);
+        assert_eq!(snap.merge_retry_count, 0);
+    }
+
+    // --- Group D: File commands with State ---
+
+    #[tokio::test]
+    async fn cmd_write_and_read_file_ungated() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("hello.txt");
+
+        write_file(reg.clone(), file_path.to_str().unwrap().into(), "world".into(), None)
+            .await.unwrap();
+
+        let content = read_file(reg, file_path.to_str().unwrap().into(), None)
+            .await.unwrap();
+        assert_eq!(content, "world");
+    }
+
+    #[tokio::test]
+    async fn cmd_read_file_not_found() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let result = read_file(reg, "/nonexistent/file.txt".into(), None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("File not found"));
+    }
+
+    #[tokio::test]
+    async fn cmd_get_kilo_proxy_url_via_state() {
+        let app = tauri::test::mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        crate::manage_state(&app, dir.path(), 8080).unwrap();
+        std::mem::forget(dir);
+
+        let port_state = app.state::<crate::KiloProxyPort>();
+        let url = get_kilo_proxy_url(port_state);
+        assert_eq!(url, "http://127.0.0.1:8080");
+    }
+
+    #[tokio::test]
+    async fn cmd_get_kilo_proxy_url_zero() {
+        let app = test_app();
+        let port_state = app.state::<crate::KiloProxyPort>();
+        let url = get_kilo_proxy_url(port_state);
+        assert_eq!(url, "");
+    }
+
+    // --- Group E: Special commands ---
+
+    #[tokio::test]
+    async fn cmd_agent_kill_via_registry() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let pool = app.state::<crate::pty_pool::PtyPool>();
+
+        let id = reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
+
+        let killed = agent_kill(pool, reg.clone(), id.clone()).await.unwrap();
+        assert!(killed);
+
+        let snap = debug_snapshot(reg).await.unwrap();
+        assert!(snap.agents.iter().find(|a| a.id == id).is_none());
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_kill_nonexistent() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let pool = app.state::<crate::pty_pool::PtyPool>();
+
+        let killed = agent_kill(pool, reg, "ghost".into()).await.unwrap();
+        assert!(!killed);
+    }
+
+    #[tokio::test]
+    async fn cmd_full_reset_clears_state() {
+        let app = test_app();
+        let orch = app.state::<OrchestrationState>();
+        let reg = app.state::<AgentRegistry>();
+        let pool = app.state::<crate::pty_pool::PtyPool>();
+        let db = app.state::<crate::storage::MetaDb>();
+
+        orch_start(orch.clone()).await.unwrap();
+        reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
+
+        full_reset(orch.clone(), reg.clone(), pool, db).await.unwrap();
+
+        assert_eq!(orch_get_state(orch).await.unwrap(), 2);
+        let snap = debug_snapshot(reg).await.unwrap();
+        assert!(snap.agents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cmd_terminal_exec_echo() {
+        let app = test_app();
+        let pool = app.state::<crate::pty_pool::PtyPool>();
+        let reg = app.state::<AgentRegistry>();
+
+        let result = terminal_exec(pool, reg, TerminalExecPayload {
+            session_id: "test".into(),
+            command: "echo hello_world".into(),
+            timeout_ms: 5_000,
+            cwd: None,
+            agent_id: None,
+        }).await.unwrap();
+        assert!(result.contains("hello_world"));
+    }
+
+    #[tokio::test]
+    async fn cmd_terminal_exec_blocked_destructive() {
+        let app = test_app();
+        let pool = app.state::<crate::pty_pool::PtyPool>();
+        let reg = app.state::<AgentRegistry>();
+
+        let result = terminal_exec(pool, reg, TerminalExecPayload {
+            session_id: "test".into(),
+            command: "rm -rf /".into(),
+            timeout_ms: 5_000,
+            cwd: None,
+            agent_id: None,
+        }).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Blocked"));
+    }
+
+    #[tokio::test]
+    async fn cmd_terminal_exec_kill_returns_guidance() {
+        let app = test_app();
+        let pool = app.state::<crate::pty_pool::PtyPool>();
+        let reg = app.state::<AgentRegistry>();
+
+        let result = terminal_exec(pool, reg, TerminalExecPayload {
+            session_id: "test".into(),
+            command: "kill 12345".into(),
+            timeout_ms: 5_000,
+            cwd: None,
+            agent_id: None,
+        }).await.unwrap();
+        assert!(result.contains("NOT NEEDED"));
+    }
+
+    #[tokio::test]
+    async fn cmd_terminal_exec_with_cwd() {
+        let app = test_app();
+        let pool = app.state::<crate::pty_pool::PtyPool>();
+        let reg = app.state::<AgentRegistry>();
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = terminal_exec(pool, reg, TerminalExecPayload {
+            session_id: "test".into(),
+            command: "pwd".into(),
+            timeout_ms: 5_000,
+            cwd: Some(dir.path().to_str().unwrap().into()),
+            agent_id: None,
+        }).await.unwrap();
+        assert!(result.contains(dir.path().to_str().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn cmd_terminal_exec_interactive_blocked() {
+        let app = test_app();
+        let pool = app.state::<crate::pty_pool::PtyPool>();
+        let reg = app.state::<AgentRegistry>();
+
+        let result = terminal_exec(pool, reg, TerminalExecPayload {
+            session_id: "test".into(),
+            command: "npm create vite@latest".into(),
+            timeout_ms: 5_000,
+            cwd: None,
+            agent_id: None,
+        }).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("interactive"));
+    }
+
+    // =====================================================================
+    // IPC round-trip tests (full serde contract via invoke handler)
+    // =====================================================================
+
+    fn ipc_app() -> (
+        tauri::App<tauri::test::MockRuntime>,
+        tauri::WebviewWindow<tauri::test::MockRuntime>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+        let app = tauri::test::mock_builder()
+            .invoke_handler(crate::tests::test_invoke_handler())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("failed to build mock app");
+        crate::manage_state(&app, &dir_path, 4242).unwrap();
+        std::mem::forget(dir);
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        (app, webview)
+    }
+
+    fn ipc_req(cmd: &str, body: serde_json::Value) -> tauri::webview::InvokeRequest {
+        tauri::webview::InvokeRequest {
+            cmd: cmd.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "http://tauri.localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(body),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        }
+    }
+
+    #[test]
+    fn ipc_load_llm_settings_returns_defaults() {
+        let (_app, webview) = ipc_app();
+        let res = tauri::test::get_ipc_response(
+            &webview,
+            ipc_req("load_llm_settings", serde_json::json!({})),
+        );
+        assert!(res.is_ok(), "IPC failed: {:?}", res.err());
+        let val: LlmSettingsPayload = res.unwrap().deserialize().unwrap();
+        assert_eq!(val.provider, "anthropic");
+    }
+
+    #[test]
+    fn ipc_orch_get_state_returns_zero() {
+        let (_app, webview) = ipc_app();
+        let res = tauri::test::get_ipc_response(
+            &webview,
+            ipc_req("orch_get_state", serde_json::json!({})),
+        );
+        assert!(res.is_ok());
+        let val: u8 = res.unwrap().deserialize().unwrap();
+        assert_eq!(val, 0);
+    }
+
+    #[test]
+    fn ipc_get_kilo_proxy_url_returns_url() {
+        let (_app, webview) = ipc_app();
+        let res = tauri::test::get_ipc_response(
+            &webview,
+            ipc_req("get_kilo_proxy_url", serde_json::json!({})),
+        );
+        assert!(res.is_ok());
+        let val: String = res.unwrap().deserialize().unwrap();
+        assert_eq!(val, "http://127.0.0.1:4242");
+    }
+
+    #[test]
+    fn ipc_agent_status_returns_empty() {
+        let (_app, webview) = ipc_app();
+        let res = tauri::test::get_ipc_response(
+            &webview,
+            ipc_req("agent_status", serde_json::json!({})),
+        );
+        assert!(res.is_ok());
+        let val: crate::agent_registry::AgentStatusResponse =
+            res.unwrap().deserialize().unwrap();
+        assert_eq!(val.used_slots, 0);
+    }
+
+    #[test]
+    fn ipc_get_safety_mode_default_false() {
+        let (_app, webview) = ipc_app();
+        let res = tauri::test::get_ipc_response(
+            &webview,
+            ipc_req("get_safety_mode", serde_json::json!({})),
+        );
+        assert!(res.is_ok());
+        let val: bool = res.unwrap().deserialize().unwrap();
+        assert!(!val);
+    }
+
+    #[tokio::test]
+    async fn cmd_terminal_exec_gated_no_cwd_with_project() {
+        let app = test_app();
+        let pool = app.state::<crate::pty_pool::PtyPool>();
+        let reg = app.state::<AgentRegistry>();
+
+        let dir = tempfile::tempdir().unwrap();
+        let id = reg.spawn("worker", Some("t-1".into()), None,
+            Some(dir.path().to_str().unwrap().to_string())).unwrap();
+
+        let result = terminal_exec(pool, reg, TerminalExecPayload {
+            session_id: "test".into(),
+            command: "echo hi".into(),
+            timeout_ms: 5_000,
+            cwd: None,
+            agent_id: Some(id),
+        }).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cwd"));
     }
 }
 

@@ -2,7 +2,84 @@ use std::sync::atomic::AtomicU16;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 
-pub struct KiloProxyPort(AtomicU16);
+pub struct KiloProxyPort(pub(crate) AtomicU16);
+
+fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        crate::commands::save_canvas_layout,
+        crate::commands::load_canvas_layout,
+        crate::commands::load_llm_settings,
+        crate::commands::save_llm_settings,
+        crate::commands::get_llm_api_key,
+        crate::commands::set_llm_api_key,
+        crate::commands::get_llm_setup_done,
+        crate::commands::set_llm_setup_done,
+        crate::commands::terminal_spawn,
+        crate::commands::terminal_write,
+        crate::commands::terminal_resize,
+        crate::commands::terminal_exec,
+        crate::commands::validator_cleanup_process_tree,
+        crate::commands::write_file,
+        crate::commands::read_file,
+        crate::commands::browser_ensure_started,
+        crate::commands::beads_init,
+        crate::commands::beads_run,
+        crate::commands::get_beads_project_path,
+        crate::commands::set_beads_project_path,
+        crate::commands::beads_dolt_start,
+        crate::commands::agent_spawn,
+        crate::commands::agent_restore_batch,
+        crate::commands::agent_kill,
+        crate::commands::agent_status,
+        crate::commands::debug_snapshot,
+        crate::commands::set_role_config,
+        crate::commands::orch_get_state,
+        crate::commands::orch_get_metrics,
+        crate::commands::get_safety_mode,
+        crate::commands::set_safety_mode,
+        crate::commands::orch_start,
+        crate::commands::orch_pause,
+        crate::commands::agent_quota,
+        crate::commands::agent_report_tokens,
+        crate::commands::agent_yield,
+        crate::commands::agent_message,
+        crate::commands::agent_poll_messages,
+        crate::commands::validation_submit,
+        crate::commands::agent_complete_task,
+        crate::commands::agent_turn_ended,
+        crate::commands::agent_force_yield,
+        crate::commands::agent_set_yield_summary,
+        crate::commands::agent_gate_tool,
+        crate::commands::write_clipboard_text,
+        crate::commands::fetch_json,
+        crate::commands::get_kilo_proxy_url,
+        crate::commands::full_reset,
+        crate::commands::worktree_create,
+        crate::commands::worktree_remove,
+        crate::commands::worktree_diff,
+    ]
+}
+
+/// Manage all app state onto the given app handle. Usable from both real setup and tests.
+pub(crate) fn manage_state<M: Manager<impl tauri::Runtime>>(
+    m: &M,
+    config_dir: &std::path::Path,
+    kilo_port: u16,
+) -> Result<(), String> {
+    let meta_path = config_dir.join("meta.db");
+    let meta_db = storage::MetaDb::open(&meta_path).map_err(|e| e.to_string())?;
+    m.manage(meta_db);
+    m.manage(storage::WriteBatcher::new(config_dir.to_path_buf()));
+    m.manage(coalescing::CoalescingBus::new());
+    m.manage(KiloProxyPort(AtomicU16::new(kilo_port)));
+    m.manage(pty_pool::PtyPool::new());
+    m.manage(browser_pool::BrowserPool::new());
+    m.manage(agent_registry::AgentRegistry::new());
+    m.manage(orchestration::OrchestrationState::new());
+    m.manage(orchestration::MergeQueue::new());
+    m.manage(orchestration::OrchestrationMetrics::new());
+    Ok(())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -12,24 +89,13 @@ pub fn run() {
         .setup(|app| {
             let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
             std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-            let meta_path = config_dir.join("meta.db");
-            let meta_db = storage::MetaDb::open(&meta_path).map_err(|e| e.to_string())?;
-            app.manage(meta_db);
-            let batcher = storage::WriteBatcher::new(config_dir.clone());
-            app.manage(batcher);
-            app.manage(coalescing::CoalescingBus::new());
-            // Start local CORS proxy for Kilo AI (whose API doesn't allow browser origins)
+
             let kilo_port = tauri::async_runtime::block_on(local_proxy::start(
                 "https://api.kilo.ai/api/gateway".to_string(),
             ))
             .unwrap_or(0);
-            app.manage(KiloProxyPort(AtomicU16::new(kilo_port)));
-            app.manage(pty_pool::PtyPool::new());
-            app.manage(browser_pool::BrowserPool::new());
-            app.manage(agent_registry::AgentRegistry::new());
-            app.manage(orchestration::OrchestrationState::new());
-            app.manage(orchestration::MergeQueue::new());
-            app.manage(orchestration::OrchestrationMetrics::new());
+
+            manage_state(app, &config_dir, kilo_port)?;
 
             // Prune stale git worktrees from any previous session
             if let Some(db) = app.try_state::<storage::MetaDb>() {
@@ -135,59 +201,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            crate::commands::save_canvas_layout,
-            crate::commands::load_canvas_layout,
-            crate::commands::load_llm_settings,
-            crate::commands::save_llm_settings,
-            crate::commands::get_llm_api_key,
-            crate::commands::set_llm_api_key,
-            crate::commands::get_llm_setup_done,
-            crate::commands::set_llm_setup_done,
-            crate::commands::terminal_spawn,
-            crate::commands::terminal_write,
-            crate::commands::terminal_resize,
-            crate::commands::terminal_exec,
-            crate::commands::validator_cleanup_process_tree,
-            crate::commands::write_file,
-            crate::commands::read_file,
-            crate::commands::browser_ensure_started,
-            crate::commands::beads_init,
-            crate::commands::beads_run,
-            crate::commands::get_beads_project_path,
-            crate::commands::set_beads_project_path,
-            crate::commands::beads_dolt_start,
-            crate::commands::agent_spawn,
-            crate::commands::agent_restore_batch,
-            crate::commands::agent_kill,
-            crate::commands::agent_status,
-            crate::commands::debug_snapshot,
-            crate::commands::set_role_config,
-            crate::commands::orch_get_state,
-            crate::commands::orch_get_metrics,
-            crate::commands::get_safety_mode,
-            crate::commands::set_safety_mode,
-            crate::commands::orch_start,
-            crate::commands::orch_pause,
-            crate::commands::agent_quota,
-            crate::commands::agent_report_tokens,
-            crate::commands::agent_yield,
-            crate::commands::agent_message,
-            crate::commands::agent_poll_messages,
-            crate::commands::validation_submit,
-            crate::commands::agent_complete_task,
-            crate::commands::agent_turn_ended,
-            crate::commands::agent_force_yield,
-            crate::commands::agent_set_yield_summary,
-            crate::commands::agent_gate_tool,
-            crate::commands::write_clipboard_text,
-            crate::commands::fetch_json,
-            crate::commands::get_kilo_proxy_url,
-            crate::commands::full_reset,
-            crate::commands::worktree_create,
-            crate::commands::worktree_remove,
-            crate::commands::worktree_diff,
-        ])
+        .invoke_handler(invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running Monkeyland");
 }
@@ -225,5 +239,96 @@ mod tests {
         let kpp = KiloProxyPort(std::sync::atomic::AtomicU16::new(0));
         kpp.0.store(3000, Ordering::Relaxed);
         assert_eq!(kpp.0.load(Ordering::Relaxed), 3000);
+    }
+
+    #[test]
+    fn manage_state_registers_all_resources() {
+        let app = tauri::test::mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        manage_state(&app, dir.path(), 0).unwrap();
+
+        assert!(app.try_state::<storage::MetaDb>().is_some());
+        assert!(app.try_state::<storage::WriteBatcher>().is_some());
+        assert!(app.try_state::<coalescing::CoalescingBus>().is_some());
+        assert!(app.try_state::<KiloProxyPort>().is_some());
+        assert!(app.try_state::<pty_pool::PtyPool>().is_some());
+        assert!(app.try_state::<browser_pool::BrowserPool>().is_some());
+        assert!(app.try_state::<agent_registry::AgentRegistry>().is_some());
+        assert!(app.try_state::<orchestration::OrchestrationState>().is_some());
+        assert!(app.try_state::<orchestration::MergeQueue>().is_some());
+        assert!(app.try_state::<orchestration::OrchestrationMetrics>().is_some());
+    }
+
+    #[test]
+    fn manage_state_sets_kilo_port() {
+        let app = tauri::test::mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        manage_state(&app, dir.path(), 9999).unwrap();
+
+        let port_state = app.state::<KiloProxyPort>();
+        assert_eq!(port_state.0.load(Ordering::Relaxed), 9999);
+    }
+
+    #[test]
+    fn manage_state_creates_meta_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = tauri::test::mock_app();
+        manage_state(&app, dir.path(), 0).unwrap();
+
+        let db = app.state::<storage::MetaDb>();
+        db.set_setting("test_key", "test_val").unwrap();
+        assert_eq!(db.get_setting("test_key").unwrap(), Some("test_val".to_string()));
+    }
+
+    #[test]
+    fn invoke_handler_returns_closure() {
+        let _handler = invoke_handler();
+    }
+
+    /// Test-only invoke handler excluding commands that take AppHandle directly
+    /// (beads_dolt_start), which doesn't work with MockRuntime.
+    pub(crate) fn test_invoke_handler(
+    ) -> impl Fn(tauri::ipc::Invoke<tauri::test::MockRuntime>) -> bool + Send + Sync + 'static
+    {
+        tauri::generate_handler![
+            crate::commands::save_canvas_layout,
+            crate::commands::load_canvas_layout,
+            crate::commands::load_llm_settings,
+            crate::commands::save_llm_settings,
+            crate::commands::get_llm_api_key,
+            crate::commands::set_llm_api_key,
+            crate::commands::get_llm_setup_done,
+            crate::commands::set_llm_setup_done,
+            crate::commands::terminal_exec,
+            crate::commands::validator_cleanup_process_tree,
+            crate::commands::write_file,
+            crate::commands::read_file,
+            crate::commands::get_beads_project_path,
+            crate::commands::set_beads_project_path,
+            crate::commands::agent_spawn,
+            crate::commands::agent_kill,
+            crate::commands::agent_status,
+            crate::commands::debug_snapshot,
+            crate::commands::set_role_config,
+            crate::commands::orch_get_state,
+            crate::commands::orch_get_metrics,
+            crate::commands::get_safety_mode,
+            crate::commands::set_safety_mode,
+            crate::commands::orch_start,
+            crate::commands::orch_pause,
+            crate::commands::agent_quota,
+            crate::commands::agent_report_tokens,
+            crate::commands::agent_yield,
+            crate::commands::agent_message,
+            crate::commands::agent_poll_messages,
+            crate::commands::validation_submit,
+            crate::commands::agent_complete_task,
+            crate::commands::agent_turn_ended,
+            crate::commands::agent_force_yield,
+            crate::commands::agent_set_yield_summary,
+            crate::commands::agent_gate_tool,
+            crate::commands::get_kilo_proxy_url,
+            crate::commands::full_reset,
+        ]
     }
 }
