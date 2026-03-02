@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::AtomicU16;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 
@@ -202,3 +202,28 @@ mod orchestration;
 mod pty_pool;
 mod storage;
 mod worktree;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn kilo_proxy_port_default_is_zero() {
+        let kpp = KiloProxyPort(std::sync::atomic::AtomicU16::new(0));
+        assert_eq!(kpp.0.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn kilo_proxy_port_stores_value() {
+        let kpp = KiloProxyPort(std::sync::atomic::AtomicU16::new(8080));
+        assert_eq!(kpp.0.load(Ordering::Relaxed), 8080);
+    }
+
+    #[test]
+    fn kilo_proxy_port_atomic_store() {
+        let kpp = KiloProxyPort(std::sync::atomic::AtomicU16::new(0));
+        kpp.0.store(3000, Ordering::Relaxed);
+        assert_eq!(kpp.0.load(Ordering::Relaxed), 3000);
+    }
+}

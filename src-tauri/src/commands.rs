@@ -681,6 +681,14 @@ pub async fn validation_submit(
     )
 }
 
+fn write_file_core(path: &str, content: &str) -> Result<(), String> {
+    let p = std::path::Path::new(path);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
+    }
+    std::fs::write(p, content.as_bytes()).map_err(|e| format!("write failed: {e}"))
+}
+
 /// Write content to a file, creating parent directories as needed.
 /// If agent_id is provided, the call is gated by the state machine and sandboxed to project_path.
 #[tauri::command]
@@ -694,11 +702,7 @@ pub async fn write_file(
         registry.gate_tool(aid, "write_file")?;
         registry.validate_path(aid, &path)?;
     }
-    let p = std::path::Path::new(&path);
-    if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {e}"))?;
-    }
-    std::fs::write(p, content.as_bytes()).map_err(|e| format!("write failed: {e}"))
+    write_file_core(&path, &content)
 }
 
 /// Process-killing commands get a helpful guidance response (returned as Ok, not Err).
@@ -920,13 +924,7 @@ pub async fn terminal_exec(
         }
     };
 
-    const MAX_OUTPUT: usize = 16_000;
-    if output.len() > MAX_OUTPUT {
-        let truncated = &output[output.len() - MAX_OUTPUT..];
-        Ok(format!("[...truncated...]\n{truncated}"))
-    } else {
-        Ok(output)
-    }
+    Ok(truncate_end(&output, MAX_EXEC_OUTPUT))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1008,6 +1006,37 @@ pub async fn validator_cleanup_process_tree(
     }
 }
 
+const MAX_FILE_OUTPUT: usize = 32_000;
+
+fn read_file_core(path: &str) -> Result<String, String> {
+    let p = std::path::Path::new(path);
+    if !p.exists() {
+        return Err(format!("File not found: {path}"));
+    }
+    let content = std::fs::read_to_string(p).map_err(|e| format!("Failed to read {path}: {e}"))?;
+    Ok(truncate_start(content, MAX_FILE_OUTPUT))
+}
+
+fn truncate_start(content: String, max: usize) -> String {
+    if content.len() > max {
+        let truncated = &content[..max];
+        format!("{truncated}\n[...truncated at {max} chars...]")
+    } else {
+        content
+    }
+}
+
+const MAX_EXEC_OUTPUT: usize = 16_000;
+
+fn truncate_end(content: &str, max: usize) -> String {
+    if content.len() > max {
+        let truncated = &content[content.len() - max..];
+        format!("[...truncated...]\n{truncated}")
+    } else {
+        content.to_string()
+    }
+}
+
 #[tauri::command]
 pub async fn read_file(
     registry: State<'_, AgentRegistry>,
@@ -1018,20 +1047,7 @@ pub async fn read_file(
         registry.gate_tool(aid, "read_file")?;
         registry.validate_path(aid, &path)?;
     }
-    let p = std::path::Path::new(&path);
-    if !p.exists() {
-        return Err(format!("File not found: {path}"));
-    }
-    let content = std::fs::read_to_string(p).map_err(|e| format!("Failed to read {path}: {e}"))?;
-    const MAX_FILE: usize = 32_000;
-    if content.len() > MAX_FILE {
-        let truncated = &content[..MAX_FILE];
-        Ok(format!(
-            "{truncated}\n[...truncated at {MAX_FILE} chars...]"
-        ))
-    } else {
-        Ok(content)
-    }
+    read_file_core(&path)
 }
 
 #[cfg(test)]
@@ -1258,6 +1274,265 @@ mod tests {
         let status = child.try_wait().expect("try_wait failed");
         assert!(status.is_some(), "process should be terminated by cleanup");
     }
+
+    // --- write_file_core tests ---
+
+    #[test]
+    fn write_file_core_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a").join("b").join("file.txt");
+        write_file_core(path.to_str().unwrap(), "hello").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    #[test]
+    fn write_file_core_overwrites_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.txt");
+        std::fs::write(&path, "old").unwrap();
+        write_file_core(path.to_str().unwrap(), "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+    }
+
+    #[test]
+    fn write_file_core_empty_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.txt");
+        write_file_core(path.to_str().unwrap(), "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    // --- read_file_core tests ---
+
+    #[test]
+    fn read_file_core_returns_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, "hello world").unwrap();
+        let result = read_file_core(path.to_str().unwrap()).unwrap();
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn read_file_core_not_found() {
+        let result = read_file_core("/nonexistent/path/to/file.txt");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("File not found"));
+    }
+
+    #[test]
+    fn read_file_core_truncates_large_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        let content = "x".repeat(MAX_FILE_OUTPUT + 1000);
+        std::fs::write(&path, &content).unwrap();
+        let result = read_file_core(path.to_str().unwrap()).unwrap();
+        assert!(result.contains("[...truncated at"));
+        assert!(result.len() < content.len());
+    }
+
+    #[test]
+    fn read_file_core_exact_limit_not_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exact.txt");
+        let content = "x".repeat(MAX_FILE_OUTPUT);
+        std::fs::write(&path, &content).unwrap();
+        let result = read_file_core(path.to_str().unwrap()).unwrap();
+        assert_eq!(result, content);
+    }
+
+    // --- truncate_start / truncate_end tests ---
+
+    #[test]
+    fn truncate_start_short_string_unchanged() {
+        assert_eq!(truncate_start("abc".to_string(), 100), "abc");
+    }
+
+    #[test]
+    fn truncate_start_long_string_keeps_beginning() {
+        let result = truncate_start("abcdef".to_string(), 3);
+        assert!(result.starts_with("abc"));
+        assert!(result.contains("[...truncated at 3 chars...]"));
+    }
+
+    #[test]
+    fn truncate_end_short_string_unchanged() {
+        assert_eq!(truncate_end("abc", 100), "abc");
+    }
+
+    #[test]
+    fn truncate_end_long_string_keeps_end() {
+        let result = truncate_end("abcdef", 3);
+        assert!(result.contains("def"));
+        assert!(result.starts_with("[...truncated...]"));
+    }
+
+    // --- format_kilo_proxy_url tests ---
+
+    #[test]
+    fn kilo_proxy_url_zero_returns_empty() {
+        assert_eq!(format_kilo_proxy_url(0), "");
+    }
+
+    #[test]
+    fn kilo_proxy_url_nonzero_returns_url() {
+        assert_eq!(format_kilo_proxy_url(8080), "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn kilo_proxy_url_max_port() {
+        assert_eq!(format_kilo_proxy_url(65535), "http://127.0.0.1:65535");
+    }
+
+    // --- default functions ---
+
+    #[test]
+    fn default_node_type_is_agent() {
+        assert_eq!(default_node_type(), "agent");
+    }
+
+    #[test]
+    fn default_cols_is_80() {
+        assert_eq!(default_cols(), 80);
+    }
+
+    #[test]
+    fn default_rows_is_24() {
+        assert_eq!(default_rows(), 24);
+    }
+
+    #[test]
+    fn default_timeout_is_30s() {
+        assert_eq!(default_timeout(), 30_000);
+    }
+
+    #[test]
+    fn default_restore_state_is_running() {
+        assert_eq!(default_restore_state(), "running");
+    }
+
+    // --- validator cleanup edge cases ---
+
+    #[tokio::test]
+    async fn validator_cleanup_rejects_non_validator_session() {
+        let payload = ValidatorCleanupPayload {
+            session_id: "regular-session".to_string(),
+            pid: 1,
+            cwd: None,
+        };
+        let result = validator_cleanup_process_tree(payload).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("only accepts validator-dev-*"));
+    }
+
+    #[tokio::test]
+    async fn validator_cleanup_rejects_zero_pid() {
+        let payload = ValidatorCleanupPayload {
+            session_id: "validator-dev-test".to_string(),
+            pid: 0,
+            cwd: None,
+        };
+        let result = validator_cleanup_process_tree(payload).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid pid"));
+    }
+
+    #[tokio::test]
+    async fn validator_cleanup_with_cwd() {
+        let mut child = Command::new("/bin/bash")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .expect("failed to spawn sleep process");
+        let pid = child.id();
+        let dir = tempfile::tempdir().unwrap();
+
+        let payload = ValidatorCleanupPayload {
+            session_id: "validator-dev-cwd".to_string(),
+            pid,
+            cwd: Some(dir.path().to_str().unwrap().to_string()),
+        };
+        validator_cleanup_process_tree(payload).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let status = child.try_wait().expect("try_wait failed");
+        assert!(status.is_some());
+    }
+
+    // --- CanvasLayoutPayload / SessionLayout serde ---
+
+    #[test]
+    fn session_layout_defaults() {
+        let json = r#"{"session_id":"s1","x":0,"y":0,"w":100,"h":100,"collapsed":false}"#;
+        let layout: SessionLayout = serde_json::from_str(json).unwrap();
+        assert_eq!(layout.node_type, "agent");
+        assert_eq!(layout.payload, "");
+    }
+
+    #[test]
+    fn session_layout_custom_type() {
+        let json = r#"{"session_id":"s1","x":0,"y":0,"w":100,"h":100,"collapsed":false,"node_type":"log","payload":"data"}"#;
+        let layout: SessionLayout = serde_json::from_str(json).unwrap();
+        assert_eq!(layout.node_type, "log");
+        assert_eq!(layout.payload, "data");
+    }
+
+    // --- TerminalExecPayload serde ---
+
+    #[test]
+    fn terminal_exec_payload_defaults() {
+        let json = r#"{"session_id":"s1","command":"echo hi"}"#;
+        let p: TerminalExecPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.timeout_ms, 30_000);
+        assert!(p.cwd.is_none());
+        assert!(p.agent_id.is_none());
+    }
+
+    // --- LlmSettingsPayload serde ---
+
+    #[test]
+    fn llm_settings_roundtrip() {
+        let payload = LlmSettingsPayload {
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let back: LlmSettingsPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.provider, "anthropic");
+        assert_eq!(back.model, "claude-sonnet-4-20250514");
+    }
+
+    // --- AgentSpawnPayload serde ---
+
+    #[test]
+    fn agent_spawn_payload_minimal() {
+        let json = r#"{"role":"developer"}"#;
+        let p: AgentSpawnPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(p.role, "developer");
+        assert!(p.task_id.is_none());
+        assert!(p.parent_agent_id.is_none());
+        assert!(p.cwd.is_none());
+    }
+
+    // --- ValidationSubmitPayload serde ---
+
+    #[test]
+    fn validation_payload_defaults() {
+        let json = r#"{"developer_agent_id":"d1","validator_role":"test","pass":true}"#;
+        let p: ValidationSubmitPayload = serde_json::from_str(json).unwrap();
+        assert!(p.pass);
+        assert!(p.reasons.is_empty());
+    }
+
+    // --- AgentRestoreItem serde ---
+
+    #[test]
+    fn restore_item_defaults() {
+        let json = r#"{"agent_id":"a1","role":"dev"}"#;
+        let p: AgentRestoreItem = serde_json::from_str(json).unwrap();
+        assert_eq!(p.state, "running");
+        assert!(p.project_path.is_none());
+        assert!(p.worktree_path.is_none());
+    }
 }
 
 /// Non-developer agents call this to mark their task as Done.
@@ -1314,15 +1589,19 @@ pub async fn agent_gate_tool(
     registry.gate_tool(&agent_id, &tool_name)
 }
 
-/// Returns the base URL of the local Kilo AI CORS proxy started at launch.
-#[tauri::command]
-pub fn get_kilo_proxy_url(state: tauri::State<'_, crate::KiloProxyPort>) -> String {
-    let port = state.0.load(std::sync::atomic::Ordering::Relaxed);
+fn format_kilo_proxy_url(port: u16) -> String {
     if port == 0 {
         String::new()
     } else {
         format!("http://127.0.0.1:{}", port)
     }
+}
+
+/// Returns the base URL of the local Kilo AI CORS proxy started at launch.
+#[tauri::command]
+pub fn get_kilo_proxy_url(state: tauri::State<'_, crate::KiloProxyPort>) -> String {
+    let port = state.0.load(std::sync::atomic::Ordering::Relaxed);
+    format_kilo_proxy_url(port)
 }
 
 /// Perform a GET request from the Rust side, bypassing WebView CORS restrictions.

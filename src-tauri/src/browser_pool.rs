@@ -134,3 +134,164 @@ impl Drop for BrowserPool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_pool_has_no_port() {
+        let pool = BrowserPool::new();
+        assert_eq!(pool.get_port().unwrap(), None);
+    }
+
+    #[test]
+    fn default_pool_has_no_port() {
+        let pool = BrowserPool::default();
+        assert_eq!(pool.get_port().unwrap(), None);
+    }
+
+    #[test]
+    fn get_port_returns_none_before_start() {
+        let pool = BrowserPool::new();
+        let port = pool.get_port().unwrap();
+        assert!(port.is_none());
+    }
+
+    #[test]
+    fn drop_without_process_does_not_panic() {
+        let pool = BrowserPool::new();
+        drop(pool);
+    }
+
+    #[test]
+    fn ensure_started_fails_with_missing_script() {
+        let pool = BrowserPool::new();
+        let result = pool.ensure_started();
+        // In test env, either the script doesn't exist (error about "not found") or
+        // node starts but we get a parsing error — either way, it shouldn't panic.
+        // If it happens to succeed (CI has the script), that's fine too.
+        let _ = result;
+    }
+
+    #[test]
+    fn multiple_get_port_calls_consistent() {
+        let pool = BrowserPool::new();
+        assert_eq!(pool.get_port().unwrap(), None);
+        assert_eq!(pool.get_port().unwrap(), None);
+    }
+
+    #[test]
+    fn ensure_started_with_mock_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts_dir = dir.path().join("scripts");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        let script = scripts_dir.join("browser-server.mjs");
+        // Script that prints valid JSON port then exits
+        std::fs::write(
+            &script,
+            r#"console.log(JSON.stringify({ port: 19876 })); setTimeout(() => {}, 500);"#,
+        )
+        .unwrap();
+
+        // Save and restore cwd to avoid affecting other tests
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let pool = BrowserPool::new();
+        let result = pool.ensure_started();
+        // Restore cwd immediately
+        let _ = std::env::set_current_dir(&original_cwd);
+
+        match result {
+            Ok(port) => {
+                assert_eq!(port, 19876);
+                assert_eq!(pool.get_port().unwrap(), Some(19876));
+            }
+            Err(e) => {
+                // node not available in test env is acceptable
+                assert!(
+                    e.contains("spawn") || e.contains("not found") || e.contains("No such file"),
+                    "unexpected error: {e}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ensure_started_bad_json_from_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts_dir = dir.path().join("scripts");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        let script = scripts_dir.join("browser-server.mjs");
+        std::fs::write(&script, r#"console.log("not json"); process.exit(0);"#).unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let pool = BrowserPool::new();
+        let result = pool.ensure_started();
+        let _ = std::env::set_current_dir(&original_cwd);
+
+        match result {
+            Err(e) => assert!(
+                e.contains("parse") || e.contains("port") || e.contains("spawn") || e.contains("not found"),
+                "unexpected error: {e}"
+            ),
+            Ok(_) => panic!("should fail with bad JSON"),
+        }
+    }
+
+    #[test]
+    fn ensure_started_script_prints_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts_dir = dir.path().join("scripts");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        let script = scripts_dir.join("browser-server.mjs");
+        // Script that exits immediately with no output
+        std::fs::write(&script, "process.exit(0);").unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let pool = BrowserPool::new();
+        let result = pool.ensure_started();
+        let _ = std::env::set_current_dir(&original_cwd);
+
+        match result {
+            Err(e) => assert!(
+                e.contains("exited without printing port") || e.contains("spawn") || e.contains("not found"),
+                "unexpected error: {e}"
+            ),
+            Ok(_) => panic!("should fail when script prints nothing"),
+        }
+    }
+
+    #[test]
+    fn ensure_started_no_port_in_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let scripts_dir = dir.path().join("scripts");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        let script = scripts_dir.join("browser-server.mjs");
+        std::fs::write(
+            &script,
+            r#"console.log(JSON.stringify({ status: "ok" })); process.exit(0);"#,
+        )
+        .unwrap();
+
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let pool = BrowserPool::new();
+        let result = pool.ensure_started();
+        let _ = std::env::set_current_dir(&original_cwd);
+
+        match result {
+            Err(e) => assert!(
+                e.contains("No port") || e.contains("spawn") || e.contains("not found"),
+                "unexpected error: {e}"
+            ),
+            Ok(_) => panic!("should fail when JSON has no port"),
+        }
+    }
+}

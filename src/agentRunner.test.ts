@@ -1,4 +1,38 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+vi.mock("@ai-sdk/openai", () => ({
+  createOpenAI: vi.fn(() => {
+    const chatFn = vi.fn((modelId: string) => ({ modelId, provider: "openai" }));
+    const fn = vi.fn((modelId: string) => ({ modelId, provider: "openai" }));
+    fn.chat = chatFn;
+    return fn;
+  }),
+}));
+
+vi.mock("@ai-sdk/anthropic", () => ({
+  createAnthropic: vi.fn(() =>
+    vi.fn((modelId: string) => ({ modelId, provider: "anthropic" })),
+  ),
+}));
+
+vi.mock("@ai-sdk/google", () => ({
+  createGoogleGenerativeAI: vi.fn(() =>
+    vi.fn((modelId: string) => ({ modelId, provider: "google" })),
+  ),
+}));
+
+vi.mock("multi-llm-ts", () => ({
+  loadModels: vi.fn(),
+}));
+
+import { invoke } from "@tauri-apps/api/core";
+import { getAiProviderModel, loadKiloModels } from "./agentRunner";
+
+const mockInvoke = vi.mocked(invoke);
 
 /**
  * We import fallbackPricing indirectly by testing the module's exports.
@@ -127,5 +161,98 @@ describe("fallbackPricing", () => {
     const result = fallbackPricing("gemini-2.0-flash-lite");
     expect(result.input).toBe(0.075);
     expect(result.output).toBe(0.3);
+  });
+});
+
+describe("getAiProviderModel", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+  });
+
+  it("returns anthropic model for anthropic provider", async () => {
+    const result = await getAiProviderModel("anthropic", "sk-test", "claude-sonnet-4");
+    expect(result).toEqual(
+      expect.objectContaining({ modelId: "claude-sonnet-4", provider: "anthropic" }),
+    );
+  });
+
+  it("returns google model for google provider", async () => {
+    const result = await getAiProviderModel("google", "goog-key", "gemini-2.5-pro");
+    expect(result).toEqual(
+      expect.objectContaining({ modelId: "gemini-2.5-pro", provider: "google" }),
+    );
+  });
+
+  it("returns openai model for openai provider", async () => {
+    const result = await getAiProviderModel("openai", "sk-openai", "gpt-4o");
+    expect(result).toEqual(
+      expect.objectContaining({ modelId: "gpt-4o", provider: "openai" }),
+    );
+  });
+
+  it("uses kilo proxy URL for kilo provider", async () => {
+    mockInvoke.mockResolvedValueOnce("http://127.0.0.1:9999");
+
+    const result = await getAiProviderModel("kilo", "kilo-key", "gpt-4o");
+    expect(mockInvoke).toHaveBeenCalledWith("get_kilo_proxy_url");
+    expect(result).toBeDefined();
+  });
+
+  it("falls back to openai for unknown provider", async () => {
+    const result = await getAiProviderModel("custom-provider", "key", "model-x");
+    expect(result).toBeDefined();
+  });
+});
+
+describe("loadKiloModels", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+  });
+
+  it("parses model list from fetch_json response", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      data: [
+        {
+          id: "gpt-4o",
+          name: "GPT-4o",
+          supported_parameters: ["tools", "reasoning"],
+          architecture: { input_modalities: ["text", "image"] },
+          pricing: { prompt: "0.0000025", completion: "0.00001" },
+        },
+        {
+          id: "claude-sonnet-4",
+          name: "Claude Sonnet 4",
+          supported_parameters: ["tools"],
+          architecture: { input_modalities: ["text"] },
+        },
+      ],
+    });
+
+    const models = await loadKiloModels("kilo-key");
+
+    expect(mockInvoke).toHaveBeenCalledWith("fetch_json", {
+      url: "https://api.kilo.ai/api/gateway/models",
+      headers: { Authorization: "Bearer kilo-key" },
+    });
+    expect(models).toHaveLength(2);
+    expect(models[0].id).toBe("gpt-4o");
+    expect(models[0].name).toBe("GPT-4o");
+    expect(models[0].capabilities.tools).toBe(true);
+    expect(models[0].capabilities.vision).toBe(true);
+    expect(models[1].capabilities.vision).toBe(false);
+  });
+
+  it("returns empty array when fetch_json fails", async () => {
+    mockInvoke.mockRejectedValueOnce(new Error("Network error"));
+
+    const models = await loadKiloModels("bad-key");
+    expect(models).toEqual([]);
+  });
+
+  it("returns empty array when response has no data array", async () => {
+    mockInvoke.mockResolvedValueOnce({ data: null });
+
+    const models = await loadKiloModels("key");
+    expect(models).toEqual([]);
   });
 });
