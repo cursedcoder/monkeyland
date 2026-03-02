@@ -444,6 +444,27 @@ mod tests {
             .unwrap();
         let stdout = String::from_utf8_lossy(&list.stdout);
         assert!(stdout.contains("agent-1"), "worktree should appear in list");
+
+        // .gitignore should contain .worktrees/ (ensure_gitignore_entry ran)
+        let gitignore = dir.path().join(".gitignore");
+        assert!(gitignore.exists(), ".gitignore should exist after create");
+        let gi_content = fs::read_to_string(&gitignore).unwrap();
+        assert!(
+            gi_content.contains(".worktrees/"),
+            ".gitignore should contain .worktrees/ entry"
+        );
+
+        // Worktree should be on the task branch
+        let branch = Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+        let branch_str = String::from_utf8_lossy(&branch.stdout).trim().to_string();
+        assert_eq!(
+            branch_str, "task/bd-42",
+            "worktree should be checked out on the task branch"
+        );
     }
 
     #[test]
@@ -520,8 +541,24 @@ mod tests {
             "merge should be clean"
         );
 
-        // The file should now exist on the base branch
-        assert!(dir.path().join("hello.txt").exists());
+        // The file should now exist on the base branch with correct content
+        let content = fs::read_to_string(dir.path().join("hello.txt")).unwrap();
+        assert_eq!(content, "hello world", "merged file content should match");
+
+        // HEAD should be on main (not detached or stuck on task branch)
+        let head = Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let head_str = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(head_str, "main", "HEAD should be on main after merge");
+
+        // No stale merge state
+        assert!(
+            !dir.path().join(".git/MERGE_HEAD").exists(),
+            "no MERGE_HEAD should remain after clean merge"
+        );
     }
 
     #[test]
@@ -635,5 +672,21 @@ mod tests {
 
         assert!(!wt1.exists(), "first worktree should be removed");
         assert!(!wt2.exists(), "second worktree should be removed");
+
+        // git worktree list should only contain the main worktree
+        let list = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&list.stdout).to_string();
+        assert!(
+            !stdout.contains("agent-a"),
+            "agent-a should not appear in worktree list after remove_all"
+        );
+        assert!(
+            !stdout.contains("agent-b"),
+            "agent-b should not appear in worktree list after remove_all"
+        );
     }
 }

@@ -1659,6 +1659,17 @@ mod tests {
             0,
             "no agents should spawn on garbage input"
         );
+
+        // Registry should be completely clean (no partially-created agents)
+        let snap = registry.debug_snapshot().unwrap();
+        assert_eq!(
+            snap.agents.len(),
+            0,
+            "no agents should exist in registry after garbage input"
+        );
+
+        // Merge queue untouched
+        assert_eq!(merge_queue.depth(), 0, "merge queue should be empty");
     }
 
     // -----------------------------------------------------------------------
@@ -1685,6 +1696,23 @@ mod tests {
         let spawned = env.events_named("agent_spawned");
         assert_eq!(spawned.len(), 1, "only the task with an id should spawn");
         assert_eq!(spawned[0]["task_id"].as_str().unwrap(), "bd-ok");
+
+        // Registry: exactly one agent with the valid task
+        let snap = registry.debug_snapshot().unwrap();
+        assert_eq!(snap.agents.len(), 1, "exactly one agent in registry");
+        assert_eq!(snap.agents[0].task_id.as_deref(), Some("bd-ok"));
+
+        // claimed_task_ids: only bd-ok, not the invalid task
+        let claimed = registry.claimed_task_ids().unwrap();
+        assert_eq!(claimed, vec!["bd-ok".to_string()]);
+
+        // bd claim should only be called for bd-ok
+        let claim_calls = env.bd_calls_matching("--claim");
+        assert_eq!(claim_calls.len(), 1, "exactly one claim call");
+        assert!(
+            claim_calls[0].contains(&"bd-ok".to_string()),
+            "claim should be for bd-ok"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1896,6 +1924,19 @@ mod tests {
         // Tick 1: spawns agent, bd claim fails silently
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
         assert_eq!(env.events_named("agent_spawned").len(), 1);
+
+        // --- bd claim was attempted (even though it will fail) ---
+
+        let claim_calls = env.bd_calls_matching("--claim");
+        assert_eq!(
+            claim_calls.len(),
+            1,
+            "bd claim should have been attempted once"
+        );
+        assert!(
+            claim_calls[0].contains(&"bd-noclaim".to_string()),
+            "claim attempt should be for bd-noclaim"
+        );
 
         // --- Registry: agent exists with correct task_id ---
 
@@ -2285,6 +2326,14 @@ mod tests {
              This means stuck developers need 2 ticks to recover, adding ~10s latency."
         );
 
+        // Agent should be in Yielded state after force_yield
+        let snap_a = registry.debug_snapshot().unwrap();
+        let agent_a = snap_a.agents.iter().find(|a| a.id == agent_id).unwrap();
+        assert_eq!(
+            agent_a.state, "Yielded",
+            "agent should be in Yielded state after force_yield (tick A)"
+        );
+
         // Tick B: NOW the yield_queue should pick up the force-yielded agent
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
 
@@ -2293,6 +2342,14 @@ mod tests {
             val_after_tick_b.len(),
             1,
             "force-yielded agent should be processed on the next tick"
+        );
+
+        // Agent should now be in InReview state (validation started)
+        let snap_b = registry.debug_snapshot().unwrap();
+        let agent_b = snap_b.agents.iter().find(|a| a.id == agent_id).unwrap();
+        assert_eq!(
+            agent_b.state, "InReview",
+            "agent should be in InReview state after yield_queue processes it (tick B)"
         );
     }
 
@@ -2334,7 +2391,24 @@ mod tests {
         registry.validation_submit(&agent_id, "scope", true, vec![]).unwrap();
 
         // Agent should now be back in Running state after fail
-        // The state_entered_at should be freshly set (not 4 minutes ago)
+        let snap_before = registry.debug_snapshot().unwrap();
+        let agent_before = snap_before.agents.iter().find(|a| a.id == agent_id).unwrap();
+        assert_eq!(
+            agent_before.state, "Running",
+            "agent should be back in Running after validation failure"
+        );
+
+        // Validation state should be cleaned up
+        let pending: Vec<_> = snap_before
+            .pending_validations
+            .iter()
+            .filter(|v| v.developer_agent_id == agent_id)
+            .collect();
+        assert_eq!(
+            pending.len(),
+            0,
+            "validation state should be cleaned up after failure"
+        );
 
         env.set_ready_tasks("[]");
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
@@ -2346,6 +2420,14 @@ mod tests {
             0,
             "BUG: stuck-running safety net fired immediately after validation fail. \
              state_entered_at was not reset when transitioning back to Running."
+        );
+
+        // Agent should still be Running (safety net didn't force-yield it)
+        let snap_after = registry.debug_snapshot().unwrap();
+        let agent_after = snap_after.agents.iter().find(|a| a.id == agent_id).unwrap();
+        assert_eq!(
+            agent_after.state, "Running",
+            "agent should remain Running (safety net should not have fired)"
         );
     }
 
@@ -2383,6 +2465,26 @@ mod tests {
 
         assert!(final_result.is_some(), "3 unique submits should complete validation");
         assert!(final_result.unwrap().all_passed, "all should pass (dup was ignored)");
+
+        // Agent should now be in Done state
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(
+            agent.state, "Done",
+            "agent should be Done after all validators passed"
+        );
+
+        // Validation state should be cleaned up
+        let pending: Vec<_> = snap
+            .pending_validations
+            .iter()
+            .filter(|v| v.developer_agent_id == id)
+            .collect();
+        assert_eq!(
+            pending.len(),
+            0,
+            "pending_validations should be empty after completion"
+        );
     }
 
     // -----------------------------------------------------------------------
