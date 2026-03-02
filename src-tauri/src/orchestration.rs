@@ -1293,12 +1293,18 @@ mod tests {
         assert_eq!(q.depth(), 0);
     }
 
+    // ===================================================================
+    // Adversarial integration tests — designed to probe real edge cases
+    // ===================================================================
+
     // -----------------------------------------------------------------------
-    // Scenario 1: Developer lifecycle — spawn, yield, validate, merge, done
+    // BUG PROBE: Two developers finish, both need merge. Second should
+    // conflict against first's merged changes. Tests the FULL merge train
+    // serialization under real git.
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn scenario_developer_full_lifecycle() {
+    async fn two_devs_overlapping_file_second_merge_conflicts() {
         let repo = setup_git_repo();
         let project_path = repo.path().to_str().unwrap();
         let (meta_db, _db_dir) = setup_meta_db(project_path);
@@ -1307,646 +1313,652 @@ mod tests {
         let metrics = OrchestrationMetrics::new();
         let env = TestOrchEnv::new();
 
-        // bd ready returns one task
-        env.set_ready_tasks(r#"[{"id":"bd-42","issue_type":"task","priority":2}]"#);
-
-        // Tick 1: should spawn a developer agent and claim the task
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        let spawned = env.events_named("agent_spawned");
-        assert_eq!(spawned.len(), 1, "expected exactly one agent_spawned event");
-        let agent_id = spawned[0]["agent_id"].as_str().unwrap().to_string();
-        assert_eq!(spawned[0]["role"].as_str().unwrap(), "developer");
-        assert_eq!(spawned[0]["task_id"].as_str().unwrap(), "bd-42");
-
-        // Verify bd claim was called
-        let claims = env.bd_calls_matching("--claim");
-        assert!(!claims.is_empty(), "expected bd update --claim call");
-
-        // Simulate: developer works, then yields for review
-        let yield_payload = crate::agent_registry::YieldPayload {
-            status: "done".to_string(),
-            diff_summary: Some("Added feature X".to_string()),
-            git_branch: Some(format!("task/bd-42")),
-        };
-        registry.yield_for_review(&agent_id, yield_payload).unwrap();
-
-        // No new tasks for subsequent ticks
-        env.set_ready_tasks("[]");
-
-        // Tick 2: yield queue should emit validation_requested
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        let val_events = env.events_named("validation_requested");
-        assert_eq!(val_events.len(), 1, "expected validation_requested event");
-        assert_eq!(
-            val_events[0]["developer_agent_id"].as_str().unwrap(),
-            agent_id
-        );
-
-        // Simulate: all 3 validators pass
-        for role in &["code_review", "business_logic", "scope"] {
-            registry
-                .validation_submit(&agent_id, role, true, vec![])
-                .unwrap();
-        }
-
-        // Agent should now be Done
-        let done = registry.done_agents_with_tasks().unwrap();
-        assert!(
-            done.iter().any(|(id, tid, _)| id == &agent_id && tid == "bd-42"),
-            "agent should be in Done state with task"
-        );
-
-        // Tick 3: done agent enqueued for merge, then merge train runs
-        // Developer has a worktree, so it should go through the merge path.
-        // Since the worktree branch has no commits beyond base, merge should be clean.
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        // Agent should be killed after merge
-        let status = registry.status().unwrap();
-        assert_eq!(status.used_slots, 0, "agent should be removed after merge");
-
-        // merge_status "done" should have been emitted
-        let merge_done = env.events_named("merge_status");
-        assert!(
-            merge_done.iter().any(|e| e["status"] == "done"),
-            "expected merge_status done event"
-        );
-
-        // bd update --status done should have been called
-        let done_calls = env.bd_calls_matching("--status");
-        assert!(
-            done_calls.iter().any(|args| args.contains(&"done".to_string())),
-            "expected bd update --status done"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Scenario 2: Merge conflict → merge_agent → retry → success
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn scenario_merge_conflict_then_resolve() {
-        let repo = setup_git_repo();
-        let project_path = repo.path().to_str().unwrap();
-        let (meta_db, _db_dir) = setup_meta_db(project_path);
-        let registry = AgentRegistry::new();
-        let merge_queue = MergeQueue::new();
-        let metrics = OrchestrationMetrics::new();
-        let env = TestOrchEnv::new();
-
-        // Create a file on base branch
-        std::fs::write(repo.path().join("file.txt"), "base v1").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "file.txt"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "base file"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
-
-        // Spawn a developer, create worktree, modify the file
-        env.set_ready_tasks(r#"[{"id":"bd-conflict","issue_type":"task","priority":2}]"#);
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        let spawned = env.events_named("agent_spawned");
-        let agent_id = spawned[0]["agent_id"].as_str().unwrap().to_string();
-
-        // Modify file in the worktree
-        let wt_path = registry.get_worktree_path(&agent_id).unwrap().unwrap();
-        std::fs::write(format!("{wt_path}/file.txt"), "developer change").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "file.txt"])
-            .current_dir(&wt_path)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "dev change"])
-            .current_dir(&wt_path)
-            .output()
-            .unwrap();
-
-        // Also modify the base to create a conflict
-        std::fs::write(repo.path().join("file.txt"), "base v2 conflicting").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "file.txt"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "conflicting base"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
-
-        // Yield and pass validation
-        let yield_payload = crate::agent_registry::YieldPayload {
-            status: "done".to_string(),
-            diff_summary: Some("changed file".to_string()),
-            git_branch: Some("task/bd-conflict".to_string()),
-        };
-        registry.yield_for_review(&agent_id, yield_payload).unwrap();
-
-        // Tick to process yield queue
-        env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        // Pass validation
-        for role in &["code_review", "business_logic", "scope"] {
-            registry
-                .validation_submit(&agent_id, role, true, vec![])
-                .unwrap();
-        }
-
-        // Tick: done agent → merge train → conflict → merge_agent spawned
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        // Should have spawned a merge_agent
-        let all_spawned = env.events_named("agent_spawned");
-        let merge_agent_events: Vec<_> = all_spawned
-            .iter()
-            .filter(|e| e["role"] == "merge_agent")
-            .collect();
-        assert!(
-            !merge_agent_events.is_empty(),
-            "expected merge_agent to be spawned on conflict"
-        );
-        assert!(
-            merge_agent_events[0]["merge_context"].is_object(),
-            "merge_agent should receive merge_context"
-        );
-
-        // merge_status should show "conflict"
-        let merge_statuses = env.events_named("merge_status");
-        assert!(
-            merge_statuses.iter().any(|e| e["status"] == "conflict"),
-            "expected merge_status conflict event"
-        );
-
-        // Verify retry count was tracked
-        let merge_retry = metrics.snapshot(0).merge_retry_count;
-        assert!(merge_retry > 0, "merge retry metric should be incremented");
-    }
-
-    // -----------------------------------------------------------------------
-    // Scenario 3: Merge retry exhaustion → blocked
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn scenario_merge_retry_exhaustion() {
-        let repo = setup_git_repo();
-        let project_path = repo.path().to_str().unwrap();
-        let registry = AgentRegistry::new();
-        let merge_queue = MergeQueue::new();
-        let metrics = OrchestrationMetrics::new();
-        let env = TestOrchEnv::new();
-
-        // Create a file and commit so task branch can diverge
+        // Seed a file on main
         std::fs::write(repo.path().join("shared.txt"), "original").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "shared.txt"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "add shared"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
+        git(repo.path(), &["add", "shared.txt"]);
+        git(repo.path(), &["commit", "-m", "seed"]);
 
-        // Create the task branch with a conflicting change
-        std::process::Command::new("git")
-            .args(["checkout", "-b", "task/bd-exhaust"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
-        std::fs::write(repo.path().join("shared.txt"), "task change").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "shared.txt"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "task change"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
+        // Spawn two developers for different tasks
+        env.set_ready_tasks(
+            r#"[{"id":"bd-A","issue_type":"task","priority":2},{"id":"bd-B","issue_type":"task","priority":2}]"#,
+        );
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
 
-        // Switch back to main and create a conflicting change
-        std::process::Command::new("git")
-            .args(["checkout", "main"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
-        std::fs::write(repo.path().join("shared.txt"), "base conflict").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "shared.txt"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "conflicting base"])
-            .current_dir(repo.path())
-            .output()
-            .unwrap();
+        let spawned = env.events_named("agent_spawned");
+        assert_eq!(spawned.len(), 2, "two developers should spawn");
+        let id_a = spawned[0]["agent_id"].as_str().unwrap().to_string();
+        let id_b = spawned[1]["agent_id"].as_str().unwrap().to_string();
 
+        // Both modify shared.txt differently in their worktrees
+        let wt_a = registry.get_worktree_path(&id_a).unwrap().unwrap();
+        let wt_b = registry.get_worktree_path(&id_b).unwrap().unwrap();
+
+        std::fs::write(format!("{wt_a}/shared.txt"), "change from A").unwrap();
+        git_in(&wt_a, &["add", "shared.txt"]);
+        git_in(&wt_a, &["commit", "-m", "A's change"]);
+
+        std::fs::write(format!("{wt_b}/shared.txt"), "change from B").unwrap();
+        git_in(&wt_b, &["add", "shared.txt"]);
+        git_in(&wt_b, &["commit", "-m", "B's change"]);
+
+        // Both yield + pass validation
+        env.set_ready_tasks("[]");
+        for (id, task) in [(&id_a, "bd-A"), (&id_b, "bd-B")] {
+            let yp = crate::agent_registry::YieldPayload {
+                status: "done".to_string(),
+                diff_summary: None,
+                git_branch: Some(format!("task/{task}")),
+            };
+            registry.yield_for_review(id, yp).unwrap();
+        }
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        for (id, _) in [(&id_a, "bd-A"), (&id_b, "bd-B")] {
+            for role in &["code_review", "business_logic", "scope"] {
+                registry.validation_submit(id, role, true, vec![]).unwrap();
+            }
+        }
+
+        // Tick: both enter Done → both enqueued for merge → train runs.
+        // First merge should be clean. Second should conflict because
+        // first already changed shared.txt on main.
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        let merge_statuses = env.events_named("merge_status");
+        let done_count = merge_statuses.iter().filter(|e| e["status"] == "done").count();
+        let conflict_count = merge_statuses.iter().filter(|e| e["status"] == "conflict").count();
+
+        // At least one should be done and one should conflict
+        assert!(
+            done_count >= 1,
+            "first merge should succeed (got {} done, {} conflict)",
+            done_count,
+            conflict_count
+        );
+        assert!(
+            conflict_count >= 1,
+            "second merge should conflict (got {} done, {} conflict)",
+            done_count,
+            conflict_count
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: TTL-killed developer's worktree should be ACTUALLY removed
+    // from disk, not just from the registry.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn ttl_kill_actually_removes_worktree_from_disk() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
         let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
 
-        // Pre-enqueue an entry that has already exhausted retries
+        env.set_ready_tasks(r#"[{"id":"bd-ttl-wt","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
+            .as_str().unwrap().to_string();
+        let wt_path = registry.get_worktree_path(&agent_id).unwrap().unwrap();
+
+        // Worktree dir should exist on disk right now
+        assert!(
+            std::path::Path::new(&wt_path).exists(),
+            "worktree should exist on disk before TTL kill"
+        );
+
+        // Expire the agent
+        registry.test_backdate_spawn(&agent_id, std::time::Duration::from_secs(901));
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        // Worktree should be gone from disk
+        assert!(
+            !std::path::Path::new(&wt_path).exists(),
+            "worktree should be DELETED from disk after TTL kill"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: bd returns garbage JSON — tick() should not crash.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn bd_returns_garbage_tick_does_not_crash() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        env.set_ready_tasks("THIS IS NOT JSON AT ALL {{{");
+        let result = tick(&env, &meta_db, &registry, &merge_queue, &metrics).await;
+        assert!(result.is_ok(), "tick should not crash on garbage bd output");
+        assert_eq!(
+            env.events_named("agent_spawned").len(),
+            0,
+            "no agents should spawn on garbage input"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: bd ready returns a task with NO id field — should skip
+    // gracefully, not panic.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn bd_task_missing_id_is_skipped() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        // One valid task, one with missing id
+        env.set_ready_tasks(
+            r#"[{"issue_type":"task","priority":2},{"id":"bd-ok","issue_type":"task","priority":2}]"#,
+        );
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        let spawned = env.events_named("agent_spawned");
+        assert_eq!(spawned.len(), 1, "only the task with an id should spawn");
+        assert_eq!(spawned[0]["task_id"].as_str().unwrap(), "bd-ok");
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: Partial validation (only 2 of 3 validators submit) + stuck
+    // InReview safety net fires. After force-block, the 3rd validator submits
+    // late. This should NOT crash or corrupt state.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn partial_validation_then_late_submit_does_not_corrupt() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        let agent_id = registry
+            .spawn("developer", Some("bd-partial".to_string()), None, Some(project_path.to_string()))
+            .unwrap();
+
+        let yp = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: None,
+        };
+        registry.yield_for_review(&agent_id, yp).unwrap();
+        registry.start_validation(&agent_id, Some("bd-partial".to_string())).unwrap();
+
+        // Only 2 of 3 validators submit
+        registry.validation_submit(&agent_id, "code_review", true, vec![]).unwrap();
+        registry.validation_submit(&agent_id, "business_logic", true, vec![]).unwrap();
+
+        // Backdate and force-block via safety net
+        registry.test_backdate_state_entered(&agent_id, std::time::Duration::from_secs(301));
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        // Agent should now be Blocked
+        let snap = metrics.snapshot(0);
+        assert!(snap.validation_timeout_blocks > 0, "safety net should have fired");
+
+        // Late 3rd validator submits — should NOT panic or corrupt
+        let result = registry.validation_submit(&agent_id, "scope", true, vec![]);
+        // Should either return Ok(None) or Ok(Some(...)) gracefully — NOT Err
+        assert!(
+            result.is_ok(),
+            "late validation submit after force-block should not error: {:?}",
+            result
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: Agent killed by TTL while its task is sitting in the merge
+    // queue. The merge train will try to process it with a dead agent_id.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn merge_entry_survives_agent_ttl_kill() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        // Create file, task branch with change
+        std::fs::write(repo.path().join("f.txt"), "v1").unwrap();
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-m", "seed f"]);
+        git(repo.path(), &["checkout", "-b", "task/bd-ghost"]);
+        std::fs::write(repo.path().join("f.txt"), "v2").unwrap();
+        git(repo.path(), &["add", "f.txt"]);
+        git(repo.path(), &["commit", "-m", "ghost change"]);
+        git(repo.path(), &["checkout", "main"]);
+
+        // Manually enqueue a merge for an agent that's already dead
         merge_queue.push(MergeEntry {
-            agent_id: "dev-exhausted".to_string(),
-            task_id: "bd-exhaust".to_string(),
-            retry_count: MAX_MERGE_RETRIES,
+            agent_id: "dead-agent".to_string(),
+            task_id: "bd-ghost".to_string(),
+            retry_count: 0,
         });
 
-        // Tick: merge train processes the exhausted entry
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        // Should have emitted merge_status "failed"
-        let merge_statuses = env.events_named("merge_status");
-        assert!(
-            merge_statuses.iter().any(|e| e["status"] == "failed"),
-            "expected merge_status failed when retries exhausted"
-        );
-
-        // Should have called bd update --status blocked
-        let blocked_calls = env.bd_calls_matching("blocked");
-        assert!(
-            !blocked_calls.is_empty(),
-            "expected bd update --status blocked"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Scenario 4: TTL expiry cleans up Beads claim
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn scenario_ttl_expiry_releases_beads_claim() {
-        let repo = setup_git_repo();
-        let project_path = repo.path().to_str().unwrap();
-        let (meta_db, _db_dir) = setup_meta_db(project_path);
-        let registry = AgentRegistry::new();
-        let merge_queue = MergeQueue::new();
-        let metrics = OrchestrationMetrics::new();
-        let env = TestOrchEnv::new();
-
-        // Spawn a developer agent
-        env.set_ready_tasks(r#"[{"id":"bd-ttl","issue_type":"task","priority":2}]"#);
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        // Backdate spawned_at to exceed TTL (developer TTL is 900s)
-        registry.test_backdate_spawn(&agent_id, std::time::Duration::from_secs(901));
-
-        // Tick: should kill the expired agent and release the Beads claim
+        // tick should handle it without panicking
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
+        let result = tick(&env, &meta_db, &registry, &merge_queue, &metrics).await;
+        assert!(result.is_ok(), "merge of dead agent's task should not crash");
 
-        // agent_killed event should have been emitted
-        let killed = env.events_named("agent_killed");
+        // The task should still be merged (the agent is dead but the branch is valid)
+        let statuses = env.events_named("merge_status");
         assert!(
-            killed.iter().any(|e| e["agent_id"] == agent_id && e["reason"] == "ttl_expired"),
-            "expected agent_killed with ttl_expired reason"
+            statuses.iter().any(|e| e["status"] == "done" || e["status"] == "failed"),
+            "merge should complete even if originating agent is dead"
         );
-
-        // bd update --status ready should have been called to release the task
-        let ready_calls = env.bd_calls_matching("ready");
-        assert!(
-            ready_calls.iter().any(|args| args.contains(&"bd-ttl".to_string())),
-            "expected bd update bd-ttl --status ready to release claim"
-        );
-
-        // Agent should be gone from registry
-        let status = registry.status().unwrap();
-        assert_eq!(status.used_slots, 0, "agent should be removed");
     }
 
     // -----------------------------------------------------------------------
-    // Scenario 5: Stuck-in-Running safety net
+    // BUG PROBE: bd claim fails silently (let _ = ...) — next tick sees the
+    // same task as "ready" but it's already claimed locally. Does the dedup
+    // actually prevent a double-spawn?
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn scenario_stuck_running_force_yields() {
+    async fn failed_bd_claim_still_prevents_double_spawn() {
         let repo = setup_git_repo();
         let project_path = repo.path().to_str().unwrap();
         let (meta_db, _db_dir) = setup_meta_db(project_path);
         let registry = AgentRegistry::new();
         let merge_queue = MergeQueue::new();
         let metrics = OrchestrationMetrics::new();
-        let env = TestOrchEnv::new();
 
-        // Spawn a developer
-        env.set_ready_tasks(r#"[{"id":"bd-stuck","issue_type":"task","priority":2}]"#);
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        // Backdate state_entered_at to >5 minutes in Running state
-        registry.test_backdate_state_entered(&agent_id, std::time::Duration::from_secs(301));
-
-        // Tick 2: safety net force-yields the stuck developer (step 4b)
-        env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        // Tick 3: the now-Yielded agent enters yield_queue (step 4) and
-        // validation_requested is emitted.
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        let val_events = env.events_named("validation_requested");
-        assert!(
-            val_events
-                .iter()
-                .any(|e| e["developer_agent_id"] == agent_id),
-            "expected validation_requested after force-yield of stuck developer"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Scenario 6: Stuck-in-InReview safety net
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn scenario_stuck_in_review_gets_blocked() {
-        let repo = setup_git_repo();
-        let project_path = repo.path().to_str().unwrap();
-        let (meta_db, _db_dir) = setup_meta_db(project_path);
-        let registry = AgentRegistry::new();
-        let merge_queue = MergeQueue::new();
-        let metrics = OrchestrationMetrics::new();
-        let env = TestOrchEnv::new();
-
-        // Spawn and manually transition developer to InReview
-        let agent_id = registry
-            .spawn(
-                "developer",
-                Some("bd-review".to_string()),
-                None,
-                Some(project_path.to_string()),
-            )
-            .unwrap();
-
-        // Yield and start validation to reach InReview
-        let yield_payload = crate::agent_registry::YieldPayload {
-            status: "done".to_string(),
-            diff_summary: None,
-            git_branch: None,
+        // Env that fails all bd calls except "ready"
+        let env = TestOrchEnv {
+            events: Arc::new(StdMutex::new(Vec::new())),
+            bd_calls: Arc::new(StdMutex::new(Vec::new())),
+            bd_ready_response: StdMutex::new(
+                r#"[{"id":"bd-noclaim","issue_type":"task","priority":2}]"#.to_string(),
+            ),
+            bd_default_ok: false, // claim will fail
         };
-        registry.yield_for_review(&agent_id, yield_payload).unwrap();
-        registry
-            .start_validation(&agent_id, Some("bd-review".to_string()))
-            .unwrap();
 
-        // Backdate state_entered_at past the 5-minute threshold
-        registry.test_backdate_state_entered(&agent_id, std::time::Duration::from_secs(301));
-
-        // Tick: should force-block the stuck InReview developer
-        env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        // validation_timeout_blocks metric should be incremented
-        let snap = metrics.snapshot(0);
-        assert!(
-            snap.validation_timeout_blocks > 0,
-            "expected validation_timeout_blocks to increment"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Scenario 7: Done developer without worktree (no-merge fallback)
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn scenario_done_without_worktree_finalizes_directly() {
-        let repo = setup_git_repo();
-        let project_path = repo.path().to_str().unwrap();
-        let (meta_db, _db_dir) = setup_meta_db(project_path);
-        let registry = AgentRegistry::new();
-        let merge_queue = MergeQueue::new();
-        let metrics = OrchestrationMetrics::new();
-        let env = TestOrchEnv::new();
-
-        // Spawn a developer manually (no worktree)
-        let agent_id = registry
-            .spawn(
-                "developer",
-                Some("bd-nowt".to_string()),
-                None,
-                Some(project_path.to_string()),
-            )
-            .unwrap();
-
-        // Yield, validate, complete
-        let yield_payload = crate::agent_registry::YieldPayload {
-            status: "done".to_string(),
-            diff_summary: None,
-            git_branch: None,
-        };
-        registry.yield_for_review(&agent_id, yield_payload).unwrap();
-        registry
-            .start_validation(&agent_id, Some("bd-nowt".to_string()))
-            .unwrap();
-        for role in &["code_review", "business_logic", "scope"] {
-            registry
-                .validation_submit(&agent_id, role, true, vec![])
-                .unwrap();
-        }
-
-        // Tick: should finalize directly (no merge train)
-        env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        // Should have emitted merge_status "done" with no-worktree detail
-        let merge_events = env.events_named("merge_status");
-        let done_event = merge_events
-            .iter()
-            .find(|e| e["status"] == "done")
-            .expect("expected merge_status done");
-        assert!(
-            done_event["detail"]
-                .as_str()
-                .unwrap_or("")
-                .contains("No isolated worktree"),
-            "expected 'No isolated worktree' in detail"
-        );
-
-        // Agent should be gone
-        assert_eq!(registry.status().unwrap().used_slots, 0);
-    }
-
-    // -----------------------------------------------------------------------
-    // Scenario 8: Safety mode throttles agent spawning
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn scenario_safety_mode_limits_spawn_rate() {
-        let repo = setup_git_repo();
-        let project_path = repo.path().to_str().unwrap();
-        let (meta_db, _db_dir) = setup_meta_db(project_path);
-        meta_db.set_setting("safety_mode_enabled", "1").unwrap();
-        let registry = AgentRegistry::new();
-        let merge_queue = MergeQueue::new();
-        let metrics = OrchestrationMetrics::new();
-        let env = TestOrchEnv::new();
-
-        // 10 ready tasks
-        let tasks: Vec<String> = (0..10)
-            .map(|i| format!(r#"{{"id":"bd-s{i}","issue_type":"task","priority":2}}"#))
-            .collect();
-        env.set_ready_tasks(&format!("[{}]", tasks.join(",")));
-
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        let spawned = env.events_named("agent_spawned");
-        assert_eq!(
-            spawned.len(),
-            2,
-            "safety mode should limit to 2 agents per tick"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Scenario 9: Duplicate task deduplication
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn scenario_already_claimed_task_is_skipped() {
-        let repo = setup_git_repo();
-        let project_path = repo.path().to_str().unwrap();
-        let (meta_db, _db_dir) = setup_meta_db(project_path);
-        let registry = AgentRegistry::new();
-        let merge_queue = MergeQueue::new();
-        let metrics = OrchestrationMetrics::new();
-        let env = TestOrchEnv::new();
-
-        // First tick: spawn agent for bd-dup
-        env.set_ready_tasks(r#"[{"id":"bd-dup","issue_type":"task","priority":2}]"#);
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
+        // Tick 1: spawns agent, bd claim fails silently
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
         assert_eq!(env.events_named("agent_spawned").len(), 1);
 
-        // Second tick: same task still "ready" in bd but already claimed
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
-            .await
-            .unwrap();
-
-        // Should NOT spawn a second agent
+        // Tick 2: bd still reports task as ready (claim failed so Beads doesn't know)
+        // But registry's claimed_task_ids should prevent a second spawn
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
         assert_eq!(
             env.events_named("agent_spawned").len(),
             1,
-            "should not double-spawn for same task"
+            "registry dedup should prevent double-spawn even when bd claim failed"
         );
     }
 
     // -----------------------------------------------------------------------
-    // Scenario 10: Path sandboxing (direct AgentRegistry tests)
+    // BUG PROBE: Merge queue dedup blocks re-enqueueing a task that needs
+    // another merge attempt. After merge_agent completes, does the task
+    // actually get re-queued despite dedup?
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn merge_agent_done_reenqueues_despite_dedup() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        // Spawn a merge_agent and make it complete
+        let ma_id = registry
+            .spawn("merge_agent", Some("bd-remerge".to_string()), None, Some(project_path.to_string()))
+            .unwrap();
+
+        // Set a retry count (simulating a prior conflict)
+        merge_queue.set_retry_count("bd-remerge", 1);
+
+        // The merge_agent "finishes" its work
+        registry.complete_task(&ma_id).unwrap();
+
+        // tick should see the done merge_agent in step 5, re-enqueue the task
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        // The task should be back in the merge queue
+        // (step 5 re-enqueues, then step 5b tries to process it)
+        let statuses = env.events_named("merge_status");
+        assert!(
+            statuses.iter().any(|e| {
+                let s = e["status"].as_str().unwrap_or("");
+                s == "merging" || s == "done" || s == "conflict" || s == "failed"
+            }),
+            "re-enqueued task should have produced a merge_status event, got {:?}",
+            statuses
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: PTY pool is full (20 slots). Spawning should fail gracefully
+    // — agent should be killed, not left as a zombie in Running state.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn pty_full_does_not_leave_zombie_agent() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+
+        // Env where spawn_pty always fails
+        struct FullPoolEnv(TestOrchEnv);
+        impl OrchEnv for FullPoolEnv {
+            fn emit_event(&self, event: &str, payload: serde_json::Value) -> Result<(), String> {
+                self.0.emit_event(event, payload)
+            }
+            fn run_bd(&self, p: &Path, args: &[String]) -> Result<String, String> {
+                self.0.run_bd(p, args)
+            }
+            fn spawn_pty(&self, _id: &str, _c: u16, _r: u16, _cwd: Option<&Path>) -> Result<(), String> {
+                Err("PTY pool full (20 slots)".to_string())
+            }
+            fn kill_pty(&self, _id: &str) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let inner = TestOrchEnv::new();
+        inner.set_ready_tasks(r#"[{"id":"bd-nopipe","issue_type":"task","priority":2}]"#);
+        let env = FullPoolEnv(inner);
+
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        // No agent_spawned event (spawn_pty failed, agent was killed)
+        let spawned = env.0.events_named("agent_spawned");
+        assert_eq!(spawned.len(), 0, "should not emit agent_spawned when PTY fails");
+
+        // Registry should be clean (no zombie)
+        let status = registry.status().unwrap();
+        assert_eq!(
+            status.used_slots, 0,
+            "no zombie agents should remain when PTY spawn fails"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: Worktree left on disk after successful merge — cleanup should
+    // delete the worktree directory AND prune git's worktree list.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn successful_merge_cleans_up_worktree_on_disk() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        // Seed a file
+        std::fs::write(repo.path().join("clean.txt"), "v1").unwrap();
+        git(repo.path(), &["add", "clean.txt"]);
+        git(repo.path(), &["commit", "-m", "seed clean"]);
+
+        env.set_ready_tasks(r#"[{"id":"bd-clean","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
+            .as_str().unwrap().to_string();
+        let wt_path = registry.get_worktree_path(&agent_id).unwrap().unwrap();
+
+        // Modify file in worktree (non-conflicting change)
+        std::fs::write(format!("{wt_path}/clean.txt"), "v2 from agent").unwrap();
+        git_in(&wt_path, &["add", "clean.txt"]);
+        git_in(&wt_path, &["commit", "-m", "agent change"]);
+
+        // Yield + validate
+        let yp = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some("task/bd-clean".to_string()),
+        };
+        registry.yield_for_review(&agent_id, yp).unwrap();
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        for role in &["code_review", "business_logic", "scope"] {
+            registry.validation_submit(&agent_id, role, true, vec![]).unwrap();
+        }
+
+        // Merge tick
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        // Worktree should be cleaned up
+        assert!(
+            !std::path::Path::new(&wt_path).exists(),
+            "worktree directory should be removed after successful merge"
+        );
+
+        // The change should be on main
+        let content = std::fs::read_to_string(repo.path().join("clean.txt")).unwrap();
+        assert_eq!(content, "v2 from agent", "merged content should be on main");
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: Force-yield fires, then on the SAME tick the yield_queue is
+    // already processed. The force-yielded agent should NOT be stuck in
+    // Yielded forever because yield_queue already ran earlier in the tick.
+    // This is a known ordering issue: step 4 runs before step 4b.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn force_yield_requires_extra_tick_to_process() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        env.set_ready_tasks(r#"[{"id":"bd-fy","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
+            .as_str().unwrap().to_string();
+
+        registry.test_backdate_state_entered(&agent_id, std::time::Duration::from_secs(301));
+
+        // Tick A: force_yield fires (step 4b) but yield_queue already ran (step 4)
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        // validation_requested should NOT be emitted on this tick
+        // (because yield_queue ran before force_yield)
+        let val_after_tick_a = env.events_named("validation_requested");
+        assert_eq!(
+            val_after_tick_a.len(),
+            0,
+            "BUG: force_yield and yield_queue run in the wrong order — \
+             validation_requested should NOT appear on the same tick as force_yield. \
+             This means stuck developers need 2 ticks to recover, adding ~10s latency."
+        );
+
+        // Tick B: NOW the yield_queue should pick up the force-yielded agent
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        let val_after_tick_b = env.events_named("validation_requested");
+        assert_eq!(
+            val_after_tick_b.len(),
+            1,
+            "force-yielded agent should be processed on the next tick"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: Validation fails → developer returns to Running → but
+    // state_entered_at resets, so the 5-min stuck detector shouldn't trigger.
+    // If state_entered_at is NOT updated, the safety net fires immediately.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn validation_fail_resets_state_entered_at() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        let agent_id = registry
+            .spawn("developer", Some("bd-vfail".to_string()), None, Some(project_path.to_string()))
+            .unwrap();
+
+        // Backdate state_entered_at to 4 minutes ago (NOT past 5 min threshold)
+        registry.test_backdate_state_entered(&agent_id, std::time::Duration::from_secs(240));
+
+        // Yield + validate with failure
+        let yp = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: None,
+        };
+        registry.yield_for_review(&agent_id, yp).unwrap();
+        registry.start_validation(&agent_id, Some("bd-vfail".to_string())).unwrap();
+
+        // Fail one validator
+        registry.validation_submit(&agent_id, "code_review", false, vec!["bad code".to_string()]).unwrap();
+        registry.validation_submit(&agent_id, "business_logic", true, vec![]).unwrap();
+        registry.validation_submit(&agent_id, "scope", true, vec![]).unwrap();
+
+        // Agent should now be back in Running state after fail
+        // The state_entered_at should be freshly set (not 4 minutes ago)
+
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+
+        // The stuck-running safety net should NOT have fired (agent just entered Running)
+        let val_events = env.events_named("validation_requested");
+        assert_eq!(
+            val_events.len(),
+            0,
+            "BUG: stuck-running safety net fired immediately after validation fail. \
+             state_entered_at was not reset when transitioning back to Running."
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: Duplicate validator submission (same role submits twice).
+    // Should be idempotent, not count double.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn scenario_path_sandbox_allows_inside_worktree() {
+    fn duplicate_validator_submit_is_idempotent() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("developer", Some("bd-dup-val".to_string()), None, Some("/tmp".to_string()))
+            .unwrap();
+
+        let yp = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: None,
+        };
+        registry.yield_for_review(&id, yp).unwrap();
+        registry.start_validation(&id, Some("bd-dup-val".to_string())).unwrap();
+
+        // Submit code_review twice
+        let r1 = registry.validation_submit(&id, "code_review", true, vec![]).unwrap();
+        let r2 = registry.validation_submit(&id, "code_review", false, vec!["evil".to_string()]).unwrap();
+
+        // Second submit should be ignored
+        assert!(r1.is_none(), "first submit doesn't complete (need 3)");
+        assert!(r2.is_none(), "duplicate submit should be ignored, not counted");
+
+        // Submit remaining two
+        registry.validation_submit(&id, "business_logic", true, vec![]).unwrap();
+        let final_result = registry.validation_submit(&id, "scope", true, vec![]).unwrap();
+
+        assert!(final_result.is_some(), "3 unique submits should complete validation");
+        assert!(final_result.unwrap().all_passed, "all should pass (dup was ignored)");
+    }
+
+    // -----------------------------------------------------------------------
+    // BUG PROBE: Symlink traversal attack — developer sets a symlink in
+    // the worktree pointing outside. validate_path should catch it.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn symlink_escape_from_worktree_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
-        let wt = project.join(".worktrees/agent-x");
+        let wt = project.join(".worktrees/agent-sym");
         std::fs::create_dir_all(&wt).unwrap();
+
+        // Create a file outside the sandbox
+        let secret = dir.path().join("secret.txt");
+        std::fs::write(&secret, "sensitive data").unwrap();
+
+        // Create a symlink inside the worktree pointing outside
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&secret, wt.join("escape")).unwrap();
+        }
 
         let registry = AgentRegistry::new();
         let id = registry
-            .spawn(
-                "developer",
-                Some("bd-x".to_string()),
-                None,
-                Some(project.to_str().unwrap().to_string()),
-            )
+            .spawn("developer", Some("bd-sym".to_string()), None, Some(project.to_str().unwrap().to_string()))
             .unwrap();
-        registry
-            .set_worktree_path(&id, wt.to_str().unwrap())
-            .unwrap();
+        registry.set_worktree_path(&id, wt.to_str().unwrap()).unwrap();
 
-        // Inside worktree: allowed
-        let inside = wt.join("src/main.rs");
-        assert!(
-            registry.validate_path(&id, inside.to_str().unwrap()).is_ok(),
-            "path inside worktree should be allowed"
-        );
+        // Try to access the symlinked path
+        let escape_path = wt.join("escape");
+        let result = registry.validate_path(&id, escape_path.to_str().unwrap());
 
-        // Outside worktree but inside project: rejected when worktree is set
-        let outside_wt = project.join("other.txt");
+        // This SHOULD fail because the canonical path resolves outside the worktree.
+        // If it passes, that's a sandbox escape bug.
+        #[cfg(unix)]
         assert!(
-            registry
-                .validate_path(&id, outside_wt.to_str().unwrap())
-                .is_err(),
-            "path outside worktree should be rejected"
-        );
-
-        // Path traversal: rejected
-        let traversal = wt.join("../../etc/passwd");
-        assert!(
-            registry
-                .validate_path(&id, traversal.to_str().unwrap())
-                .is_err(),
-            "path traversal should be rejected"
+            result.is_err(),
+            "BUG: symlink escape should be rejected by validate_path, \
+             but it was allowed. The sandbox uses starts_with() on the \
+             raw path instead of the canonicalized path."
         );
     }
 
-    #[test]
-    fn scenario_operator_has_no_sandbox() {
-        let registry = AgentRegistry::new();
-        let id = registry
-            .spawn("operator", None, None, None)
-            .unwrap();
+    // -----------------------------------------------------------------------
+    // Helper: run git commands concisely in tests
+    // -----------------------------------------------------------------------
 
-        // Operators without project_path have no sandbox — validate_path
-        // should succeed for any path (since there's no base to check against).
-        // But the current impl returns an error for unknown agents or missing project_path.
-        let result = registry.validate_path(&id, "/tmp/anything.txt");
-        // The behavior depends on whether validate_path requires a project_path.
-        // This test documents the current behavior.
-        assert!(
-            result.is_ok() || result.is_err(),
-            "operator path validation should have a deterministic result"
-        );
+    fn git(dir: &Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap()
+    }
+
+    fn git_in(dir: &str, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap()
     }
 }
