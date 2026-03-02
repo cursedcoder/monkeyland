@@ -85,6 +85,7 @@ export function BeadsCard({
   onClose,
   scale = 1,
 }: BeadsCardProps) {
+  const MIN_AUTO_REFRESH_GAP_MS = 2000;
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [liveLayout, setLiveLayout] = useState<SessionLayout | null>(null);
@@ -109,7 +110,12 @@ export function BeadsCard({
 
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [autoRefreshPaused, setAutoRefreshPaused] = useState(false);
   const [tasks, setTasks] = useState<BeadsTask[]>(status?.tasks ?? []);
+  const refreshInFlightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
+  const refreshTimerRef = useRef<number | null>(null);
+  const lastAutoRefreshAtRef = useRef(0);
 
   const epicId = useMemo(() => {
     const epic = tasks.find(
@@ -118,10 +124,18 @@ export function BeadsCard({
     return epic?.id ?? null;
   }, [tasks]);
 
-  const handleRefresh = useCallback(async () => {
+  const handleRefresh = useCallback(async (force = false) => {
     if (!projectPath) {
       return;
     }
+    if (!force && autoRefreshPaused) {
+      return;
+    }
+    if (refreshInFlightRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
+    refreshInFlightRef.current = true;
     setRefreshing(true);
     setRefreshError(null);
     try {
@@ -152,13 +166,24 @@ export function BeadsCard({
           lastRefresh: Date.now(),
         });
       }
+      if (autoRefreshPaused) {
+        setAutoRefreshPaused(false);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setRefreshError(msg);
+      if (/no beads database found/i.test(msg)) {
+        setAutoRefreshPaused(true);
+      }
     } finally {
+      refreshInFlightRef.current = false;
       setRefreshing(false);
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false;
+        void handleRefresh(force);
+      }
     }
-  }, [initResult, onStatusChange, projectPath]);
+  }, [autoRefreshPaused, initResult, onStatusChange, projectPath]);
 
   const handleOpenTask = useCallback(
     async (task: BeadsTask) => {
@@ -235,16 +260,66 @@ export function BeadsCard({
     }
   }, [status?.tasks]);
 
+  const scheduleRefresh = useCallback(
+    (force = false) => {
+      if (!projectPath || layout.collapsed) return;
+      if (!force) {
+        const now = Date.now();
+        if (now - lastAutoRefreshAtRef.current < MIN_AUTO_REFRESH_GAP_MS) {
+          return;
+        }
+      }
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        if (!force) {
+          lastAutoRefreshAtRef.current = Date.now();
+        }
+        void handleRefresh(force);
+      }, 300);
+    },
+    [handleRefresh, layout.collapsed, projectPath]
+  );
+
   useEffect(() => {
-    if (!projectPath || layout.collapsed) {
-      return;
-    }
-    void handleRefresh();
-    const interval = setInterval(() => {
-      void handleRefresh();
-    }, 10000);
-    return () => clearInterval(interval);
+    if (!projectPath || layout.collapsed) return;
+    void handleRefresh(false);
   }, [projectPath, layout.collapsed, handleRefresh]);
+
+  useEffect(() => {
+    if (!projectPath || layout.collapsed) return;
+    let disposed = false;
+    const unsubs: Array<() => void> = [];
+    const events = [
+      "agent_spawned",
+      "agent_killed",
+      "validation_requested",
+      "merge_status",
+    ] as const;
+
+    Promise.all(events.map((evt) => listen(evt, () => scheduleRefresh(false))))
+      .then((fns) => {
+        if (disposed) {
+          fns.forEach((fn) => fn());
+          return;
+        }
+        unsubs.push(...fns);
+      })
+      .catch(() => {
+        // Non-fatal: manual refresh remains available.
+      });
+
+    return () => {
+      disposed = true;
+      unsubs.forEach((fn) => fn());
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [layout.collapsed, projectPath, scheduleRefresh]);
 
   const [epicProgress, setEpicProgress] = useState<{ total: number; done: number; in_progress: number; open: number } | null>(null);
 
@@ -487,7 +562,10 @@ export function BeadsCard({
                   <button
                     type="button"
                     className="beads-card-refresh"
-                    onClick={handleRefresh}
+                    onClick={() => {
+                      setAutoRefreshPaused(false);
+                      void handleRefresh(true);
+                    }}
                     disabled={refreshing}
                     onPointerDown={(e) => e.stopPropagation()}
                   >
