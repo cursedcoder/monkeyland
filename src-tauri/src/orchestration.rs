@@ -481,8 +481,12 @@ pub async fn tick(
                     let _ = registry.set_worktree_path(&agent_id, wt.to_str().unwrap_or_default());
                     wt
                 }
-                _ => {
-                    eprintln!("[orch] worktree creation failed for {agent_id}, using project dir");
+                Ok(Err(e)) => {
+                    eprintln!("[orch] worktree creation failed for {agent_id}: {e} — using project dir");
+                    path.to_path_buf()
+                }
+                Err(join_err) => {
+                    eprintln!("[orch] worktree spawn_blocking panicked for {agent_id}: {join_err} — using project dir");
                     path.to_path_buf()
                 }
             }

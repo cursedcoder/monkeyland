@@ -1547,10 +1547,27 @@ export default function App() {
       } catch (e) {
         console.error("Failed to spawn validator:", e);
         const submissions = getValidatorSpawnFailureSubmissions(developer_agent_id);
+        let lastOutcome: { all_passed: boolean; retry_count: number; max_retries: number; failures: Array<{ role: string; reasons: string[] }> } | null = null;
         for (const payload of submissions) {
-          invoke("validation_submit", {
-            payload,
-          }).catch(() => {});
+          try {
+            const outcome = await invoke<typeof lastOutcome>("validation_submit", { payload });
+            if (outcome) lastOutcome = outcome;
+          } catch { /* best effort */ }
+        }
+
+        if (lastOutcome && !lastOutcome.all_passed && lastOutcome.retry_count < lastOutcome.max_retries) {
+          startAgentConversationRef.current({
+            agentNodeId: developer_agent_id,
+            role: "developer",
+            userMessage: [
+              `## Validation Failed (attempt ${lastOutcome.retry_count}/${lastOutcome.max_retries})`,
+              "",
+              "Validator could not be spawned. Review your work and fix any issues.",
+              "Then call yield_for_review again.",
+            ].join("\n"),
+            taskId: task_id,
+            projectPath: resolvedProjectPath,
+          });
         }
         return;
       }

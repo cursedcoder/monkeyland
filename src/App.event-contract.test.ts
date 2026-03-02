@@ -317,5 +317,123 @@ describe("App event contracts", () => {
         expect((args as { payload: { pass: boolean } }).payload.pass).toBe(false);
       }
     });
+
+    it("restarts developer conversation when validator spawn fails and retries remain", async () => {
+      type ValidationOutcome = {
+        all_passed: boolean;
+        retry_count: number;
+        max_retries: number;
+        failures: Array<{ role: string; reasons: string[] }>;
+      };
+
+      const spawnFailOutcome: ValidationOutcome = {
+        all_passed: false,
+        retry_count: 1,
+        max_retries: 3,
+        failures: [
+          { role: "code_review", reasons: ["Validator spawn failed"] },
+          { role: "business_logic", reasons: ["Validator spawn failed"] },
+          { role: "scope", reasons: ["Validator spawn failed"] },
+        ],
+      };
+
+      mockInvoke
+        .mockResolvedValueOnce("/tmp/project")                    // get_beads_project_path
+        .mockRejectedValueOnce(new Error("Max validator count"))  // agent_spawn fails
+        .mockResolvedValueOnce(null)                              // validation_submit #1
+        .mockResolvedValueOnce(null)                              // validation_submit #2
+        .mockResolvedValueOnce(spawnFailOutcome);                 // validation_submit #3 returns outcome
+
+      const developer_agent_id = "dev-1";
+      const task_id = "bd-42";
+
+      const resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
+
+      let restartCalled = false;
+      let restartParams: Record<string, unknown> | null = null;
+
+      try {
+        await invoke<{ agent_id: string }>("agent_spawn", {
+          payload: { role: "validator", task_id, parent_agent_id: developer_agent_id, cwd: resolvedProjectPath },
+        });
+      } catch {
+        const submissions = getValidatorSpawnFailureSubmissions(developer_agent_id);
+        let lastOutcome: ValidationOutcome | null = null;
+        for (const payload of submissions) {
+          try {
+            const outcome = await invoke<ValidationOutcome | null>("validation_submit", { payload });
+            if (outcome) lastOutcome = outcome;
+          } catch { /* best effort */ }
+        }
+
+        if (lastOutcome && !lastOutcome.all_passed && lastOutcome.retry_count < lastOutcome.max_retries) {
+          restartCalled = true;
+          restartParams = {
+            agentNodeId: developer_agent_id,
+            role: "developer",
+            taskId: task_id,
+            projectPath: resolvedProjectPath,
+          };
+        }
+      }
+
+      expect(restartCalled).toBe(true);
+      expect(restartParams).not.toBeNull();
+      expect(restartParams!.agentNodeId).toBe("dev-1");
+      expect(restartParams!.role).toBe("developer");
+      expect(restartParams!.taskId).toBe("bd-42");
+      expect(restartParams!.projectPath).toBe("/tmp/project");
+    });
+
+    it("does NOT restart developer when max retries exhausted", async () => {
+      type ValidationOutcome = {
+        all_passed: boolean;
+        retry_count: number;
+        max_retries: number;
+        failures: Array<{ role: string; reasons: string[] }>;
+      };
+
+      const exhaustedOutcome: ValidationOutcome = {
+        all_passed: false,
+        retry_count: 3,
+        max_retries: 3,
+        failures: [{ role: "code_review", reasons: ["Validator spawn failed"] }],
+      };
+
+      mockInvoke
+        .mockResolvedValueOnce("/tmp/project")
+        .mockRejectedValueOnce(new Error("Max validator count"))
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(exhaustedOutcome);
+
+      const developer_agent_id = "dev-2";
+      const task_id = "bd-99";
+
+      await invoke<string | null>("get_beads_project_path");
+
+      let restartCalled = false;
+
+      try {
+        await invoke<{ agent_id: string }>("agent_spawn", {
+          payload: { role: "validator", task_id, parent_agent_id: developer_agent_id, cwd: "/tmp/project" },
+        });
+      } catch {
+        const submissions = getValidatorSpawnFailureSubmissions(developer_agent_id);
+        let lastOutcome: ValidationOutcome | null = null;
+        for (const payload of submissions) {
+          try {
+            const outcome = await invoke<ValidationOutcome | null>("validation_submit", { payload });
+            if (outcome) lastOutcome = outcome;
+          } catch { /* best effort */ }
+        }
+
+        if (lastOutcome && !lastOutcome.all_passed && lastOutcome.retry_count < lastOutcome.max_retries) {
+          restartCalled = true;
+        }
+      }
+
+      expect(restartCalled).toBe(false);
+    });
   });
 });
