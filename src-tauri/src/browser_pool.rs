@@ -27,6 +27,10 @@ impl BrowserPool {
 
     /// Start the browser sidecar if not running. Returns the HTTP port.
     pub fn ensure_started(&self) -> Result<u16, String> {
+        self.ensure_started_from(None)
+    }
+
+    fn ensure_started_from(&self, base_dir: Option<&std::path::Path>) -> Result<u16, String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
 
         if let Some(port) = inner.port {
@@ -41,7 +45,10 @@ impl BrowserPool {
             }
         }
 
-        let cwd = std::env::current_dir().unwrap_or_default();
+        let cwd = match base_dir {
+            Some(p) => p.to_path_buf(),
+            None => std::env::current_dir().unwrap_or_default(),
+        };
         let candidates = [
             cwd.join("scripts").join("browser-server.mjs"),
             cwd.join("..").join("scripts").join("browser-server.mjs"),
@@ -166,12 +173,11 @@ mod tests {
 
     #[test]
     fn ensure_started_fails_with_missing_script() {
+        let dir = tempfile::tempdir().unwrap();
         let pool = BrowserPool::new();
-        let result = pool.ensure_started();
-        // In test env, either the script doesn't exist (error about "not found") or
-        // node starts but we get a parsing error — either way, it shouldn't panic.
-        // If it happens to succeed (CI has the script), that's fine too.
-        let _ = result;
+        let result = pool.ensure_started_from(Some(dir.path()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
     }
 
     #[test]
@@ -186,22 +192,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let scripts_dir = dir.path().join("scripts");
         std::fs::create_dir_all(&scripts_dir).unwrap();
-        let script = scripts_dir.join("browser-server.mjs");
-        // Script that prints valid JSON port then exits
         std::fs::write(
-            &script,
+            scripts_dir.join("browser-server.mjs"),
             r#"console.log(JSON.stringify({ port: 19876 })); setTimeout(() => {}, 500);"#,
         )
         .unwrap();
 
-        // Save and restore cwd to avoid affecting other tests
-        let original_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-
         let pool = BrowserPool::new();
-        let result = pool.ensure_started();
-        // Restore cwd immediately
-        let _ = std::env::set_current_dir(&original_cwd);
+        let result = pool.ensure_started_from(Some(dir.path()));
 
         match result {
             Ok(port) => {
@@ -209,7 +207,6 @@ mod tests {
                 assert_eq!(pool.get_port().unwrap(), Some(19876));
             }
             Err(e) => {
-                // node not available in test env is acceptable
                 assert!(
                     e.contains("spawn") || e.contains("not found") || e.contains("No such file"),
                     "unexpected error: {e}"
@@ -223,15 +220,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let scripts_dir = dir.path().join("scripts");
         std::fs::create_dir_all(&scripts_dir).unwrap();
-        let script = scripts_dir.join("browser-server.mjs");
-        std::fs::write(&script, r#"console.log("not json"); process.exit(0);"#).unwrap();
-
-        let original_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::write(
+            scripts_dir.join("browser-server.mjs"),
+            r#"console.log("not json"); process.exit(0);"#,
+        )
+        .unwrap();
 
         let pool = BrowserPool::new();
-        let result = pool.ensure_started();
-        let _ = std::env::set_current_dir(&original_cwd);
+        let result = pool.ensure_started_from(Some(dir.path()));
 
         match result {
             Err(e) => assert!(
@@ -247,16 +243,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let scripts_dir = dir.path().join("scripts");
         std::fs::create_dir_all(&scripts_dir).unwrap();
-        let script = scripts_dir.join("browser-server.mjs");
-        // Script that exits immediately with no output
-        std::fs::write(&script, "process.exit(0);").unwrap();
-
-        let original_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::write(
+            scripts_dir.join("browser-server.mjs"),
+            "process.exit(0);",
+        )
+        .unwrap();
 
         let pool = BrowserPool::new();
-        let result = pool.ensure_started();
-        let _ = std::env::set_current_dir(&original_cwd);
+        let result = pool.ensure_started_from(Some(dir.path()));
 
         match result {
             Err(e) => assert!(
@@ -272,19 +266,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let scripts_dir = dir.path().join("scripts");
         std::fs::create_dir_all(&scripts_dir).unwrap();
-        let script = scripts_dir.join("browser-server.mjs");
         std::fs::write(
-            &script,
+            scripts_dir.join("browser-server.mjs"),
             r#"console.log(JSON.stringify({ status: "ok" })); process.exit(0);"#,
         )
         .unwrap();
 
-        let original_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-
         let pool = BrowserPool::new();
-        let result = pool.ensure_started();
-        let _ = std::env::set_current_dir(&original_cwd);
+        let result = pool.ensure_started_from(Some(dir.path()));
 
         match result {
             Err(e) => assert!(
