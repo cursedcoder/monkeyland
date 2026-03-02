@@ -1571,11 +1571,36 @@ mod tests {
         env.set_ready_tasks("[]");
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
 
-        // Worktree should be gone from disk
+        // --- Filesystem: worktree directory gone ---
+
         assert!(
             !std::path::Path::new(&wt_path).exists(),
             "worktree should be DELETED from disk after TTL kill"
         );
+
+        // --- Git: no stale worktree entry ---
+
+        let wt_list = git(repo.path(), &["worktree", "list", "--porcelain"]);
+        let wt_stdout = String::from_utf8_lossy(&wt_list.stdout).to_string();
+        assert!(
+            !wt_stdout.contains(&agent_id),
+            "stale worktree entry should be pruned from git after TTL kill"
+        );
+
+        // --- Registry: agent fully removed ---
+
+        let snap = registry.debug_snapshot().unwrap();
+        assert_eq!(
+            snap.agents.len(),
+            0,
+            "TTL-killed agent should be removed from registry, not left as zombie"
+        );
+
+        // --- HEAD still on main (TTL kill should not disturb repo state) ---
+
+        let head = git(repo.path(), &["symbolic-ref", "--short", "HEAD"]);
+        let head_str = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(head_str, "main", "HEAD should remain on main after TTL kill");
     }
 
     // -----------------------------------------------------------------------
@@ -1665,17 +1690,50 @@ mod tests {
         env.set_ready_tasks("[]");
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
 
-        // Agent should now be Blocked
+        // --- Metrics: safety net fired ---
+
         let snap = metrics.snapshot(0);
         assert!(snap.validation_timeout_blocks > 0, "safety net should have fired");
 
-        // Late 3rd validator submits — should NOT panic or corrupt
+        // --- Registry: agent is in Blocked state, not stuck in InReview ---
+
+        let debug = registry.debug_snapshot().unwrap();
+        let agent = debug.agents.iter().find(|a| a.id == agent_id);
+        assert!(agent.is_some(), "agent should still exist in registry after force-block");
+        assert_eq!(
+            agent.unwrap().state, "Blocked",
+            "agent should be in Blocked state after force_block_validation"
+        );
+
+        // --- Validation state cleaned up (no pending_validations entry) ---
+
+        let pending_for_agent: Vec<_> = debug
+            .pending_validations
+            .iter()
+            .filter(|v| v.developer_agent_id == agent_id)
+            .collect();
+        assert_eq!(
+            pending_for_agent.len(),
+            0,
+            "validation state should be cleaned up after force-block"
+        );
+
+        // --- Late 3rd validator: should not panic or corrupt ---
+
         let result = registry.validation_submit(&agent_id, "scope", true, vec![]);
-        // Should either return Ok(None) or Ok(Some(...)) gracefully — NOT Err
         assert!(
             result.is_ok(),
             "late validation submit after force-block should not error: {:?}",
             result
+        );
+
+        // State should still be Blocked (late submit must not resurrect the agent)
+        let debug_after = registry.debug_snapshot().unwrap();
+        let agent_after = debug_after.agents.iter().find(|a| a.id == agent_id);
+        assert!(agent_after.is_some(), "agent should still exist after late submit");
+        assert_eq!(
+            agent_after.unwrap().state, "Blocked",
+            "agent must remain Blocked after late validator submit (no resurrection)"
         );
     }
 
@@ -1716,11 +1774,55 @@ mod tests {
         let result = tick(&env, &meta_db, &registry, &merge_queue, &metrics).await;
         assert!(result.is_ok(), "merge of dead agent's task should not crash");
 
-        // The task should still be merged (the agent is dead but the branch is valid)
+        // --- Git state: merge should have landed on main ---
+
+        let content = std::fs::read_to_string(repo.path().join("f.txt")).unwrap();
+        assert_eq!(
+            content, "v2",
+            "dead agent's change should be merged to main"
+        );
+
+        let head = git(repo.path(), &["symbolic-ref", "--short", "HEAD"]);
+        let head_str = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(head_str, "main", "HEAD should be on main after merge");
+
+        assert!(
+            !repo.path().join(".git/MERGE_HEAD").exists(),
+            "no stale MERGE_HEAD should remain"
+        );
+
+        // Task branch should be deleted after clean merge
+        let branch_check = git(repo.path(), &["rev-parse", "--verify", "task/bd-ghost"]);
+        assert!(
+            !branch_check.status.success(),
+            "task/bd-ghost branch should be deleted after clean merge"
+        );
+
+        // --- Beads: bd update should mark task done ---
+
+        let bd_done = env.bd_calls_matching("bd-ghost").iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
+        });
+        assert!(
+            bd_done,
+            "bd update bd-ghost --status done should be called even for dead agent"
+        );
+
+        // --- Registry: no agents should remain ---
+
+        let snap = registry.debug_snapshot().unwrap();
+        assert_eq!(
+            snap.agents.len(),
+            0,
+            "registry should be empty (dead-agent was never registered)"
+        );
+
+        // --- Events: merge_status done should be emitted ---
+
         let statuses = env.events_named("merge_status");
         assert!(
-            statuses.iter().any(|e| e["status"] == "done" || e["status"] == "failed"),
-            "merge should complete even if originating agent is dead"
+            statuses.iter().any(|e| e["status"] == "done"),
+            "merge_status should report done for a clean merge of a valid branch"
         );
     }
 
@@ -1779,6 +1881,16 @@ mod tests {
         let metrics = OrchestrationMetrics::new();
         let env = TestOrchEnv::new();
 
+        // Create a real task branch with a change so the re-merge has something to merge
+        std::fs::write(repo.path().join("remerge.txt"), "v1").unwrap();
+        git(repo.path(), &["add", "remerge.txt"]);
+        git(repo.path(), &["commit", "-m", "seed remerge"]);
+        git(repo.path(), &["checkout", "-b", "task/bd-remerge"]);
+        std::fs::write(repo.path().join("remerge.txt"), "v2 fixed by merge agent").unwrap();
+        git(repo.path(), &["add", "remerge.txt"]);
+        git(repo.path(), &["commit", "-m", "merge agent fix"]);
+        git(repo.path(), &["checkout", "main"]);
+
         // Spawn a merge_agent and make it complete
         let ma_id = registry
             .spawn("merge_agent", Some("bd-remerge".to_string()), None, Some(project_path.to_string()))
@@ -1794,16 +1906,59 @@ mod tests {
         env.set_ready_tasks("[]");
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
 
-        // The task should be back in the merge queue
-        // (step 5 re-enqueues, then step 5b tries to process it)
+        // --- Git state: the re-merge should land on main ---
+
+        let content = std::fs::read_to_string(repo.path().join("remerge.txt")).unwrap();
+        assert_eq!(
+            content, "v2 fixed by merge agent",
+            "merge agent's fix should be on main after re-enqueue + merge"
+        );
+
+        let head = git(repo.path(), &["symbolic-ref", "--short", "HEAD"]);
+        let head_str = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(head_str, "main", "HEAD should be on main after re-merge");
+
+        assert!(
+            !repo.path().join(".git/MERGE_HEAD").exists(),
+            "no stale MERGE_HEAD after re-merge"
+        );
+
+        // Task branch should be deleted after the successful re-merge
+        let branch_check = git(repo.path(), &["rev-parse", "--verify", "task/bd-remerge"]);
+        assert!(
+            !branch_check.status.success(),
+            "task/bd-remerge branch should be deleted after successful re-merge"
+        );
+
+        // --- Beads: bd update --status done called ---
+
+        let bd_done = env.bd_calls_matching("bd-remerge").iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
+        });
+        assert!(
+            bd_done,
+            "bd update bd-remerge --status done should be called after successful re-merge"
+        );
+
+        // --- Registry: merge agent killed ---
+
+        let snap = registry.debug_snapshot().unwrap();
+        assert_eq!(
+            snap.agents.len(),
+            0,
+            "merge agent should be killed after re-merge completes"
+        );
+
+        // --- Events: merging + done should both appear ---
+
         let statuses = env.events_named("merge_status");
         assert!(
-            statuses.iter().any(|e| {
-                let s = e["status"].as_str().unwrap_or("");
-                s == "merging" || s == "done" || s == "conflict" || s == "failed"
-            }),
-            "re-enqueued task should have produced a merge_status event, got {:?}",
-            statuses
+            statuses.iter().any(|e| e["status"] == "merging"),
+            "merge_status 'merging' should be emitted when re-enqueuing"
+        );
+        assert!(
+            statuses.iter().any(|e| e["status"] == "done" && e["task_id"] == "bd-remerge"),
+            "merge_status 'done' should be emitted after successful re-merge"
         );
     }
 
@@ -1904,15 +2059,69 @@ mod tests {
         // Merge tick
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
 
-        // Worktree should be cleaned up
+        // --- Git state on main ---
+
+        let content = std::fs::read_to_string(repo.path().join("clean.txt")).unwrap();
+        assert_eq!(content, "v2 from agent", "merged content should be on main");
+
+        let head = git(repo.path(), &["symbolic-ref", "--short", "HEAD"]);
+        let head_str = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(head_str, "main", "HEAD should be on main after merge");
+
+        assert!(
+            !repo.path().join(".git/MERGE_HEAD").exists(),
+            "no stale MERGE_HEAD should remain after clean merge"
+        );
+
+        // --- Task branch deleted ---
+
+        let branch_check = git(repo.path(), &["rev-parse", "--verify", "task/bd-clean"]);
+        assert!(
+            !branch_check.status.success(),
+            "task/bd-clean branch should be deleted after clean merge"
+        );
+
+        // --- Worktree cleaned up on disk AND in git ---
+
         assert!(
             !std::path::Path::new(&wt_path).exists(),
             "worktree directory should be removed after successful merge"
         );
 
-        // The change should be on main
-        let content = std::fs::read_to_string(repo.path().join("clean.txt")).unwrap();
-        assert_eq!(content, "v2 from agent", "merged content should be on main");
+        let wt_list = git(repo.path(), &["worktree", "list", "--porcelain"]);
+        let wt_stdout = String::from_utf8_lossy(&wt_list.stdout).to_string();
+        assert!(
+            !wt_stdout.contains(&agent_id),
+            "worktree entry should be pruned from git after merge"
+        );
+
+        // --- Beads: bd update --status done called ---
+
+        let bd_done = env.bd_calls_matching("bd-clean").iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
+        });
+        assert!(
+            bd_done,
+            "bd update bd-clean --status done should have been called"
+        );
+
+        // --- Registry: developer killed, no zombies ---
+
+        let snap = registry.debug_snapshot().unwrap();
+        let live_devs: Vec<_> = snap.agents.iter().filter(|a| a.role == "developer").collect();
+        assert_eq!(
+            live_devs.len(),
+            0,
+            "developer should be killed after successful merge"
+        );
+
+        // --- Events: merge_status done emitted ---
+
+        let statuses = env.events_named("merge_status");
+        assert!(
+            statuses.iter().any(|e| e["status"] == "done" && e["task_id"] == "bd-clean"),
+            "merge_status should report done for bd-clean"
+        );
     }
 
     // -----------------------------------------------------------------------
