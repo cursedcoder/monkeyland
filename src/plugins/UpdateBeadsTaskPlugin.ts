@@ -7,10 +7,12 @@ import { invoke } from "@tauri-apps/api/core";
  */
 export class UpdateBeadsTaskPlugin extends Plugin {
   private agentId: string | null;
+  private role: string;
 
-  constructor(agentId: string | null = null) {
+  constructor(agentId: string | null = null, role: string = "unknown") {
     super();
     this.agentId = agentId;
+    this.role = role;
   }
 
   isEnabled(): boolean {
@@ -105,6 +107,12 @@ export class UpdateBeadsTaskPlugin extends Plugin {
     const taskId = parameters.task_id?.trim();
     if (!taskId) {
       return { result: "Error: task_id is required." };
+    }
+
+    if (this.role === "developer" && parameters.status?.toLowerCase() === "done") {
+      return {
+        result: "Error: Developers cannot mark tasks as done directly. Use yield_for_review to submit your work for validation.",
+      };
     }
 
     let projectPath: string | null = null;

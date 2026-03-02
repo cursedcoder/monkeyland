@@ -541,7 +541,7 @@ export default function App() {
         plugins.push(new CreateBeadsTaskPlugin(agentNodeId));
       }
       if (allowed.has("update_beads_task")) {
-        plugins.push(new UpdateBeadsTaskPlugin(agentNodeId));
+        plugins.push(new UpdateBeadsTaskPlugin(agentNodeId, role));
       }
       if (allowed.has("dispatch_agent")) {
         plugins.push(new DispatchAgentPlugin(agentNodeId, (p) => dispatchAgentRef.current(p)));
