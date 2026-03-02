@@ -18,6 +18,14 @@ interface BatchedPayload {
   sessions: Record<string, SessionBatch>;
 }
 
+function safeUnlisten(unlisten: UnlistenFn) {
+  void Promise.resolve()
+    .then(() => unlisten())
+    .catch(() => {
+      // Listener may already be removed during teardown/race conditions.
+    });
+}
+
 export function Terminal({ sessionId }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -118,6 +126,8 @@ export function Terminal({ sessionId }: TerminalProps) {
       }
     }).then((fn_) => {
       unlisten = fn_;
+    }).catch(() => {
+      // Non-fatal: terminal can still function for new output after remount.
     });
 
     // ResizeObserver to auto-fit terminal when card resizes
@@ -138,7 +148,7 @@ export function Terminal({ sessionId }: TerminalProps) {
 
     return () => {
       inputDisposable.dispose();
-      if (unlisten) unlisten();
+      if (unlisten) safeUnlisten(unlisten);
       ro.disconnect();
       xterm.dispose();
       xtermRef.current = null;

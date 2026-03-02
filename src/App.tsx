@@ -44,6 +44,14 @@ const DEBUG_HISTORY_INTERVAL_MS = 15_000;
 const DEBUG_HISTORY_MAX_SAMPLES = 120;
 const DEBUG_HISTORY_COPY_SAMPLES = 40;
 
+function safeUnlisten(unlistenPromise: Promise<() => void>) {
+  void unlistenPromise
+    .then((fn) => fn())
+    .catch(() => {
+      // Listener may already be removed during teardown/race conditions.
+    });
+}
+
 
 
 /** Returns new layouts organized in a tree structure based on parent-child relationships. */
@@ -201,7 +209,9 @@ export default function App() {
   const costStore = useMemo(() => createCostStore(), []);
   const [layouts, setLayouts] = useState<SessionLayout[]>([]);
   const [theme, setTheme] = useState<Theme>(getStoredTheme);
+  const [layoutsHydrated, setLayoutsHydrated] = useState(false);
   const loaded = useRef(false);
+  const recoveryAttemptedRef = useRef(false);
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const promptSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -292,6 +302,7 @@ export default function App() {
         // First run or no saved layout
       }
       loaded.current = true;
+      setLayoutsHydrated(true);
     })();
     return () => {
       cancelled = true;
@@ -815,6 +826,11 @@ export default function App() {
             sourcePromptId: sourcePromptId ?? undefined,
             parent_agent_id: parentAgentId ?? undefined,
             task_id: taskId ?? undefined,
+            project_path: projectPath ?? undefined,
+            worktree_path:
+              role === "developer" && projectPath && taskId
+                ? `${projectPath.replace(/\/$/, "")}/.worktrees/${agentNodeId}`
+                : undefined,
             taskTitle: taskMeta?.title ?? undefined,
             taskType: taskMeta?.type ?? undefined,
             taskPriority: taskMeta?.priority ?? undefined,
@@ -1134,6 +1150,175 @@ export default function App() {
   const startAgentConversationRef = useRef(startAgentConversation);
   startAgentConversationRef.current = startAgentConversation;
 
+  // Crash/restart recovery:
+  // if the backend registry is empty but canvas has active agent cards,
+  // restore those agent IDs in Rust and resume their turns from saved payload.
+  useEffect(() => {
+    if (!layoutsHydrated || recoveryAttemptedRef.current) return;
+    recoveryAttemptedRef.current = true;
+
+    type RecoverableLayoutPayload = {
+      role?: string;
+      status?: string;
+      task_id?: string;
+      project_path?: string;
+      worktree_path?: string;
+      taskDescription?: string;
+      taskTitle?: string;
+      sourcePromptId?: string;
+      parent_agent_id?: string;
+      parentAgentId?: string;
+    };
+
+    type RestoreAgentItem = {
+      agent_id: string;
+      role: string;
+      task_id: string | null;
+      parent_agent_id: string | null;
+      state: string;
+      project_path: string | null;
+      worktree_path: string | null;
+    };
+
+    const ACTIVE_STATUSES = new Set(["loading", "running"]);
+    const RECOVERABLE_ROLES = new Set([
+      "workforce_manager",
+      "project_manager",
+      "developer",
+      "operator",
+      "worker",
+      "validator",
+      "merge_agent",
+    ]);
+
+    void (async () => {
+      let usedSlots = 0;
+      try {
+        const status = await invoke<{ used_slots: number }>("agent_status");
+        usedSlots = status.used_slots ?? 0;
+      } catch {
+        return;
+      }
+      if (usedSlots > 0) return;
+
+      const promptById = new Map<string, string>();
+      for (const l of layoutsRef.current) {
+        if (l.node_type !== "prompt" || !l.payload) continue;
+        try {
+          const p = JSON.parse(l.payload) as { promptText?: string };
+          if (p.promptText?.trim()) promptById.set(l.session_id, p.promptText.trim());
+        } catch {
+          // ignore malformed payload
+        }
+      }
+
+      let projectPath: string | null = null;
+      try {
+        projectPath = await invoke<string | null>("get_beads_project_path");
+      } catch {
+        projectPath = null;
+      }
+
+      const candidates: Array<{
+        layout: SessionLayout;
+        payload: RecoverableLayoutPayload;
+        restore: RestoreAgentItem;
+      }> = [];
+      const worktreePathFor = (basePath: string, agentId: string) => {
+        const normalized = basePath.endsWith("/") ? basePath.slice(0, -1) : basePath;
+        return `${normalized}/.worktrees/${agentId}`;
+      };
+      for (const layout of layoutsRef.current) {
+        if (
+          layout.node_type !== "agent" &&
+          layout.node_type !== "worker" &&
+          layout.node_type !== "validator"
+        ) {
+          continue;
+        }
+        let payload: RecoverableLayoutPayload = {};
+        try {
+          payload = JSON.parse(layout.payload ?? "{}") as RecoverableLayoutPayload;
+        } catch {
+          continue;
+        }
+        const role = payload.role;
+        const status = payload.status;
+        if (!role || !RECOVERABLE_ROLES.has(role) || !status || !ACTIVE_STATUSES.has(status)) {
+          continue;
+        }
+        candidates.push({
+          layout,
+          payload,
+          restore: {
+            agent_id: layout.session_id,
+            role,
+            task_id: payload.task_id ?? null,
+            parent_agent_id: payload.parent_agent_id ?? payload.parentAgentId ?? null,
+            state: "running",
+            project_path: payload.project_path ?? projectPath,
+            worktree_path:
+              payload.worktree_path ??
+              (role === "developer" && (payload.project_path ?? projectPath)
+                ? worktreePathFor(payload.project_path ?? projectPath ?? "", layout.session_id)
+                : null),
+          },
+        });
+      }
+      if (candidates.length === 0) return;
+
+      let restoredAgentIds = new Set<string>();
+      try {
+        const out = await invoke<{ restored_agent_ids?: string[] }>("agent_restore_batch", {
+          payload: { agents: candidates.map((c) => c.restore) },
+        });
+        restoredAgentIds = new Set(out.restored_agent_ids ?? []);
+      } catch {
+        return;
+      }
+      if (restoredAgentIds.size === 0) return;
+
+      for (const c of candidates) {
+        if (!restoredAgentIds.has(c.layout.session_id)) continue;
+        const role = c.restore.role as AgentRole;
+        const sourcePrompt = c.payload.sourcePromptId
+          ? promptById.get(c.payload.sourcePromptId)
+          : "";
+        const taskLabel = c.payload.taskTitle || c.payload.task_id || "unknown task";
+        const resumeMessage = sourcePrompt
+          ? [
+              "App restarted while this agent was active.",
+              "Resume from the previous objective:",
+              "",
+              sourcePrompt,
+            ].join("\n")
+          : [
+              `App restarted while you were working on ${taskLabel}.`,
+              "Continue implementation from current repository state, then proceed normally.",
+              "",
+              c.payload.taskDescription || "",
+            ]
+              .filter(Boolean)
+              .join("\n");
+
+        void startAgentConversationRef.current({
+          agentNodeId: c.layout.session_id,
+          role,
+          userMessage: resumeMessage,
+          taskId: c.restore.task_id,
+          parentAgentId: c.restore.parent_agent_id ?? undefined,
+          projectPath,
+        });
+      }
+
+      try {
+        await invoke("orch_start");
+      } catch {
+        // non-fatal; user can start orchestration manually.
+      }
+    })();
+  }, [layoutsHydrated]);
+
   // Wire up dispatchAgentRef so WM's dispatch_agent tool can spawn agents.
   dispatchAgentRef.current = async (p) => {
     const result = await invoke<{ agent_id: string }>("agent_spawn", {
@@ -1234,7 +1419,7 @@ export default function App() {
     });
 
     return () => {
-      unlisten.then((fn) => fn());
+      safeUnlisten(unlisten);
     };
   }, []);
 
@@ -1260,7 +1445,7 @@ export default function App() {
     });
 
     return () => {
-      unlisten.then((fn) => fn());
+      safeUnlisten(unlisten);
     };
   }, []);
 
@@ -1485,6 +1670,8 @@ export default function App() {
           }
 
           if (devServerUrl) {
+            // Run browser setup under the validator agent to avoid depending on
+            // developer state transitions (developer may already be in_review).
             const browserPort = await invoke<number>("browser_ensure_started", { agentId: validatorId });
             await fetch(`http://127.0.0.1:${browserPort}/session`, {
               method: "POST",
@@ -1715,7 +1902,7 @@ export default function App() {
     });
 
     return () => {
-      unlisten.then((fn) => fn());
+      safeUnlisten(unlisten);
     };
   }, []);
 

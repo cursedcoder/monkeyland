@@ -155,6 +155,7 @@ pub fn run() {
             crate::commands::set_beads_project_path,
             crate::commands::beads_dolt_start,
             crate::commands::agent_spawn,
+            crate::commands::agent_restore_batch,
             crate::commands::agent_kill,
             crate::commands::agent_status,
             crate::commands::debug_snapshot,

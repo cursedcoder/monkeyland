@@ -64,6 +64,22 @@ function parseStatus(payload?: string): BeadsStatus | null {
   }
 }
 
+function safeUnlisten(unlistenPromise: Promise<() => void>) {
+  void unlistenPromise
+    .then((fn) => fn())
+    .catch(() => {
+      // Listener may already be removed during teardown/race conditions.
+    });
+}
+
+function safeInvokeUnlisten(unlisten: () => void | Promise<void>) {
+  void Promise.resolve()
+    .then(() => unlisten())
+    .catch(() => {
+      // Listener may already be removed during teardown/race conditions.
+    });
+}
+
 const TYPE_ICONS: Record<string, string> = {
   bug: "🐞",
   story: "📘",
@@ -291,7 +307,7 @@ export function BeadsCard({
   useEffect(() => {
     if (!projectPath || layout.collapsed) return;
     let disposed = false;
-    const unsubs: Array<() => void> = [];
+    const unsubs: Array<() => void | Promise<void>> = [];
     const events = [
       "agent_spawned",
       "agent_killed",
@@ -302,7 +318,7 @@ export function BeadsCard({
     Promise.all(events.map((evt) => listen(evt, () => scheduleRefresh(false))))
       .then((fns) => {
         if (disposed) {
-          fns.forEach((fn) => fn());
+          fns.forEach((fn) => safeInvokeUnlisten(fn));
           return;
         }
         unsubs.push(...fns);
@@ -313,7 +329,7 @@ export function BeadsCard({
 
     return () => {
       disposed = true;
-      unsubs.forEach((fn) => fn());
+      unsubs.forEach((fn) => safeInvokeUnlisten(fn));
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
@@ -335,7 +351,7 @@ export function BeadsCard({
         setEpicProgress(event.payload);
       }
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => { safeUnlisten(unlisten); };
   }, [epicId]);
 
   // Merge status per task (from orchestration merge_status events)
@@ -358,7 +374,7 @@ export function BeadsCard({
         return next;
       });
     });
-    return () => { unlisten.then((fn) => fn()); };
+    return () => { safeUnlisten(unlisten); };
   }, []);
 
   // Sync the actual rendered height back into the layout so the canvas

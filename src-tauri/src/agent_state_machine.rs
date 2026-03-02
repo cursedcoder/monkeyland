@@ -184,7 +184,7 @@ pub fn allowed_tools(role: &str) -> HashSet<Tool> {
             .into_iter()
             .collect(),
 
-        "validator" => HashSet::new(),
+        "validator" => [Tool::BrowserEnsureStarted].into_iter().collect(),
 
         _ => HashSet::new(),
     }

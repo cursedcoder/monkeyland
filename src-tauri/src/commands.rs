@@ -1,5 +1,6 @@
 use crate::agent_registry::{
-    AgentQuota, AgentRegistry, AgentStatusResponse, DebugSnapshot, ValidationOutcome, YieldPayload,
+    AgentQuota, AgentRegistry, AgentStatusResponse, DebugSnapshot, RestoreAgentInput,
+    ValidationOutcome, YieldPayload,
 };
 use crate::browser_pool::BrowserPool;
 use crate::orchestration::{
@@ -430,6 +431,29 @@ pub struct AgentSpawnPayload {
     pub cwd: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRestoreItem {
+    pub agent_id: String,
+    pub role: String,
+    pub task_id: Option<String>,
+    pub parent_agent_id: Option<String>,
+    #[serde(default = "default_restore_state")]
+    pub state: String,
+    #[serde(default)]
+    pub project_path: Option<String>,
+    #[serde(default)]
+    pub worktree_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRestorePayload {
+    pub agents: Vec<AgentRestoreItem>,
+}
+
+fn default_restore_state() -> String {
+    "running".to_string()
+}
+
 #[tauri::command]
 pub async fn agent_spawn(
     pool: State<'_, PtyPool>,
@@ -453,6 +477,50 @@ pub async fn agent_spawn(
         agent_id: String,
     }
     Ok(serde_json::to_value(Out { agent_id }).map_err(|e| e.to_string())?)
+}
+
+#[tauri::command]
+pub async fn agent_restore_batch(
+    pool: State<'_, PtyPool>,
+    registry: State<'_, AgentRegistry>,
+    payload: AgentRestorePayload,
+) -> Result<serde_json::Value, String> {
+    let restore_inputs: Vec<RestoreAgentInput> = payload
+        .agents
+        .iter()
+        .map(|a| RestoreAgentInput {
+            id: a.agent_id.clone(),
+            role: a.role.clone(),
+            task_id: a.task_id.clone(),
+            parent_id: a.parent_agent_id.clone(),
+            state: a.state.clone(),
+            project_path: a.project_path.clone(),
+            worktree_path: a.worktree_path.clone(),
+        })
+        .collect();
+
+    let restored_ids = registry.restore_agents(restore_inputs)?;
+    for id in &restored_ids {
+        let spec = payload.agents.iter().find(|a| &a.agent_id == id);
+        let cwd = spec
+            .and_then(|a| {
+                a.worktree_path
+                    .as_deref()
+                    .or(a.project_path.as_deref())
+            })
+            .map(std::path::Path::new)
+            .filter(|p| p.as_os_str().len() > 0);
+        let _ = pool.spawn(id, 80, 24, cwd);
+    }
+
+    #[derive(serde::Serialize)]
+    struct Out {
+        restored_agent_ids: Vec<String>,
+    }
+    Ok(serde_json::to_value(Out {
+        restored_agent_ids: restored_ids,
+    })
+    .map_err(|e| e.to_string())?)
 }
 
 #[tauri::command]

@@ -226,6 +226,17 @@ pub struct AgentRegistry {
     inner: Mutex<AgentRegistryInner>,
 }
 
+#[derive(Debug, Clone)]
+pub struct RestoreAgentInput {
+    pub id: String,
+    pub role: String,
+    pub task_id: Option<String>,
+    pub parent_id: Option<String>,
+    pub state: String,
+    pub project_path: Option<String>,
+    pub worktree_path: Option<String>,
+}
+
 impl AgentRegistry {
     pub fn new() -> Self {
         Self {
@@ -322,6 +333,66 @@ impl AgentRegistry {
         }
 
         Ok(id)
+    }
+
+    /// Restore agents after app restart/crash using persisted canvas/runtime metadata.
+    /// State is provided by the caller and validated against the state machine enum.
+    pub fn restore_agents(&self, agents: Vec<RestoreAgentInput>) -> Result<Vec<String>, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let mut restored = Vec::new();
+
+        for a in agents {
+            if a.id.trim().is_empty() {
+                continue;
+            }
+            if inner.agents.contains_key(&a.id) {
+                continue;
+            }
+            if !inner.role_config.contains_key(&a.role) {
+                continue;
+            }
+            let state = match parse_restore_state(&a.state) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            inner.agents.insert(
+                a.id.clone(),
+                AgentEntry {
+                    id: a.id.clone(),
+                    role: a.role,
+                    task_id: a.task_id,
+                    parent_id: a.parent_id,
+                    spawned_at: Instant::now(),
+                    token_used: 0,
+                    state,
+                    children_count: 0,
+                    yield_git_branch: None,
+                    yield_diff_summary: None,
+                    validation_retry_count: 0,
+                    project_path: a.project_path,
+                    worktree_path: a.worktree_path,
+                },
+            );
+            restored.push(a.id);
+        }
+
+        // Recompute parent->children counters for restored graph consistency.
+        let parent_ids: Vec<Option<String>> = inner
+            .agents
+            .values()
+            .map(|e| e.parent_id.clone())
+            .collect();
+        for e in inner.agents.values_mut() {
+            e.children_count = 0;
+        }
+        for pid in parent_ids.into_iter().flatten() {
+            if let Some(parent) = inner.agents.get_mut(&pid) {
+                parent.children_count = parent.children_count.saturating_add(1);
+            }
+        }
+
+        Ok(restored)
     }
 
     pub fn kill(&self, agent_id: &str) -> Result<bool, String> {
@@ -1075,6 +1146,19 @@ impl AgentRegistry {
         }
 
         Ok(())
+    }
+}
+
+fn parse_restore_state(raw: &str) -> Option<State> {
+    match raw {
+        "spawned" => Some(State::Spawned),
+        "running" => Some(State::Running),
+        "yielded" => Some(State::Yielded),
+        "in_review" => Some(State::InReview),
+        "done" => Some(State::Done),
+        "blocked" => Some(State::Blocked),
+        "stopped" => Some(State::Stopped),
+        _ => None,
     }
 }
 
