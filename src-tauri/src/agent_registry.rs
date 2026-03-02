@@ -1257,3 +1257,26 @@ mod tests {
         assert!(result.is_err());
     }
 }
+
+// Test-only helpers for manipulating agent internals (timestamp backdating, etc.)
+#[cfg(test)]
+impl AgentRegistry {
+    /// Backdate `spawned_at` by the given duration so TTL expiry fires in tests.
+    pub fn test_backdate_spawn(&self, agent_id: &str, by: std::time::Duration) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(entry) = inner.agents.get_mut(agent_id) {
+            entry.spawned_at = entry.spawned_at.checked_sub(by).unwrap_or(entry.spawned_at);
+        }
+    }
+
+    /// Backdate `state_entered_at` by the given duration so stuck-agent detection fires.
+    pub fn test_backdate_state_entered(&self, agent_id: &str, by: std::time::Duration) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(entry) = inner.agents.get_mut(agent_id) {
+            entry.state_entered_at = entry
+                .state_entered_at
+                .checked_sub(by)
+                .unwrap_or(entry.state_entered_at);
+        }
+    }
+}

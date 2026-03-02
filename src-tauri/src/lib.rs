@@ -66,11 +66,14 @@ pub fn run() {
                         handle_orch.try_state::<orchestration::MergeQueue>(),
                         handle_orch.try_state::<orchestration::OrchestrationMetrics>(),
                     ) {
+                        let env = orchestration::TauriOrchEnv {
+                            app_handle: &handle_orch,
+                            pool: &pool,
+                        };
                         let _ = orchestration::tick(
-                            &handle_orch,
+                            &env,
                             &meta_db,
                             &registry,
-                            &pool,
                             &merge_q,
                             &metrics,
                         )
