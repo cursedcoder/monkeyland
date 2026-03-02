@@ -488,6 +488,14 @@ pub async fn tick(
             .spawn_pty(&agent_id, 80, 24, Some(agent_cwd.as_path()))
             .is_err()
         {
+            if let Ok(Some(_)) = registry.get_worktree_path(&agent_id) {
+                let rm_path = path.to_path_buf();
+                let rm_agent = agent_id.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::worktree::remove(&rm_path, &rm_agent)
+                })
+                .await;
+            }
             let _ = registry.kill(&agent_id);
             continue;
         }
@@ -1596,11 +1604,37 @@ mod tests {
             "TTL-killed agent should be removed from registry, not left as zombie"
         );
 
+        // --- Beads: task claim released so task can be re-assigned ---
+
+        let unclaim_calls = env.bd_calls_matching("bd-ttl-wt").iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"ready".to_string())
+        });
+        assert!(
+            unclaim_calls,
+            "bd update bd-ttl-wt --status ready should be called to release claim after TTL kill"
+        );
+
+        // --- Task branch still exists (TTL kill should NOT delete the branch) ---
+
+        let branch_check = git(repo.path(), &["rev-parse", "--verify", "task/bd-ttl-wt"]);
+        assert!(
+            branch_check.status.success(),
+            "task branch should NOT be deleted by TTL kill (work may be resumable)"
+        );
+
         // --- HEAD still on main (TTL kill should not disturb repo state) ---
 
         let head = git(repo.path(), &["symbolic-ref", "--short", "HEAD"]);
         let head_str = String::from_utf8_lossy(&head.stdout).trim().to_string();
         assert_eq!(head_str, "main", "HEAD should remain on main after TTL kill");
+
+        // --- claimed_task_ids is empty (dedup cleared for the killed agent) ---
+
+        let claimed = registry.claimed_task_ids().unwrap();
+        assert!(
+            !claimed.contains(&"bd-ttl-wt".to_string()),
+            "task should not appear in claimed_task_ids after TTL kill"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1817,6 +1851,14 @@ mod tests {
             "registry should be empty (dead-agent was never registered)"
         );
 
+        // --- Merge queue: fully drained ---
+
+        assert_eq!(
+            merge_queue.depth(),
+            0,
+            "merge queue should be empty after processing"
+        );
+
         // --- Events: merge_status done should be emitted ---
 
         let statuses = env.events_named("merge_status");
@@ -1855,6 +1897,22 @@ mod tests {
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
         assert_eq!(env.events_named("agent_spawned").len(), 1);
 
+        // --- Registry: agent exists with correct task_id ---
+
+        let claimed = registry.claimed_task_ids().unwrap();
+        assert!(
+            claimed.contains(&"bd-noclaim".to_string()),
+            "bd-noclaim should be in claimed_task_ids even though bd claim failed"
+        );
+
+        let snap = registry.debug_snapshot().unwrap();
+        assert_eq!(snap.agents.len(), 1, "exactly one agent should exist");
+        assert_eq!(
+            snap.agents[0].task_id.as_deref(),
+            Some("bd-noclaim"),
+            "agent should own task bd-noclaim"
+        );
+
         // Tick 2: bd still reports task as ready (claim failed so Beads doesn't know)
         // But registry's claimed_task_ids should prevent a second spawn
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
@@ -1862,6 +1920,15 @@ mod tests {
             env.events_named("agent_spawned").len(),
             1,
             "registry dedup should prevent double-spawn even when bd claim failed"
+        );
+
+        // --- Registry: still exactly one agent (no double-spawn) ---
+
+        let snap_after = registry.debug_snapshot().unwrap();
+        assert_eq!(
+            snap_after.agents.len(),
+            1,
+            "registry should still have exactly one agent after tick 2"
         );
     }
 
@@ -1949,6 +2016,14 @@ mod tests {
             "merge agent should be killed after re-merge completes"
         );
 
+        // --- Merge queue: fully drained after re-merge ---
+
+        assert_eq!(
+            merge_queue.depth(),
+            0,
+            "merge queue should be empty after successful re-merge"
+        );
+
         // --- Events: merging + done should both appear ---
 
         let statuses = env.events_named("merge_status");
@@ -1999,15 +2074,53 @@ mod tests {
 
         tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
 
-        // No agent_spawned event (spawn_pty failed, agent was killed)
+        // --- Events: no agent_spawned emitted ---
+
         let spawned = env.0.events_named("agent_spawned");
         assert_eq!(spawned.len(), 0, "should not emit agent_spawned when PTY fails");
 
-        // Registry should be clean (no zombie)
+        // --- Registry: no zombie agent ---
+
         let status = registry.status().unwrap();
         assert_eq!(
             status.used_slots, 0,
             "no zombie agents should remain when PTY spawn fails"
+        );
+
+        // --- Filesystem: worktree cleaned up (not leaked on disk) ---
+
+        let wt_dir = repo.path().join(".worktrees");
+        if wt_dir.exists() {
+            let entries: Vec<_> = std::fs::read_dir(&wt_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
+                .collect();
+            assert_eq!(
+                entries.len(),
+                0,
+                "worktree should be cleaned up after PTY failure, found {:?}",
+                entries.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+            );
+        }
+
+        // --- Git: no stale worktree entries ---
+
+        let wt_list = git(repo.path(), &["worktree", "list", "--porcelain"]);
+        let wt_stdout = String::from_utf8_lossy(&wt_list.stdout).to_string();
+        let worktree_count = wt_stdout.matches("worktree ").count();
+        assert_eq!(
+            worktree_count, 1,
+            "only the main worktree should exist (no leaked entries), got: {wt_stdout}"
+        );
+
+        // --- Beads: no claim was made (claim happens AFTER pty spawn) ---
+
+        let claim_calls = env.0.bd_calls_matching("--claim");
+        assert_eq!(
+            claim_calls.len(),
+            0,
+            "bd claim should not be called when PTY fails (it runs after spawn_pty)"
         );
     }
 
@@ -2116,6 +2229,14 @@ mod tests {
         );
 
         // --- Events: merge_status done emitted ---
+
+        // --- Merge queue: fully drained ---
+
+        assert_eq!(
+            merge_queue.depth(),
+            0,
+            "merge queue should be empty after clean merge"
+        );
 
         let statuses = env.events_named("merge_status");
         assert!(
