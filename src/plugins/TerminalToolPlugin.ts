@@ -24,6 +24,10 @@ export class TerminalToolPlugin extends Plugin {
   private sessionId: string;
   private defaultCwd: string | null;
 
+  getTimeoutMs(): number {
+    return 150_000;
+  }
+
   constructor(
     agentNodeId: string,
     addLogNode: AddTerminalLogNodeFn,

@@ -504,6 +504,16 @@ impl AgentRegistry {
         })
     }
 
+    /// Lightweight check: returns the agent's current state string (e.g. "Running", "Yielded"),
+    /// or "unknown" if the agent doesn't exist.
+    pub fn agent_state(&self, agent_id: &str) -> Result<String, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        match inner.agents.get(agent_id) {
+            Some(e) => Ok(format!("{:?}", e.state)),
+            None => Ok("unknown".to_string()),
+        }
+    }
+
     pub fn quota(&self, agent_id: &str) -> Result<Option<AgentQuota>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = match inner.agents.get(agent_id) {

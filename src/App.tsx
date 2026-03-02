@@ -44,6 +44,21 @@ const DEBUG_HISTORY_INTERVAL_MS = 15_000;
 const DEBUG_HISTORY_MAX_SAMPLES = 120;
 const DEBUG_HISTORY_COPY_SAMPLES = 40;
 
+/** Maximum wall-clock time for a single agent turn (per role). */
+const MAX_TURN_MS: Record<string, number> = {
+  developer: 4 * 60_000,
+  validator: 2 * 60_000,
+  worker: 3 * 60_000,
+  merge_agent: 2 * 60_000,
+  project_manager: 2 * 60_000,
+  workforce_manager: 2 * 60_000,
+  operator: 3 * 60_000,
+};
+const DEFAULT_MAX_TURN_MS = 3 * 60_000;
+
+/** Heartbeat interval — check backend state while agent runs. */
+const HEARTBEAT_INTERVAL_MS = 20_000;
+
 function safeUnlisten(unlistenPromise: Promise<() => void>) {
   void unlistenPromise
     .then((fn) => fn())
@@ -483,7 +498,7 @@ export default function App() {
   }, []);
 
   const addBrowserNode = useCallback(
-    (agentNodeId: string, port: number): string => {
+    (agentNodeId: string, port: number, sessionId?: string): string => {
       // Reuse existing browser card for this agent (self-heal retries create new plugin instances).
       const existing = layoutsRef.current.find((l) => {
         if (l.node_type !== "browser") return false;
@@ -496,7 +511,7 @@ export default function App() {
       });
       if (existing) return existing.session_id;
 
-      const browserId = generateNodeId();
+      const browserId = sessionId ?? generateNodeId();
       setLayouts((prev) => {
         const browserLayout: SessionLayout = {
           session_id: browserId,
@@ -614,6 +629,9 @@ export default function App() {
           const nudgeController = new AbortController();
           abortControllers.current.set(agentNodeId, nudgeController);
 
+          const NUDGE_TIMEOUT_MS = 2 * 60_000;
+          const nudgeTimer = setTimeout(() => nudgeController.abort(), NUDGE_TIMEOUT_MS);
+
           let stopped = false;
           await runAgent({
             systemPrompt: getPromptForRole(role),
@@ -654,6 +672,7 @@ export default function App() {
               onStopped: () => { stopped = true; },
             },
           });
+          clearTimeout(nudgeTimer);
           abortControllers.current.delete(agentNodeId);
 
           if (stopped) {
@@ -841,6 +860,7 @@ export default function App() {
             status: "loading",
             answer: "",
             toolActivity: "Connecting…",
+            turnStartedAt: Date.now(),
           }),
         };
         const next = repositionLayouts([...prev, newAgentLayout]);
@@ -908,6 +928,30 @@ export default function App() {
       let accumulatedText = "";
       const mi = { modelName: "unknown", inputPricePerM: 0, outputPricePerM: 0 };
 
+      // --- Turn watchdog: abort if the turn exceeds max duration ---
+      let turnTimedOut = false;
+      const maxTurnMs = MAX_TURN_MS[role] ?? DEFAULT_MAX_TURN_MS;
+      const turnTimer = setTimeout(() => {
+        turnTimedOut = true;
+        console.warn(`[Agent ${agentNodeId}] Turn exceeded ${maxTurnMs / 1000}s — aborting`);
+        controller.abort();
+      }, maxTurnMs);
+
+      // --- Heartbeat: detect if backend force-changed agent state ---
+      let backendRevoked = false;
+      const heartbeat = setInterval(async () => {
+        try {
+          const state = await invoke<string>("agent_check_state", { agentId: agentNodeId });
+          if (state !== "Running" && state !== "Spawned" && state !== "unknown") {
+            backendRevoked = true;
+            console.warn(`[Agent ${agentNodeId}] Backend state changed to "${state}" — aborting frontend`);
+            controller.abort();
+          }
+        } catch { /* best effort */ }
+      }, HEARTBEAT_INTERVAL_MS);
+
+      const turnStartedAt = Date.now();
+
       await runAgent({
         systemPrompt: getPromptForRole(role),
         userMessage: userMessage || "Hello, respond briefly.",
@@ -929,9 +973,10 @@ export default function App() {
               updatePayload({ status: "loading", answer: accumulatedText, toolActivity: "Reasoning…" });
             }
             if (c.type === "tool") {
+              const elapsed = ((Date.now() - turnStartedAt) / 1000).toFixed(0);
               const statusText =
-                c.state === "running" ? (c.status || `Running ${c.name}...`) :
-                c.state === "preparing" ? `Calling ${c.name}...` :
+                c.state === "running" ? (c.status || `Running ${c.name}… (${elapsed}s)`) :
+                c.state === "preparing" ? `Calling ${c.name}…` :
                 (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
               if (statusText) updatePayload({ status: "loading", toolActivity: statusText });
             }
@@ -965,12 +1010,32 @@ export default function App() {
           onError: (msg) => {
             updatePayload({ status: "error", errorMessage: msg }, true, true);
           },
-          onStopped: (fullText) => {
-            updatePayload({ status: "stopped", answer: fullText, toolActivity: "" }, true, true);
+          onStopped: async (fullText) => {
+            if (turnTimedOut || backendRevoked) {
+              const reason = turnTimedOut ? `turn timed out after ${maxTurnMs / 1000}s` : "backend revoked running state";
+              if (role === "developer") {
+                updatePayload({ status: "loading", toolActivity: `Recovering (${reason})…` }, false, true);
+                try {
+                  await invoke("agent_force_yield", { agentId: agentNodeId });
+                  const summary = `Auto-submitted: ${reason}. Accumulated text length: ${fullText.length} chars.`;
+                  await invoke("agent_set_yield_summary", { agentId: agentNodeId, diffSummary: summary });
+                  updatePayload({ status: "in_review", answer: fullText, toolActivity: `Auto-submitted (${reason})` }, true, true);
+                } catch {
+                  updatePayload({ status: "error", errorMessage: `Agent stuck: ${reason}`, answer: fullText }, true, true);
+                }
+              } else {
+                updatePayload({ status: "error", errorMessage: `Agent aborted: ${reason}`, answer: fullText }, true, true);
+                invoke("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => {});
+              }
+            } else {
+              updatePayload({ status: "stopped", answer: fullText, toolActivity: "" }, true, true);
+            }
           },
         },
       });
 
+      clearTimeout(turnTimer);
+      clearInterval(heartbeat);
       if (flushTimer) {
         clearTimeout(flushTimer);
       }

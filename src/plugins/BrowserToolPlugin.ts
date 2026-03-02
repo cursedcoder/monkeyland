@@ -1,7 +1,7 @@
 import { Plugin, type PluginParameter, type PluginExecutionContext } from "./Plugin";
 import { invoke } from "@tauri-apps/api/core";
 
-export type AddBrowserNodeFn = (agentNodeId: string, port: number) => string;
+export type AddBrowserNodeFn = (agentNodeId: string, port: number, sessionId?: string) => string;
 
 export class BrowserToolPlugin extends Plugin {
   private agentNodeId: string;
@@ -13,6 +13,10 @@ export class BrowserToolPlugin extends Plugin {
     super();
     this.agentNodeId = agentNodeId;
     this.addBrowserNode = addBrowserNode;
+  }
+
+  getTimeoutMs(): number {
+    return 90_000;
   }
 
   isEnabled(): boolean {
@@ -89,26 +93,37 @@ export class BrowserToolPlugin extends Plugin {
       text?: string;
       javascript?: string;
     },
+    options?: { abortSignal?: AbortSignal },
   ): Promise<{ result: string }> {
+    const TIMEOUT_MS = 45_000;
+
+    const fetchWithTimeout = (url: string, init: RequestInit = {}): Promise<Response> => {
+      const signals: AbortSignal[] = [AbortSignal.timeout(TIMEOUT_MS)];
+      if (options?.abortSignal) signals.push(options.abortSignal);
+      return fetch(url, { ...init, signal: AbortSignal.any(signals) });
+    };
+
     if (!this.port) {
       this.port = await invoke<number>("browser_ensure_started", { agentId: this.agentNodeId });
     }
 
     if (!this.browserSessionId) {
-      this.browserSessionId = this.addBrowserNode(this.agentNodeId, this.port);
+      const sessionId = `browser-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
-      const resp = await fetch(
+      const resp = await fetchWithTimeout(
         `http://127.0.0.1:${this.port}/session`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: this.browserSessionId }),
+          body: JSON.stringify({ session_id: sessionId }),
         },
       );
       if (!resp.ok) {
         const err = await resp.text();
         throw new Error(`Failed to create browser session: ${err}`);
       }
+
+      this.browserSessionId = this.addBrowserNode(this.agentNodeId, this.port, sessionId);
     }
 
     const base = `http://127.0.0.1:${this.port}/session/${this.browserSessionId}`;
@@ -139,11 +154,19 @@ export class BrowserToolPlugin extends Plugin {
     }
 
     const serverAction = parameters.action === "get_content" ? "content" : parameters.action;
-    const resp = await fetch(`${base}/${serverAction}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    let resp: Response;
+    try {
+      resp = await fetchWithTimeout(`${base}/${serverAction}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "TimeoutError") {
+        return { result: `Error: browser action "${parameters.action}" timed out after ${TIMEOUT_MS / 1000}s` };
+      }
+      throw e;
+    }
 
     if (!resp.ok) {
       const errText = await resp.text();

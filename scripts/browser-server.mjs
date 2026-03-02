@@ -188,14 +188,15 @@ async function handleRequest(req, res) {
           break;
         }
         case 'screenshot': {
-          const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
+          const buffer = await page.screenshot({ type: 'jpeg', quality: 80, timeout: 15000 });
           sendJson(res, { data: buffer.toString('base64'), format: 'jpeg' });
           break;
         }
         case 'content': {
-          const text = await page.evaluate(() =>
-            document.body?.innerText?.slice(0, 16000) || ''
-          );
+          const text = await Promise.race([
+            page.evaluate(() => document.body?.innerText?.slice(0, 16000) || ''),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('content extraction timed out')), 15000)),
+          ]);
           const title = await page.title();
           sendJson(res, { content: text, title, url: page.url() });
           break;
@@ -265,7 +266,10 @@ async function handleRequest(req, res) {
           break;
         }
         case 'evaluate': {
-          const result = await page.evaluate(body.javascript);
+          const result = await Promise.race([
+            page.evaluate(body.javascript),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('evaluate timed out')), 30000)),
+          ]);
           sendJson(res, { result: typeof result === 'string' ? result : JSON.stringify(result) });
           break;
         }

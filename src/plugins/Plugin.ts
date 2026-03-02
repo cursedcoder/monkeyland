@@ -1,6 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
 
+export const DEFAULT_TOOL_TIMEOUT_MS = 60_000;
+
 export interface PluginParameter {
   name: string;
   type: "string" | "number" | "boolean" | "boolean | null" | "string | null" | "number | null";
@@ -16,7 +18,12 @@ export abstract class Plugin {
   abstract getName(): string;
   abstract getDescription(): string;
   abstract getParameters(): PluginParameter[];
-  abstract execute(context: PluginExecutionContext, parameters: any): Promise<any>;
+  abstract execute(context: PluginExecutionContext, parameters: any, options?: { abortSignal?: AbortSignal }): Promise<any>;
+
+  /** Per-tool timeout override. Subclasses can increase for slow tools. */
+  getTimeoutMs(): number {
+    return DEFAULT_TOOL_TIMEOUT_MS;
+  }
   
   isEnabled(): boolean {
     return true;
@@ -29,7 +36,6 @@ export abstract class Plugin {
   toAiTool() {
     const params = this.getParameters();
     
-    // Build a Zod schema dynamically from the PluginParameter array
     const schemaShape: Record<string, z.ZodTypeAny> = {};
     
     for (const param of params) {
@@ -56,11 +62,37 @@ export abstract class Plugin {
       schemaShape[param.name] = zodType;
     }
 
+    const timeoutMs = this.getTimeoutMs();
+    const pluginName = this.getName();
+
     return tool({
       description: this.getDescription(),
       inputSchema: z.object(schemaShape),
-      execute: async (args: any) => {
-        return await this.execute({}, args);
+      execute: async (args: any, { abortSignal }: { abortSignal?: AbortSignal } = {}) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`TOOL_TIMEOUT:${pluginName}:${timeoutMs}`)),
+            timeoutMs,
+          );
+        });
+
+        try {
+          const result = await Promise.race([
+            this.execute({}, args, { abortSignal }),
+            timeoutPromise,
+          ]);
+          clearTimeout(timer);
+          return result;
+        } catch (e) {
+          clearTimeout(timer);
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg.startsWith("TOOL_TIMEOUT:")) {
+            return { result: `Error: ${pluginName} timed out after ${timeoutMs / 1000}s. The operation took too long and was aborted.` };
+          }
+          return { result: `Error: ${msg}` };
+        }
       }
     });
   }

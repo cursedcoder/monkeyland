@@ -542,6 +542,14 @@ pub async fn agent_status(
 }
 
 #[tauri::command]
+pub async fn agent_check_state(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+) -> Result<String, String> {
+    registry.agent_state(&agent_id)
+}
+
+#[tauri::command]
 pub async fn debug_snapshot(registry: State<'_, AgentRegistry>) -> Result<DebugSnapshot, String> {
     registry.debug_snapshot()
 }
@@ -1692,6 +1700,43 @@ mod tests {
         let reg = app.state::<AgentRegistry>();
         let status = agent_status(reg).await.unwrap();
         assert_eq!(status.used_slots, 0);
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_check_state_unknown_agent() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let state = agent_check_state(reg, "nonexistent".into()).await.unwrap();
+        assert_eq!(state, "unknown");
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_check_state_running_agent() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let agent_id = reg.spawn("developer", Some("task-1".into()), None, None).unwrap();
+        let state = agent_check_state(reg, agent_id).await.unwrap();
+        assert_eq!(state, "Running");
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_check_state_after_force_yield() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let agent_id = reg.spawn("developer", Some("task-2".into()), None, None).unwrap();
+        reg.force_yield(&agent_id).unwrap();
+        let state = agent_check_state(reg, agent_id).await.unwrap();
+        assert_eq!(state, "Yielded");
+    }
+
+    #[tokio::test]
+    async fn cmd_agent_check_state_after_kill() {
+        let app = test_app();
+        let reg = app.state::<AgentRegistry>();
+        let agent_id = reg.spawn("developer", Some("task-3".into()), None, None).unwrap();
+        reg.kill(&agent_id).unwrap();
+        let state = agent_check_state(reg, agent_id).await.unwrap();
+        assert_eq!(state, "unknown", "killed agents are removed from registry");
     }
 
     #[tokio::test]

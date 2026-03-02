@@ -14,6 +14,35 @@ import { cardColorsFromId } from "../utils/cardColors";
 const AUTO_SCROLL_THRESHOLD_PX = 80;
 /** Consider "at bottom" for showing/hiding the scroll-to-bottom button. */
 const AT_BOTTOM_THRESHOLD_PX = 24;
+/** Threshold in seconds after which the elapsed timer turns amber. */
+const STALE_THRESHOLD_S = 60;
+
+function ElapsedBadge({ startedAt }: { startedAt: number }) {
+  const [elapsed, setElapsed] = useState(() => Math.floor((Date.now() - startedAt) / 1000));
+  useEffect(() => {
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [startedAt]);
+  const mins = Math.floor(elapsed / 60);
+  const secs = elapsed % 60;
+  const label = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  const stale = elapsed >= STALE_THRESHOLD_S;
+  return (
+    <span
+      className="session-card-elapsed"
+      style={{
+        marginLeft: 8,
+        fontSize: "0.8em",
+        fontVariantNumeric: "tabular-nums",
+        color: stale ? "#f5a623" : "inherit",
+        opacity: stale ? 1 : 0.6,
+      }}
+      title={stale ? "Agent has been running for a while" : "Elapsed time"}
+    >
+      {label}
+    </span>
+  );
+}
 
 const ROLE_LABELS: Record<AgentRole, string> = {
   workforce_manager: "Workforce",
@@ -353,12 +382,14 @@ export function SessionCard({
                 answer?: string;
                 errorMessage?: string;
                 toolActivity?: string;
+                turnStartedAt?: number;
               };
               if (p.status === "loading") {
                 return (
                   <div className="session-card-response">
                     <p className="session-card-response-loading">
                       {p.toolActivity || "Thinking\u2026"}
+                      {p.turnStartedAt ? <ElapsedBadge startedAt={p.turnStartedAt} /> : null}
                     </p>
                     {p.answer ? (
                       <div className="session-card-response-text session-card-markdown">

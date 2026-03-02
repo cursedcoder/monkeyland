@@ -605,12 +605,17 @@ pub async fn tick(
     // After force_yield, the agent goes to Yielded without a validation entry,
     // so the NEXT tick's yield_queue (step 4) will pick it up normally.
     let stuck_running = registry.stuck_running_developers(300)?;
-    for agent_id in stuck_running {
+    for agent_id in &stuck_running {
         eprintln!(
             "[orch] SAFETY NET: Force-yielding developer {} stuck in Running for >5min",
             agent_id
         );
-        let _ = registry.force_yield(&agent_id);
+        let _ = registry.force_yield(agent_id);
+        let _ = env_emit(
+            env,
+            "agent_force_yielded",
+            &serde_json::json!({ "agent_id": agent_id, "reason": "stuck_running_timeout" }),
+        );
     }
 
     // 4c. SAFETY NET: Force-block developers stuck in InReview for > 5 minutes.
