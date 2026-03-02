@@ -8,7 +8,7 @@ vi.mock("@ai-sdk/openai", () => ({
   createOpenAI: vi.fn(() => {
     const chatFn = vi.fn((modelId: string) => ({ modelId, provider: "openai" }));
     const fn = vi.fn((modelId: string) => ({ modelId, provider: "openai" }));
-    fn.chat = chatFn;
+    (fn as unknown as { chat: typeof chatFn }).chat = chatFn;
     return fn;
   }),
 }));

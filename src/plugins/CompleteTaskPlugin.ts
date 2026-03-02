@@ -37,6 +37,7 @@ export class CompleteTaskPlugin extends Plugin {
 
   async execute(
     _context: PluginExecutionContext,
+    _params?: unknown,
   ): Promise<{ result: string }> {
     try {
       await invoke("agent_complete_task", { agentId: this.agentId });

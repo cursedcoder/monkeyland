@@ -1547,10 +1547,11 @@ export default function App() {
       } catch (e) {
         console.error("Failed to spawn validator:", e);
         const submissions = getValidatorSpawnFailureSubmissions(developer_agent_id);
-        let lastOutcome: { all_passed: boolean; retry_count: number; max_retries: number; failures: Array<{ role: string; reasons: string[] }> } | null = null;
+        type ValidationOutcome = { all_passed: boolean; retry_count: number; max_retries: number; failures: Array<{ role: string; reasons: string[] }> } | null;
+        let lastOutcome: ValidationOutcome = null;
         for (const payload of submissions) {
           try {
-            const outcome = await invoke<typeof lastOutcome>("validation_submit", { payload });
+            const outcome = await invoke<ValidationOutcome>("validation_submit", { payload });
             if (outcome) lastOutcome = outcome;
           } catch { /* best effort */ }
         }

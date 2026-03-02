@@ -73,14 +73,14 @@ describe("Plugin.toAiTool() timeout wrapper", () => {
   it("returns result from fast-completing tool", async () => {
     const plugin = new FastPlugin();
     const aiTool = plugin.toAiTool();
-    const result = await aiTool.execute({ input: "hello" }, { abortSignal: undefined as any });
+    const result = await aiTool.execute!({ input: "hello" }, { abortSignal: undefined } as any);
     expect(result).toEqual({ result: "echo: hello" });
   });
 
   it("times out and returns error for hung tool", async () => {
     const plugin = new SlowPlugin(5000);
     const aiTool = plugin.toAiTool();
-    const result = await aiTool.execute({ input: "x" }, { abortSignal: undefined as any });
+    const result = await aiTool.execute!({ input: "x" }, { abortSignal: undefined } as any);
     expect(result.result).toMatch(/timed out/i);
     expect(result.result).toContain("slow_tool");
     expect(result.result).toContain("0.2s");
@@ -89,14 +89,14 @@ describe("Plugin.toAiTool() timeout wrapper", () => {
   it("lets tool complete if faster than timeout", async () => {
     const plugin = new SlowPlugin(50);
     const aiTool = plugin.toAiTool();
-    const result = await aiTool.execute({ input: "x" }, { abortSignal: undefined as any });
+    const result = await aiTool.execute!({ input: "x" }, { abortSignal: undefined } as any);
     expect(result).toEqual({ result: "done" });
   });
 
   it("catches thrown errors and returns error result", async () => {
     const plugin = new ThrowingPlugin();
     const aiTool = plugin.toAiTool();
-    const result = await aiTool.execute({ input: "x" }, { abortSignal: undefined as any });
+    const result = await aiTool.execute!({ input: "x" }, { abortSignal: undefined } as any);
     expect(result.result).toMatch(/Error: something broke/);
   });
 
@@ -106,7 +106,7 @@ describe("Plugin.toAiTool() timeout wrapper", () => {
       const plugin = new FastPlugin();
       const aiTool = plugin.toAiTool();
 
-      const promise = aiTool.execute({ input: "hi" }, { abortSignal: undefined as any });
+      const promise = aiTool.execute!({ input: "hi" }, { abortSignal: undefined } as any);
       await vi.runAllTimersAsync();
       const result = await promise;
 

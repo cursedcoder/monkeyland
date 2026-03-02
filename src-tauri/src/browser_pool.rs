@@ -231,7 +231,10 @@ mod tests {
 
         match result {
             Err(e) => assert!(
-                e.contains("parse") || e.contains("port") || e.contains("spawn") || e.contains("not found"),
+                e.contains("parse")
+                    || e.contains("port")
+                    || e.contains("spawn")
+                    || e.contains("not found"),
                 "unexpected error: {e}"
             ),
             Ok(_) => panic!("should fail with bad JSON"),
@@ -243,18 +246,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let scripts_dir = dir.path().join("scripts");
         std::fs::create_dir_all(&scripts_dir).unwrap();
-        std::fs::write(
-            scripts_dir.join("browser-server.mjs"),
-            "process.exit(0);",
-        )
-        .unwrap();
+        std::fs::write(scripts_dir.join("browser-server.mjs"), "process.exit(0);").unwrap();
 
         let pool = BrowserPool::new();
         let result = pool.ensure_started_from(Some(dir.path()));
 
         match result {
             Err(e) => assert!(
-                e.contains("exited without printing port") || e.contains("spawn") || e.contains("not found"),
+                e.contains("exited without printing port")
+                    || e.contains("spawn")
+                    || e.contains("not found"),
                 "unexpected error: {e}"
             ),
             Ok(_) => panic!("should fail when script prints nothing"),

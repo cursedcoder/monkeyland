@@ -137,14 +137,8 @@ pub fn run() {
                             app_handle: &handle_orch,
                             pool: &pool,
                         };
-                        let _ = orchestration::tick(
-                            &env,
-                            &meta_db,
-                            &registry,
-                            &merge_q,
-                            &metrics,
-                        )
-                        .await;
+                        let _ = orchestration::tick(&env, &meta_db, &registry, &merge_q, &metrics)
+                            .await;
                     }
                 }
             });
@@ -255,9 +249,13 @@ mod tests {
         assert!(app.try_state::<pty_pool::PtyPool>().is_some());
         assert!(app.try_state::<browser_pool::BrowserPool>().is_some());
         assert!(app.try_state::<agent_registry::AgentRegistry>().is_some());
-        assert!(app.try_state::<orchestration::OrchestrationState>().is_some());
+        assert!(app
+            .try_state::<orchestration::OrchestrationState>()
+            .is_some());
         assert!(app.try_state::<orchestration::MergeQueue>().is_some());
-        assert!(app.try_state::<orchestration::OrchestrationMetrics>().is_some());
+        assert!(app
+            .try_state::<orchestration::OrchestrationMetrics>()
+            .is_some());
     }
 
     #[test]
@@ -278,7 +276,10 @@ mod tests {
 
         let db = app.state::<storage::MetaDb>();
         db.set_setting("test_key", "test_val").unwrap();
-        assert_eq!(db.get_setting("test_key").unwrap(), Some("test_val".to_string()));
+        assert_eq!(
+            db.get_setting("test_key").unwrap(),
+            Some("test_val".to_string())
+        );
     }
 
     #[test]
@@ -289,8 +290,7 @@ mod tests {
     /// Test-only invoke handler excluding commands that take AppHandle directly
     /// (beads_dolt_start), which doesn't work with MockRuntime.
     pub(crate) fn test_invoke_handler(
-    ) -> impl Fn(tauri::ipc::Invoke<tauri::test::MockRuntime>) -> bool + Send + Sync + 'static
-    {
+    ) -> impl Fn(tauri::ipc::Invoke<tauri::test::MockRuntime>) -> bool + Send + Sync + 'static {
         tauri::generate_handler![
             crate::commands::save_canvas_layout,
             crate::commands::load_canvas_layout,

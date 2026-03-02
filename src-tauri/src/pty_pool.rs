@@ -275,7 +275,10 @@ mod tests {
         rb.push(&overflow);
         let result = rb.drain();
         assert_eq!(result.len(), RING_BUFFER_CAP);
-        assert!(result.ends_with(&[0xBB; 100]), "newest bytes must be preserved");
+        assert!(
+            result.ends_with(&[0xBB; 100]),
+            "newest bytes must be preserved"
+        );
         assert_eq!(result[0], 0xAA, "oldest surviving byte from first push");
     }
 

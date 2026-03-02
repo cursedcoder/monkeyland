@@ -21,13 +21,7 @@ use tokio::sync::Mutex as TokioMutex;
 pub trait OrchEnv: Send + Sync {
     fn emit_event(&self, event: &str, payload: serde_json::Value) -> Result<(), String>;
     fn run_bd(&self, project_path: &Path, args: &[String]) -> Result<String, String>;
-    fn spawn_pty(
-        &self,
-        id: &str,
-        cols: u16,
-        rows: u16,
-        cwd: Option<&Path>,
-    ) -> Result<(), String>;
+    fn spawn_pty(&self, id: &str, cols: u16, rows: u16, cwd: Option<&Path>) -> Result<(), String>;
     fn kill_pty(&self, id: &str) -> Result<(), String>;
 }
 
@@ -55,13 +49,7 @@ impl<'a> OrchEnv for TauriOrchEnv<'a> {
         run_bd_sync(project_path, args)
     }
 
-    fn spawn_pty(
-        &self,
-        id: &str,
-        cols: u16,
-        rows: u16,
-        cwd: Option<&Path>,
-    ) -> Result<(), String> {
+    fn spawn_pty(&self, id: &str, cols: u16, rows: u16, cwd: Option<&Path>) -> Result<(), String> {
         self.pool.spawn(id, cols, rows, cwd)
     }
 
@@ -482,7 +470,9 @@ pub async fn tick(
                     wt
                 }
                 Ok(Err(e)) => {
-                    eprintln!("[orch] worktree creation failed for {agent_id}: {e} — using project dir");
+                    eprintln!(
+                        "[orch] worktree creation failed for {agent_id}: {e} — using project dir"
+                    );
                     path.to_path_buf()
                 }
                 Err(join_err) => {
@@ -648,7 +638,9 @@ pub async fn tick(
             continue;
         }
         if role == "merge_agent" {
-            eprintln!("[orch] merge agent {agent_id} done for task {task_id}; re-enqueueing for merge");
+            eprintln!(
+                "[orch] merge agent {agent_id} done for task {task_id}; re-enqueueing for merge"
+            );
             if let Ok(Some(_wt)) = registry.get_worktree_path(&agent_id) {
                 let rm_path = path.to_path_buf();
                 let rm_agent = agent_id.clone();
@@ -818,16 +810,20 @@ pub async fn tick(
                 }
                 Ok(Ok(crate::worktree::MergeOutcome::Conflict(detail))) => {
                     handle_merge_conflict(
-                        env, path, registry, merge_queue, metrics, entry, &detail,
+                        env,
+                        path,
+                        registry,
+                        merge_queue,
+                        metrics,
+                        entry,
+                        &detail,
                     )
                     .await;
                 }
                 Ok(Err(e)) => {
                     eprintln!("[orch] merge error for task {task_id}: {e}");
-                    handle_merge_conflict(
-                        env, path, registry, merge_queue, metrics, entry, &e,
-                    )
-                    .await;
+                    handle_merge_conflict(env, path, registry, merge_queue, metrics, entry, &e)
+                        .await;
                 }
                 Err(e) => {
                     eprintln!("[orch] merge join error for task {task_id}: {e}");
@@ -838,7 +834,13 @@ pub async fn tick(
         } else {
             // Rebase failed -- treat as conflict
             handle_merge_conflict(
-                env, path, registry, merge_queue, metrics, entry, "rebase conflict",
+                env,
+                path,
+                registry,
+                merge_queue,
+                metrics,
+                entry,
+                "rebase conflict",
             )
             .await;
         }
@@ -1212,7 +1214,10 @@ mod tests {
                 return Ok(self.bd_ready_response.lock().unwrap().clone());
             }
             // Return empty JSON for `bd show ... --json`
-            if args.len() >= 3 && args[0] == "show" && args.last().map(|a| a.as_str()) == Some("--json") {
+            if args.len() >= 3
+                && args[0] == "show"
+                && args.last().map(|a| a.as_str()) == Some("--json")
+            {
                 return Ok("{}".to_string());
             }
             // Return empty array for epic commands
@@ -1345,7 +1350,9 @@ mod tests {
         env.set_ready_tasks(
             r#"[{"id":"bd-A","issue_type":"task","priority":2},{"id":"bd-B","issue_type":"task","priority":2}]"#,
         );
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let spawned = env.events_named("agent_spawned");
         assert_eq!(spawned.len(), 2, "two developers should spawn");
@@ -1374,7 +1381,9 @@ mod tests {
             };
             registry.yield_for_review(id, yp).unwrap();
         }
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
         for (id, _) in [(&id_a, "bd-A"), (&id_b, "bd-B")] {
             for role in &["code_review", "business_logic", "scope"] {
                 registry.validation_submit(id, role, true, vec![]).unwrap();
@@ -1384,7 +1393,9 @@ mod tests {
         // Tick: both enter Done → both enqueued for merge → train runs.
         // First merge should be clean. Second should conflict because
         // first already changed shared.txt on main.
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         // Determine which task merged cleanly and which conflicted.
         // done_agents_with_tasks() iterates a HashMap so ordering is
@@ -1478,17 +1489,19 @@ mod tests {
 
         // --- 4. Beads (bd) calls ---
 
-        let bd_done_winner = env.bd_calls_matching(&winner_task).iter().any(|args| {
-            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
-        });
+        let bd_done_winner = env
+            .bd_calls_matching(&winner_task)
+            .iter()
+            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
         assert!(
             bd_done_winner,
             "bd update {winner_task} --status done should have been called"
         );
 
-        let bd_done_loser = env.bd_calls_matching(&loser_task).iter().any(|args| {
-            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
-        });
+        let bd_done_loser = env
+            .bd_calls_matching(&loser_task)
+            .iter()
+            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
         assert!(
             !bd_done_loser,
             "bd update {loser_task} --status done should NOT be called (still in conflict)"
@@ -1497,7 +1510,11 @@ mod tests {
         // --- 5. Registry state ---
 
         let snap = registry.debug_snapshot().unwrap();
-        let live_devs: Vec<_> = snap.agents.iter().filter(|a| a.role == "developer").collect();
+        let live_devs: Vec<_> = snap
+            .agents
+            .iter()
+            .filter(|a| a.role == "developer")
+            .collect();
         assert_eq!(
             live_devs.len(),
             0,
@@ -1577,10 +1594,14 @@ mod tests {
         let env = TestOrchEnv::new();
 
         env.set_ready_tasks(r#"[{"id":"bd-ttl-wt","issue_type":"task","priority":2}]"#);
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
-            .as_str().unwrap().to_string();
+            .as_str()
+            .unwrap()
+            .to_string();
         let wt_path = registry.get_worktree_path(&agent_id).unwrap().unwrap();
 
         // Worktree dir should exist on disk right now
@@ -1592,7 +1613,9 @@ mod tests {
         // Expire the agent
         registry.test_backdate_spawn(&agent_id, std::time::Duration::from_secs(901));
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         // --- Filesystem: worktree directory gone ---
 
@@ -1641,7 +1664,10 @@ mod tests {
 
         let head = git(repo.path(), &["symbolic-ref", "--short", "HEAD"]);
         let head_str = String::from_utf8_lossy(&head.stdout).trim().to_string();
-        assert_eq!(head_str, "main", "HEAD should remain on main after TTL kill");
+        assert_eq!(
+            head_str, "main",
+            "HEAD should remain on main after TTL kill"
+        );
 
         // --- claimed_task_ids is empty (dedup cleared for the killed agent) ---
 
@@ -1706,7 +1732,9 @@ mod tests {
         env.set_ready_tasks(
             r#"[{"issue_type":"task","priority":2},{"id":"bd-ok","issue_type":"task","priority":2}]"#,
         );
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let spawned = env.events_named("agent_spawned");
         assert_eq!(spawned.len(), 1, "only the task with an id should spawn");
@@ -1747,7 +1775,12 @@ mod tests {
         let env = TestOrchEnv::new();
 
         let agent_id = registry
-            .spawn("developer", Some("bd-partial".to_string()), None, Some(project_path.to_string()))
+            .spawn(
+                "developer",
+                Some("bd-partial".to_string()),
+                None,
+                Some(project_path.to_string()),
+            )
             .unwrap();
 
         let yp = crate::agent_registry::YieldPayload {
@@ -1756,29 +1789,44 @@ mod tests {
             git_branch: None,
         };
         registry.yield_for_review(&agent_id, yp).unwrap();
-        registry.start_validation(&agent_id, Some("bd-partial".to_string())).unwrap();
+        registry
+            .start_validation(&agent_id, Some("bd-partial".to_string()))
+            .unwrap();
 
         // Only 2 of 3 validators submit
-        registry.validation_submit(&agent_id, "code_review", true, vec![]).unwrap();
-        registry.validation_submit(&agent_id, "business_logic", true, vec![]).unwrap();
+        registry
+            .validation_submit(&agent_id, "code_review", true, vec![])
+            .unwrap();
+        registry
+            .validation_submit(&agent_id, "business_logic", true, vec![])
+            .unwrap();
 
         // Backdate and force-block via safety net
         registry.test_backdate_state_entered(&agent_id, std::time::Duration::from_secs(301));
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         // --- Metrics: safety net fired ---
 
         let snap = metrics.snapshot(0);
-        assert!(snap.validation_timeout_blocks > 0, "safety net should have fired");
+        assert!(
+            snap.validation_timeout_blocks > 0,
+            "safety net should have fired"
+        );
 
         // --- Registry: agent is in Blocked state, not stuck in InReview ---
 
         let debug = registry.debug_snapshot().unwrap();
         let agent = debug.agents.iter().find(|a| a.id == agent_id);
-        assert!(agent.is_some(), "agent should still exist in registry after force-block");
+        assert!(
+            agent.is_some(),
+            "agent should still exist in registry after force-block"
+        );
         assert_eq!(
-            agent.unwrap().state, "Blocked",
+            agent.unwrap().state,
+            "Blocked",
             "agent should be in Blocked state after force_block_validation"
         );
 
@@ -1807,9 +1855,13 @@ mod tests {
         // State should still be Blocked (late submit must not resurrect the agent)
         let debug_after = registry.debug_snapshot().unwrap();
         let agent_after = debug_after.agents.iter().find(|a| a.id == agent_id);
-        assert!(agent_after.is_some(), "agent should still exist after late submit");
+        assert!(
+            agent_after.is_some(),
+            "agent should still exist after late submit"
+        );
         assert_eq!(
-            agent_after.unwrap().state, "Blocked",
+            agent_after.unwrap().state,
+            "Blocked",
             "agent must remain Blocked after late validator submit (no resurrection)"
         );
     }
@@ -1849,7 +1901,10 @@ mod tests {
         // tick should handle it without panicking
         env.set_ready_tasks("[]");
         let result = tick(&env, &meta_db, &registry, &merge_queue, &metrics).await;
-        assert!(result.is_ok(), "merge of dead agent's task should not crash");
+        assert!(
+            result.is_ok(),
+            "merge of dead agent's task should not crash"
+        );
 
         // --- Git state: merge should have landed on main ---
 
@@ -1877,9 +1932,10 @@ mod tests {
 
         // --- Beads: bd update should mark task done ---
 
-        let bd_done = env.bd_calls_matching("bd-ghost").iter().any(|args| {
-            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
-        });
+        let bd_done = env
+            .bd_calls_matching("bd-ghost")
+            .iter()
+            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
         assert!(
             bd_done,
             "bd update bd-ghost --status done should be called even for dead agent"
@@ -1937,7 +1993,9 @@ mod tests {
         };
 
         // Tick 1: spawns agent, bd claim fails silently
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
         assert_eq!(env.events_named("agent_spawned").len(), 1);
 
         // --- bd claim was attempted (even though it will fail) ---
@@ -1971,7 +2029,9 @@ mod tests {
 
         // Tick 2: bd still reports task as ready (claim failed so Beads doesn't know)
         // But registry's claimed_task_ids should prevent a second spawn
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
         assert_eq!(
             env.events_named("agent_spawned").len(),
             1,
@@ -2016,7 +2076,12 @@ mod tests {
 
         // Spawn a merge_agent and make it complete
         let ma_id = registry
-            .spawn("merge_agent", Some("bd-remerge".to_string()), None, Some(project_path.to_string()))
+            .spawn(
+                "merge_agent",
+                Some("bd-remerge".to_string()),
+                None,
+                Some(project_path.to_string()),
+            )
             .unwrap();
 
         // Set a retry count (simulating a prior conflict)
@@ -2027,7 +2092,9 @@ mod tests {
 
         // tick should see the done merge_agent in step 5, re-enqueue the task
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         // --- Git state: the re-merge should land on main ---
 
@@ -2055,9 +2122,10 @@ mod tests {
 
         // --- Beads: bd update --status done called ---
 
-        let bd_done = env.bd_calls_matching("bd-remerge").iter().any(|args| {
-            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
-        });
+        let bd_done = env
+            .bd_calls_matching("bd-remerge")
+            .iter()
+            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
         assert!(
             bd_done,
             "bd update bd-remerge --status done should be called after successful re-merge"
@@ -2088,7 +2156,9 @@ mod tests {
             "merge_status 'merging' should be emitted when re-enqueuing"
         );
         assert!(
-            statuses.iter().any(|e| e["status"] == "done" && e["task_id"] == "bd-remerge"),
+            statuses
+                .iter()
+                .any(|e| e["status"] == "done" && e["task_id"] == "bd-remerge"),
             "merge_status 'done' should be emitted after successful re-merge"
         );
     }
@@ -2116,7 +2186,13 @@ mod tests {
             fn run_bd(&self, p: &Path, args: &[String]) -> Result<String, String> {
                 self.0.run_bd(p, args)
             }
-            fn spawn_pty(&self, _id: &str, _c: u16, _r: u16, _cwd: Option<&Path>) -> Result<(), String> {
+            fn spawn_pty(
+                &self,
+                _id: &str,
+                _c: u16,
+                _r: u16,
+                _cwd: Option<&Path>,
+            ) -> Result<(), String> {
                 Err("PTY pool full (20 slots)".to_string())
             }
             fn kill_pty(&self, _id: &str) -> Result<(), String> {
@@ -2128,12 +2204,18 @@ mod tests {
         inner.set_ready_tasks(r#"[{"id":"bd-nopipe","issue_type":"task","priority":2}]"#);
         let env = FullPoolEnv(inner);
 
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         // --- Events: no agent_spawned emitted ---
 
         let spawned = env.0.events_named("agent_spawned");
-        assert_eq!(spawned.len(), 0, "should not emit agent_spawned when PTY fails");
+        assert_eq!(
+            spawned.len(),
+            0,
+            "should not emit agent_spawned when PTY fails"
+        );
 
         // --- Registry: no zombie agent ---
 
@@ -2201,10 +2283,14 @@ mod tests {
         git(repo.path(), &["commit", "-m", "seed clean"]);
 
         env.set_ready_tasks(r#"[{"id":"bd-clean","issue_type":"task","priority":2}]"#);
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
-            .as_str().unwrap().to_string();
+            .as_str()
+            .unwrap()
+            .to_string();
         let wt_path = registry.get_worktree_path(&agent_id).unwrap().unwrap();
 
         // Modify file in worktree (non-conflicting change)
@@ -2220,13 +2306,19 @@ mod tests {
         };
         registry.yield_for_review(&agent_id, yp).unwrap();
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
         for role in &["code_review", "business_logic", "scope"] {
-            registry.validation_submit(&agent_id, role, true, vec![]).unwrap();
+            registry
+                .validation_submit(&agent_id, role, true, vec![])
+                .unwrap();
         }
 
         // Merge tick
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         // --- Git state on main ---
 
@@ -2266,9 +2358,10 @@ mod tests {
 
         // --- Beads: bd update --status done called ---
 
-        let bd_done = env.bd_calls_matching("bd-clean").iter().any(|args| {
-            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
-        });
+        let bd_done = env
+            .bd_calls_matching("bd-clean")
+            .iter()
+            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
         assert!(
             bd_done,
             "bd update bd-clean --status done should have been called"
@@ -2277,7 +2370,11 @@ mod tests {
         // --- Registry: developer killed, no zombies ---
 
         let snap = registry.debug_snapshot().unwrap();
-        let live_devs: Vec<_> = snap.agents.iter().filter(|a| a.role == "developer").collect();
+        let live_devs: Vec<_> = snap
+            .agents
+            .iter()
+            .filter(|a| a.role == "developer")
+            .collect();
         assert_eq!(
             live_devs.len(),
             0,
@@ -2296,7 +2393,9 @@ mod tests {
 
         let statuses = env.events_named("merge_status");
         assert!(
-            statuses.iter().any(|e| e["status"] == "done" && e["task_id"] == "bd-clean"),
+            statuses
+                .iter()
+                .any(|e| e["status"] == "done" && e["task_id"] == "bd-clean"),
             "merge_status should report done for bd-clean"
         );
     }
@@ -2319,16 +2418,22 @@ mod tests {
         let env = TestOrchEnv::new();
 
         env.set_ready_tasks(r#"[{"id":"bd-fy","issue_type":"task","priority":2}]"#);
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
-            .as_str().unwrap().to_string();
+            .as_str()
+            .unwrap()
+            .to_string();
 
         registry.test_backdate_state_entered(&agent_id, std::time::Duration::from_secs(301));
 
         // Tick A: force_yield fires (step 4b) but yield_queue already ran (step 4)
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         // validation_requested should NOT be emitted on this tick
         // (because yield_queue ran before force_yield)
@@ -2350,7 +2455,9 @@ mod tests {
         );
 
         // Tick B: NOW the yield_queue should pick up the force-yielded agent
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let val_after_tick_b = env.events_named("validation_requested");
         assert_eq!(
@@ -2385,7 +2492,12 @@ mod tests {
         let env = TestOrchEnv::new();
 
         let agent_id = registry
-            .spawn("developer", Some("bd-vfail".to_string()), None, Some(project_path.to_string()))
+            .spawn(
+                "developer",
+                Some("bd-vfail".to_string()),
+                None,
+                Some(project_path.to_string()),
+            )
             .unwrap();
 
         // Backdate state_entered_at to 4 minutes ago (NOT past 5 min threshold)
@@ -2398,16 +2510,33 @@ mod tests {
             git_branch: None,
         };
         registry.yield_for_review(&agent_id, yp).unwrap();
-        registry.start_validation(&agent_id, Some("bd-vfail".to_string())).unwrap();
+        registry
+            .start_validation(&agent_id, Some("bd-vfail".to_string()))
+            .unwrap();
 
         // Fail one validator
-        registry.validation_submit(&agent_id, "code_review", false, vec!["bad code".to_string()]).unwrap();
-        registry.validation_submit(&agent_id, "business_logic", true, vec![]).unwrap();
-        registry.validation_submit(&agent_id, "scope", true, vec![]).unwrap();
+        registry
+            .validation_submit(
+                &agent_id,
+                "code_review",
+                false,
+                vec!["bad code".to_string()],
+            )
+            .unwrap();
+        registry
+            .validation_submit(&agent_id, "business_logic", true, vec![])
+            .unwrap();
+        registry
+            .validation_submit(&agent_id, "scope", true, vec![])
+            .unwrap();
 
         // Agent should now be back in Running state after fail
         let snap_before = registry.debug_snapshot().unwrap();
-        let agent_before = snap_before.agents.iter().find(|a| a.id == agent_id).unwrap();
+        let agent_before = snap_before
+            .agents
+            .iter()
+            .find(|a| a.id == agent_id)
+            .unwrap();
         assert_eq!(
             agent_before.state, "Running",
             "agent should be back in Running after validation failure"
@@ -2426,7 +2555,9 @@ mod tests {
         );
 
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         // The stuck-running safety net should NOT have fired (agent just entered Running)
         let val_events = env.events_named("validation_requested");
@@ -2455,7 +2586,12 @@ mod tests {
     fn duplicate_validator_submit_is_idempotent() {
         let registry = AgentRegistry::new();
         let id = registry
-            .spawn("developer", Some("bd-dup-val".to_string()), None, Some("/tmp".to_string()))
+            .spawn(
+                "developer",
+                Some("bd-dup-val".to_string()),
+                None,
+                Some("/tmp".to_string()),
+            )
             .unwrap();
 
         let yp = crate::agent_registry::YieldPayload {
@@ -2464,22 +2600,41 @@ mod tests {
             git_branch: None,
         };
         registry.yield_for_review(&id, yp).unwrap();
-        registry.start_validation(&id, Some("bd-dup-val".to_string())).unwrap();
+        registry
+            .start_validation(&id, Some("bd-dup-val".to_string()))
+            .unwrap();
 
         // Submit code_review twice
-        let r1 = registry.validation_submit(&id, "code_review", true, vec![]).unwrap();
-        let r2 = registry.validation_submit(&id, "code_review", false, vec!["evil".to_string()]).unwrap();
+        let r1 = registry
+            .validation_submit(&id, "code_review", true, vec![])
+            .unwrap();
+        let r2 = registry
+            .validation_submit(&id, "code_review", false, vec!["evil".to_string()])
+            .unwrap();
 
         // Second submit should be ignored
         assert!(r1.is_none(), "first submit doesn't complete (need 3)");
-        assert!(r2.is_none(), "duplicate submit should be ignored, not counted");
+        assert!(
+            r2.is_none(),
+            "duplicate submit should be ignored, not counted"
+        );
 
         // Submit remaining two
-        registry.validation_submit(&id, "business_logic", true, vec![]).unwrap();
-        let final_result = registry.validation_submit(&id, "scope", true, vec![]).unwrap();
+        registry
+            .validation_submit(&id, "business_logic", true, vec![])
+            .unwrap();
+        let final_result = registry
+            .validation_submit(&id, "scope", true, vec![])
+            .unwrap();
 
-        assert!(final_result.is_some(), "3 unique submits should complete validation");
-        assert!(final_result.unwrap().all_passed, "all should pass (dup was ignored)");
+        assert!(
+            final_result.is_some(),
+            "3 unique submits should complete validation"
+        );
+        assert!(
+            final_result.unwrap().all_passed,
+            "all should pass (dup was ignored)"
+        );
 
         // Agent should now be in Done state
         let snap = registry.debug_snapshot().unwrap();
@@ -2526,9 +2681,16 @@ mod tests {
 
         let registry = AgentRegistry::new();
         let id = registry
-            .spawn("developer", Some("bd-sym".to_string()), None, Some(project.to_str().unwrap().to_string()))
+            .spawn(
+                "developer",
+                Some("bd-sym".to_string()),
+                None,
+                Some(project.to_str().unwrap().to_string()),
+            )
             .unwrap();
-        registry.set_worktree_path(&id, wt.to_str().unwrap()).unwrap();
+        registry
+            .set_worktree_path(&id, wt.to_str().unwrap())
+            .unwrap();
 
         // Try to access the symlinked path
         let escape_path = wt.join("escape");
@@ -2579,10 +2741,9 @@ mod tests {
 
     #[test]
     fn close_eligible_epic_no_children_not_eligible() {
-        let items: Vec<serde_json::Value> = serde_json::from_str(
-            r#"[{"id": "epic-1", "issue_type": "epic", "status": "open"}]"#,
-        )
-        .unwrap();
+        let items: Vec<serde_json::Value> =
+            serde_json::from_str(r#"[{"id": "epic-1", "issue_type": "epic", "status": "open"}]"#)
+                .unwrap();
         let eligible = close_eligible_from_task_list(&items);
         assert!(eligible.is_empty());
     }
@@ -2619,7 +2780,11 @@ mod tests {
         )
         .unwrap();
         let eligible = close_eligible_from_task_list(&items);
-        assert_eq!(eligible, vec!["e1"], "type alias should work same as issue_type");
+        assert_eq!(
+            eligible,
+            vec!["e1"],
+            "type alias should work same as issue_type"
+        );
     }
 
     #[test]
@@ -2842,10 +3007,10 @@ mod tests {
 
         // --- Tick 1: bd ready → spawn developer ---
 
-        env.set_ready_tasks(
-            r#"[{"id":"bd-lifecycle","issue_type":"task","priority":2}]"#,
-        );
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        env.set_ready_tasks(r#"[{"id":"bd-lifecycle","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let spawned = env.events_named("agent_spawned");
         assert_eq!(spawned.len(), 1, "tick 1: exactly one developer spawned");
@@ -2854,7 +3019,10 @@ mod tests {
         assert_eq!(spawned[0]["task_id"].as_str().unwrap(), "bd-lifecycle");
 
         let wt_path = registry.get_worktree_path(&agent_id).unwrap().unwrap();
-        assert!(std::path::Path::new(&wt_path).exists(), "worktree created on disk");
+        assert!(
+            std::path::Path::new(&wt_path).exists(),
+            "worktree created on disk"
+        );
 
         let claim_calls = env.bd_calls_matching("--claim");
         assert_eq!(claim_calls.len(), 1, "bd claim called once");
@@ -2875,29 +3043,44 @@ mod tests {
         // --- Tick 2: yield queue → validation_requested ---
 
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let val_events = env.events_named("validation_requested");
         assert_eq!(val_events.len(), 1, "tick 2: validation_requested emitted");
-        assert_eq!(val_events[0]["developer_agent_id"].as_str().unwrap(), agent_id);
+        assert_eq!(
+            val_events[0]["developer_agent_id"].as_str().unwrap(),
+            agent_id
+        );
         assert_eq!(val_events[0]["task_id"].as_str().unwrap(), "bd-lifecycle");
 
         let snap = registry.debug_snapshot().unwrap();
         let agent = snap.agents.iter().find(|a| a.id == agent_id).unwrap();
-        assert_eq!(agent.state, "InReview", "agent should be InReview after tick 2");
+        assert_eq!(
+            agent.state, "InReview",
+            "agent should be InReview after tick 2"
+        );
 
         // All 3 validators pass
         for role in &["code_review", "business_logic", "scope"] {
-            registry.validation_submit(&agent_id, role, true, vec![]).unwrap();
+            registry
+                .validation_submit(&agent_id, role, true, vec![])
+                .unwrap();
         }
 
         let snap = registry.debug_snapshot().unwrap();
         let agent = snap.agents.iter().find(|a| a.id == agent_id).unwrap();
-        assert_eq!(agent.state, "Done", "agent enters Done after all validators pass");
+        assert_eq!(
+            agent.state, "Done",
+            "agent enters Done after all validators pass"
+        );
 
         // --- Tick 3: done → merge queue → merge clean → done ---
 
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let content = std::fs::read_to_string(repo.path().join("feature.txt")).unwrap();
         assert_eq!(content, "implemented feature", "change merged to main");
@@ -2908,22 +3091,31 @@ mod tests {
             "main",
             "HEAD on main"
         );
-        assert!(!repo.path().join(".git/MERGE_HEAD").exists(), "no stale MERGE_HEAD");
+        assert!(
+            !repo.path().join(".git/MERGE_HEAD").exists(),
+            "no stale MERGE_HEAD"
+        );
 
         let branch = git(repo.path(), &["rev-parse", "--verify", "task/bd-lifecycle"]);
         assert!(!branch.status.success(), "task branch deleted after merge");
 
-        assert!(!std::path::Path::new(&wt_path).exists(), "worktree removed from disk");
+        assert!(
+            !std::path::Path::new(&wt_path).exists(),
+            "worktree removed from disk"
+        );
 
         let statuses = env.events_named("merge_status");
         assert!(
-            statuses.iter().any(|e| e["status"] == "done" && e["task_id"] == "bd-lifecycle"),
+            statuses
+                .iter()
+                .any(|e| e["status"] == "done" && e["task_id"] == "bd-lifecycle"),
             "merge_status=done emitted"
         );
 
-        let bd_done = env.bd_calls_matching("bd-lifecycle").iter().any(|args| {
-            args.contains(&"update".to_string()) && args.contains(&"done".to_string())
-        });
+        let bd_done = env
+            .bd_calls_matching("bd-lifecycle")
+            .iter()
+            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
         assert!(bd_done, "bd update --status done called");
 
         let snap = registry.debug_snapshot().unwrap();
@@ -2932,9 +3124,18 @@ mod tests {
 
         // Verify complete event sequence
         let all_events: Vec<String> = env.events().iter().map(|e| e.event.clone()).collect();
-        let spawned_idx = all_events.iter().position(|e| e == "agent_spawned").unwrap();
-        let val_idx = all_events.iter().position(|e| e == "validation_requested").unwrap();
-        let merge_done_idx = all_events.iter().rposition(|e| e == "merge_status").unwrap();
+        let spawned_idx = all_events
+            .iter()
+            .position(|e| e == "agent_spawned")
+            .unwrap();
+        let val_idx = all_events
+            .iter()
+            .position(|e| e == "validation_requested")
+            .unwrap();
+        let merge_done_idx = all_events
+            .iter()
+            .rposition(|e| e == "merge_status")
+            .unwrap();
         assert!(
             spawned_idx < val_idx && val_idx < merge_done_idx,
             "event ordering: agent_spawned < validation_requested < merge_status"
@@ -2961,10 +3162,14 @@ mod tests {
 
         // Tick 1: spawn developer
         env.set_ready_tasks(r#"[{"id":"bd-retry","issue_type":"task","priority":2}]"#);
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
-            .as_str().unwrap().to_string();
+            .as_str()
+            .unwrap()
+            .to_string();
         let wt_path = registry.get_worktree_path(&agent_id).unwrap().unwrap();
 
         // First attempt: developer modifies file and yields
@@ -2981,15 +3186,28 @@ mod tests {
 
         // Tick 2: yield queue → validation_requested #1
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let val_events_1 = env.events_named("validation_requested");
         assert_eq!(val_events_1.len(), 1, "first validation_requested emitted");
 
         // Validators: code_review FAILS, others pass
-        registry.validation_submit(&agent_id, "code_review", false, vec!["Missing error handling".to_string()]).unwrap();
-        registry.validation_submit(&agent_id, "business_logic", true, vec![]).unwrap();
-        let outcome = registry.validation_submit(&agent_id, "scope", true, vec![]).unwrap();
+        registry
+            .validation_submit(
+                &agent_id,
+                "code_review",
+                false,
+                vec!["Missing error handling".to_string()],
+            )
+            .unwrap();
+        registry
+            .validation_submit(&agent_id, "business_logic", true, vec![])
+            .unwrap();
+        let outcome = registry
+            .validation_submit(&agent_id, "scope", true, vec![])
+            .unwrap();
         assert!(outcome.is_some(), "outcome returned after 3 validators");
         assert!(!outcome.unwrap().all_passed, "validation should fail");
 
@@ -3010,14 +3228,18 @@ mod tests {
         registry.yield_for_review(&agent_id, yp2).unwrap();
 
         // Tick 3: second yield → validation_requested #2
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let val_events_2 = env.events_named("validation_requested");
         assert_eq!(val_events_2.len(), 2, "second validation_requested emitted");
 
         // All validators pass this time
         for role in &["code_review", "business_logic", "scope"] {
-            registry.validation_submit(&agent_id, role, true, vec![]).unwrap();
+            registry
+                .validation_submit(&agent_id, role, true, vec![])
+                .unwrap();
         }
 
         let snap = registry.debug_snapshot().unwrap();
@@ -3025,14 +3247,18 @@ mod tests {
         assert_eq!(agent.state, "Done", "agent Done after second validation");
 
         // Tick 4: merge
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let content = std::fs::read_to_string(repo.path().join("retry.txt")).unwrap();
         assert_eq!(content, "v3 fixed", "fixed version merged to main");
 
         let statuses = env.events_named("merge_status");
         assert!(
-            statuses.iter().any(|e| e["status"] == "done" && e["task_id"] == "bd-retry"),
+            statuses
+                .iter()
+                .any(|e| e["status"] == "done" && e["task_id"] == "bd-retry"),
             "merge_status=done emitted for retry task"
         );
 
@@ -3066,19 +3292,28 @@ mod tests {
             {"id":"bd-task-2","issue_type":"task","priority":2}
         ]"#,
         );
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         let spawned = env.events_named("agent_spawned");
         assert_eq!(spawned.len(), 3, "PM + 2 developers spawned");
 
-        let pm: Vec<_> = spawned.iter().filter(|e| e["role"] == "project_manager").collect();
-        let devs: Vec<_> = spawned.iter().filter(|e| e["role"] == "developer").collect();
+        let pm: Vec<_> = spawned
+            .iter()
+            .filter(|e| e["role"] == "project_manager")
+            .collect();
+        let devs: Vec<_> = spawned
+            .iter()
+            .filter(|e| e["role"] == "developer")
+            .collect();
         assert_eq!(pm.len(), 1, "one PM for epic");
         assert_eq!(devs.len(), 2, "two developers for tasks");
         assert_eq!(pm[0]["task_id"].as_str().unwrap(), "epic-main");
 
         let pm_id = pm[0]["agent_id"].as_str().unwrap().to_string();
-        let dev_ids: Vec<String> = devs.iter()
+        let dev_ids: Vec<String> = devs
+            .iter()
             .map(|e| e["agent_id"].as_str().unwrap().to_string())
             .collect();
 
@@ -3098,13 +3333,24 @@ mod tests {
         // Both developers do work and yield
         for dev_id in &dev_ids {
             let wt_path = registry.get_worktree_path(dev_id).unwrap().unwrap();
-            let filename = format!("{wt_path}/work-{}.txt", dev_id.chars().take(8).collect::<String>());
+            let filename = format!(
+                "{wt_path}/work-{}.txt",
+                dev_id.chars().take(8).collect::<String>()
+            );
             std::fs::write(&filename, "developer work").unwrap();
             git_in(&wt_path, &["add", "."]);
             git_in(&wt_path, &["commit", "-m", "dev work"]);
 
-            let task_id = registry.debug_snapshot().unwrap().agents.iter()
-                .find(|a| a.id == *dev_id).unwrap().task_id.clone().unwrap();
+            let task_id = registry
+                .debug_snapshot()
+                .unwrap()
+                .agents
+                .iter()
+                .find(|a| a.id == *dev_id)
+                .unwrap()
+                .task_id
+                .clone()
+                .unwrap();
             let yp = crate::agent_registry::YieldPayload {
                 status: "done".to_string(),
                 diff_summary: None,
@@ -3115,11 +3361,17 @@ mod tests {
 
         // Tick 2: PM killed (done non-dev), devs enter validation
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         // PM should be killed now (step 5: "PM agents are killed immediately")
         let snap = registry.debug_snapshot().unwrap();
-        let live_pms: Vec<_> = snap.agents.iter().filter(|a| a.role == "project_manager").collect();
+        let live_pms: Vec<_> = snap
+            .agents
+            .iter()
+            .filter(|a| a.role == "project_manager")
+            .collect();
         assert_eq!(live_pms.len(), 0, "PM should be killed after completing");
 
         let val_events = env.events_named("validation_requested");
@@ -3128,20 +3380,33 @@ mod tests {
         // Pass all validators for both devs
         for dev_id in &dev_ids {
             for role in &["code_review", "business_logic", "scope"] {
-                registry.validation_submit(dev_id, role, true, vec![]).unwrap();
+                registry
+                    .validation_submit(dev_id, role, true, vec![])
+                    .unwrap();
             }
         }
 
         // Tick 3: merge both developers
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
-        let merge_dones: Vec<_> = env.events_named("merge_status").into_iter()
+        let merge_dones: Vec<_> = env
+            .events_named("merge_status")
+            .into_iter()
             .filter(|e| e["status"] == "done")
             .collect();
-        assert!(merge_dones.len() >= 1, "at least one merge_status=done emitted");
+        assert!(
+            merge_dones.len() >= 1,
+            "at least one merge_status=done emitted"
+        );
 
         let snap = registry.debug_snapshot().unwrap();
-        let live_devs: Vec<_> = snap.agents.iter().filter(|a| a.role == "developer").collect();
+        let live_devs: Vec<_> = snap
+            .agents
+            .iter()
+            .filter(|a| a.role == "developer")
+            .collect();
         assert_eq!(live_devs.len(), 0, "all developers killed after merge");
     }
 
@@ -3193,7 +3458,9 @@ mod tests {
 
         // Tick: safety mode caps merges at 1
         env.set_ready_tasks("[]");
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
         assert_eq!(
             merge_queue.depth(),
@@ -3203,12 +3470,21 @@ mod tests {
 
         let statuses = env.events_named("merge_status");
         let done_count = statuses.iter().filter(|e| e["status"] == "done").count();
-        assert_eq!(done_count, 1, "exactly 1 merge_status=done emitted this tick");
+        assert_eq!(
+            done_count, 1,
+            "exactly 1 merge_status=done emitted this tick"
+        );
 
         // Tick again: process the remaining entry
-        tick(&env, &meta_db, &registry, &merge_queue, &metrics).await.unwrap();
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
 
-        assert_eq!(merge_queue.depth(), 0, "queue fully drained after second tick");
+        assert_eq!(
+            merge_queue.depth(),
+            0,
+            "queue fully drained after second tick"
+        );
 
         let statuses = env.events_named("merge_status");
         let done_count = statuses.iter().filter(|e| e["status"] == "done").count();

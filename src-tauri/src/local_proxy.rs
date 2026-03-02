@@ -150,9 +150,7 @@ mod tests {
         let app = Router::new()
             .route(
                 "/test",
-                get(|| async {
-                    axum::Json(serde_json::json!({"ok": true}))
-                }),
+                get(|| async { axum::Json(serde_json::json!({"ok": true})) }),
             )
             .route(
                 "/echo-status",
@@ -223,7 +221,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), 201, "proxy should preserve upstream status code");
+        assert_eq!(
+            resp.status(),
+            201,
+            "proxy should preserve upstream status code"
+        );
     }
 
     #[tokio::test]
@@ -264,9 +266,7 @@ mod tests {
 
     #[tokio::test]
     async fn proxy_unreachable_target_returns_500() {
-        let proxy_port = start("http://127.0.0.1:19999".to_string())
-            .await
-            .unwrap();
+        let proxy_port = start("http://127.0.0.1:19999".to_string()).await.unwrap();
 
         let client = reqwest::Client::new();
         let resp = client

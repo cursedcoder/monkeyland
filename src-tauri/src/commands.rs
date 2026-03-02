@@ -503,11 +503,7 @@ pub async fn agent_restore_batch(
     for id in &restored_ids {
         let spec = payload.agents.iter().find(|a| &a.agent_id == id);
         let cwd = spec
-            .and_then(|a| {
-                a.worktree_path
-                    .as_deref()
-                    .or(a.project_path.as_deref())
-            })
+            .and_then(|a| a.worktree_path.as_deref().or(a.project_path.as_deref()))
             .map(std::path::Path::new)
             .filter(|p| p.as_os_str().len() > 0);
         let _ = pool.spawn(id, 80, 24, cwd);
@@ -965,7 +961,12 @@ pub async fn validator_cleanup_process_tree(
         format!("kill {} >/dev/null 2>&1 || true", payload.pid),
         format!("pkill -TERM -P {} >/dev/null 2>&1 || true", payload.pid),
     ];
-    if let Some(dir) = payload.cwd.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(dir) = payload
+        .cwd
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         let escaped = shell_single_quote(dir);
         // Safety net for orphaned vite workers detached from npm parent.
         cleanup_steps.push(format!(
@@ -974,9 +975,20 @@ pub async fn validator_cleanup_process_tree(
         ));
     }
     cleanup_steps.push("sleep 0.25".to_string());
-    cleanup_steps.push(format!("kill -KILL -- -{} >/dev/null 2>&1 || true", payload.pid));
-    cleanup_steps.push(format!("pkill -KILL -P {} >/dev/null 2>&1 || true", payload.pid));
-    if let Some(dir) = payload.cwd.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    cleanup_steps.push(format!(
+        "kill -KILL -- -{} >/dev/null 2>&1 || true",
+        payload.pid
+    ));
+    cleanup_steps.push(format!(
+        "pkill -KILL -P {} >/dev/null 2>&1 || true",
+        payload.pid
+    ));
+    if let Some(dir) = payload
+        .cwd
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         let escaped = shell_single_quote(dir);
         cleanup_steps.push(format!(
             "pkill -KILL -f {}/node_modules/.bin/vite >/dev/null 2>&1 || true",
@@ -1198,7 +1210,10 @@ mod tests {
 
     #[test]
     fn interactive_with_no_interactive_flag_allowed() {
-        assert!(is_likely_interactive_without_flags("npm create vite@latest --no-interactive").is_none());
+        assert!(
+            is_likely_interactive_without_flags("npm create vite@latest --no-interactive")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1270,7 +1285,10 @@ mod tests {
     #[test]
     fn halt_substring_in_echo_is_known_false_positive() {
         let result = is_destructive_command("echo halt > log.txt");
-        assert!(result.is_some(), "known false positive: 'halt' substring in echo");
+        assert!(
+            result.is_some(),
+            "known false positive: 'halt' substring in echo"
+        );
     }
 
     #[test]
@@ -1577,14 +1595,20 @@ mod tests {
             layouts: vec![
                 SessionLayout {
                     session_id: "s1".into(),
-                    x: 10.0, y: 20.0, w: 300.0, h: 200.0,
+                    x: 10.0,
+                    y: 20.0,
+                    w: 300.0,
+                    h: 200.0,
                     collapsed: false,
                     node_type: "agent".into(),
                     payload: "".into(),
                 },
                 SessionLayout {
                     session_id: "s2".into(),
-                    x: 50.0, y: 60.0, w: 400.0, h: 100.0,
+                    x: 50.0,
+                    y: 60.0,
+                    w: 400.0,
+                    h: 100.0,
                     collapsed: true,
                     node_type: "log".into(),
                     payload: "data".into(),
@@ -1595,10 +1619,18 @@ mod tests {
 
         let loaded = load_canvas_layout(db).await.unwrap();
         assert_eq!(loaded.layouts.len(), 2);
-        let s1 = loaded.layouts.iter().find(|l| l.session_id == "s1").unwrap();
+        let s1 = loaded
+            .layouts
+            .iter()
+            .find(|l| l.session_id == "s1")
+            .unwrap();
         assert_eq!(s1.x, 10.0);
         assert_eq!(s1.node_type, "agent");
-        let s2 = loaded.layouts.iter().find(|l| l.session_id == "s2").unwrap();
+        let s2 = loaded
+            .layouts
+            .iter()
+            .find(|l| l.session_id == "s2")
+            .unwrap();
         assert!(s2.collapsed);
         assert_eq!(s2.payload, "data");
     }
@@ -1620,10 +1652,15 @@ mod tests {
         assert_eq!(defaults.provider, "anthropic");
         assert!(defaults.model.contains("claude"));
 
-        save_llm_settings(db.clone(), LlmSettingsPayload {
-            provider: "openai".into(),
-            model: "gpt-4o".into(),
-        }).await.unwrap();
+        save_llm_settings(
+            db.clone(),
+            LlmSettingsPayload {
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+            },
+        )
+        .await
+        .unwrap();
 
         let updated = load_llm_settings(db).await.unwrap();
         assert_eq!(updated.provider, "openai");
@@ -1635,10 +1672,14 @@ mod tests {
         let app = test_app();
         let db = app.state::<crate::storage::MetaDb>();
 
-        let none_key = get_llm_api_key(db.clone(), "anthropic".into()).await.unwrap();
+        let none_key = get_llm_api_key(db.clone(), "anthropic".into())
+            .await
+            .unwrap();
         assert!(none_key.is_none());
 
-        set_llm_api_key(db.clone(), "anthropic".into(), "sk-test-123".into()).await.unwrap();
+        set_llm_api_key(db.clone(), "anthropic".into(), "sk-test-123".into())
+            .await
+            .unwrap();
 
         let key = get_llm_api_key(db, "anthropic".into()).await.unwrap();
         assert_eq!(key, Some("sk-test-123".to_string()));
@@ -1683,11 +1724,14 @@ mod tests {
         assert!(none_path.is_none() || none_path.as_deref() == Some(""));
 
         set_beads_project_path(db.clone(), reg.clone(), Some("/tmp/project".into()), None)
-            .await.unwrap();
+            .await
+            .unwrap();
         let path = get_beads_project_path(db.clone()).await.unwrap();
         assert_eq!(path, Some("/tmp/project".to_string()));
 
-        set_beads_project_path(db.clone(), reg, None, None).await.unwrap();
+        set_beads_project_path(db.clone(), reg, None, None)
+            .await
+            .unwrap();
         let cleared = get_beads_project_path(db).await.unwrap();
         assert_eq!(cleared, Some("".to_string()));
     }
@@ -1714,7 +1758,9 @@ mod tests {
     async fn cmd_agent_check_state_running_agent() {
         let app = test_app();
         let reg = app.state::<AgentRegistry>();
-        let agent_id = reg.spawn("developer", Some("task-1".into()), None, None).unwrap();
+        let agent_id = reg
+            .spawn("developer", Some("task-1".into()), None, None)
+            .unwrap();
         let state = agent_check_state(reg, agent_id).await.unwrap();
         assert_eq!(state, "Running");
     }
@@ -1723,7 +1769,9 @@ mod tests {
     async fn cmd_agent_check_state_after_force_yield() {
         let app = test_app();
         let reg = app.state::<AgentRegistry>();
-        let agent_id = reg.spawn("developer", Some("task-2".into()), None, None).unwrap();
+        let agent_id = reg
+            .spawn("developer", Some("task-2".into()), None, None)
+            .unwrap();
         reg.force_yield(&agent_id).unwrap();
         let state = agent_check_state(reg, agent_id).await.unwrap();
         assert_eq!(state, "Yielded");
@@ -1733,7 +1781,9 @@ mod tests {
     async fn cmd_agent_check_state_after_kill() {
         let app = test_app();
         let reg = app.state::<AgentRegistry>();
-        let agent_id = reg.spawn("developer", Some("task-3".into()), None, None).unwrap();
+        let agent_id = reg
+            .spawn("developer", Some("task-3".into()), None, None)
+            .unwrap();
         reg.kill(&agent_id).unwrap();
         let state = agent_check_state(reg, agent_id).await.unwrap();
         assert_eq!(state, "unknown", "killed agents are removed from registry");
@@ -1751,8 +1801,12 @@ mod tests {
     async fn cmd_set_role_config() {
         let app = test_app();
         let reg = app.state::<AgentRegistry>();
-        set_role_config(reg.clone(), "developer".into(), Some(2)).await.unwrap();
-        set_role_config(reg, "developer".into(), None).await.unwrap();
+        set_role_config(reg.clone(), "developer".into(), Some(2))
+            .await
+            .unwrap();
+        set_role_config(reg, "developer".into(), None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1765,7 +1819,9 @@ mod tests {
         let q = agent_quota(reg.clone(), id.clone()).await.unwrap().unwrap();
         assert_eq!(q.tokens_used, 0);
 
-        agent_report_tokens(reg.clone(), id.clone(), 500).await.unwrap();
+        agent_report_tokens(reg.clone(), id.clone(), 500)
+            .await
+            .unwrap();
         let q2 = agent_quota(reg, id).await.unwrap().unwrap();
         assert_eq!(q2.tokens_used, 500);
     }
@@ -1775,13 +1831,21 @@ mod tests {
         let app = test_app();
         let reg = app.state::<AgentRegistry>();
 
-        let id = reg.spawn("developer", Some("t-1".into()), None, None).unwrap();
+        let id = reg
+            .spawn("developer", Some("t-1".into()), None, None)
+            .unwrap();
 
-        agent_yield(reg.clone(), id.clone(), YieldPayload {
-            status: "ready".into(),
-            git_branch: Some("feat/test".into()),
-            diff_summary: Some("added tests".into()),
-        }).await.unwrap();
+        agent_yield(
+            reg.clone(),
+            id.clone(),
+            YieldPayload {
+                status: "ready".into(),
+                git_branch: Some("feat/test".into()),
+                diff_summary: Some("added tests".into()),
+            },
+        )
+        .await
+        .unwrap();
 
         let snap = debug_snapshot(reg).await.unwrap();
         let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
@@ -1796,7 +1860,9 @@ mod tests {
         let a1 = reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
         let a2 = reg.spawn("worker", Some("t-2".into()), None, None).unwrap();
 
-        let sent = agent_message(reg.clone(), a1.clone(), a2.clone(), "hello".into()).await.unwrap();
+        let sent = agent_message(reg.clone(), a1.clone(), a2.clone(), "hello".into())
+            .await
+            .unwrap();
         assert!(sent);
 
         let msgs = agent_poll_messages(reg, a2).await.unwrap();
@@ -1809,36 +1875,57 @@ mod tests {
         let app = test_app();
         let reg = app.state::<AgentRegistry>();
 
-        let dev_id = reg.spawn("developer", Some("t-1".into()), None, None).unwrap();
-        reg.yield_for_review(&dev_id, YieldPayload {
-            status: "ready".into(),
-            git_branch: None,
-            diff_summary: None,
-        }).unwrap();
+        let dev_id = reg
+            .spawn("developer", Some("t-1".into()), None, None)
+            .unwrap();
+        reg.yield_for_review(
+            &dev_id,
+            YieldPayload {
+                status: "ready".into(),
+                git_branch: None,
+                diff_summary: None,
+            },
+        )
+        .unwrap();
         reg.start_validation(&dev_id, Some("t-1".into())).unwrap();
 
-        let r1 = validation_submit(reg.clone(), ValidationSubmitPayload {
-            developer_agent_id: dev_id.clone(),
-            validator_role: "v1".into(),
-            pass: true,
-            reasons: vec![],
-        }).await.unwrap();
+        let r1 = validation_submit(
+            reg.clone(),
+            ValidationSubmitPayload {
+                developer_agent_id: dev_id.clone(),
+                validator_role: "v1".into(),
+                pass: true,
+                reasons: vec![],
+            },
+        )
+        .await
+        .unwrap();
         assert!(r1.is_none());
 
-        let r2 = validation_submit(reg.clone(), ValidationSubmitPayload {
-            developer_agent_id: dev_id.clone(),
-            validator_role: "v2".into(),
-            pass: true,
-            reasons: vec![],
-        }).await.unwrap();
+        let r2 = validation_submit(
+            reg.clone(),
+            ValidationSubmitPayload {
+                developer_agent_id: dev_id.clone(),
+                validator_role: "v2".into(),
+                pass: true,
+                reasons: vec![],
+            },
+        )
+        .await
+        .unwrap();
         assert!(r2.is_none());
 
-        let r3 = validation_submit(reg, ValidationSubmitPayload {
-            developer_agent_id: dev_id,
-            validator_role: "v3".into(),
-            pass: true,
-            reasons: vec![],
-        }).await.unwrap();
+        let r3 = validation_submit(
+            reg,
+            ValidationSubmitPayload {
+                developer_agent_id: dev_id,
+                validator_role: "v3".into(),
+                pass: true,
+                reasons: vec![],
+            },
+        )
+        .await
+        .unwrap();
         assert!(r3.is_some());
         assert!(r3.unwrap().all_passed);
     }
@@ -1866,7 +1953,9 @@ mod tests {
     async fn cmd_agent_turn_ended_nonexistent() {
         let app = test_app();
         let reg = app.state::<AgentRegistry>();
-        let result = agent_turn_ended(reg, "nonexistent".into(), "worker".into()).await.unwrap();
+        let result = agent_turn_ended(reg, "nonexistent".into(), "worker".into())
+            .await
+            .unwrap();
         assert_eq!(result, "not_found");
     }
 
@@ -1875,11 +1964,14 @@ mod tests {
         let app = test_app();
         let reg = app.state::<AgentRegistry>();
 
-        let id = reg.spawn("developer", Some("t-1".into()), None, None).unwrap();
+        let id = reg
+            .spawn("developer", Some("t-1".into()), None, None)
+            .unwrap();
         agent_force_yield(reg.clone(), id.clone()).await.unwrap();
 
         agent_set_yield_summary(reg.clone(), id.clone(), "force yielded summary".into())
-            .await.unwrap();
+            .await
+            .unwrap();
 
         let snap = debug_snapshot(reg).await.unwrap();
         let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
@@ -1892,7 +1984,9 @@ mod tests {
         let reg = app.state::<AgentRegistry>();
 
         let id = reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
-        agent_gate_tool(reg, id, "terminal_exec".into()).await.unwrap();
+        agent_gate_tool(reg, id, "terminal_exec".into())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1940,11 +2034,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("hello.txt");
 
-        write_file(reg.clone(), file_path.to_str().unwrap().into(), "world".into(), None)
-            .await.unwrap();
+        write_file(
+            reg.clone(),
+            file_path.to_str().unwrap().into(),
+            "world".into(),
+            None,
+        )
+        .await
+        .unwrap();
 
         let content = read_file(reg, file_path.to_str().unwrap().into(), None)
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(content, "world");
     }
 
@@ -1991,7 +2092,7 @@ mod tests {
         assert!(killed);
 
         let snap = debug_snapshot(reg).await.unwrap();
-        assert!(snap.agents.iter().find(|a| a.id == id).is_none());
+        assert!(!snap.agents.iter().any(|a| a.id == id));
     }
 
     #[tokio::test]
@@ -2015,7 +2116,9 @@ mod tests {
         orch_start(orch.clone()).await.unwrap();
         reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
 
-        full_reset(orch.clone(), reg.clone(), pool, db).await.unwrap();
+        full_reset(orch.clone(), reg.clone(), pool, db)
+            .await
+            .unwrap();
 
         assert_eq!(orch_get_state(orch).await.unwrap(), 2);
         let snap = debug_snapshot(reg).await.unwrap();
@@ -2028,13 +2131,19 @@ mod tests {
         let pool = app.state::<crate::pty_pool::PtyPool>();
         let reg = app.state::<AgentRegistry>();
 
-        let result = terminal_exec(pool, reg, TerminalExecPayload {
-            session_id: "test".into(),
-            command: "echo hello_world".into(),
-            timeout_ms: 5_000,
-            cwd: None,
-            agent_id: None,
-        }).await.unwrap();
+        let result = terminal_exec(
+            pool,
+            reg,
+            TerminalExecPayload {
+                session_id: "test".into(),
+                command: "echo hello_world".into(),
+                timeout_ms: 5_000,
+                cwd: None,
+                agent_id: None,
+            },
+        )
+        .await
+        .unwrap();
         assert!(result.contains("hello_world"));
     }
 
@@ -2044,13 +2153,18 @@ mod tests {
         let pool = app.state::<crate::pty_pool::PtyPool>();
         let reg = app.state::<AgentRegistry>();
 
-        let result = terminal_exec(pool, reg, TerminalExecPayload {
-            session_id: "test".into(),
-            command: "rm -rf /".into(),
-            timeout_ms: 5_000,
-            cwd: None,
-            agent_id: None,
-        }).await;
+        let result = terminal_exec(
+            pool,
+            reg,
+            TerminalExecPayload {
+                session_id: "test".into(),
+                command: "rm -rf /".into(),
+                timeout_ms: 5_000,
+                cwd: None,
+                agent_id: None,
+            },
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Blocked"));
     }
@@ -2061,13 +2175,19 @@ mod tests {
         let pool = app.state::<crate::pty_pool::PtyPool>();
         let reg = app.state::<AgentRegistry>();
 
-        let result = terminal_exec(pool, reg, TerminalExecPayload {
-            session_id: "test".into(),
-            command: "kill 12345".into(),
-            timeout_ms: 5_000,
-            cwd: None,
-            agent_id: None,
-        }).await.unwrap();
+        let result = terminal_exec(
+            pool,
+            reg,
+            TerminalExecPayload {
+                session_id: "test".into(),
+                command: "kill 12345".into(),
+                timeout_ms: 5_000,
+                cwd: None,
+                agent_id: None,
+            },
+        )
+        .await
+        .unwrap();
         assert!(result.contains("NOT NEEDED"));
     }
 
@@ -2078,13 +2198,19 @@ mod tests {
         let reg = app.state::<AgentRegistry>();
         let dir = tempfile::tempdir().unwrap();
 
-        let result = terminal_exec(pool, reg, TerminalExecPayload {
-            session_id: "test".into(),
-            command: "pwd".into(),
-            timeout_ms: 5_000,
-            cwd: Some(dir.path().to_str().unwrap().into()),
-            agent_id: None,
-        }).await.unwrap();
+        let result = terminal_exec(
+            pool,
+            reg,
+            TerminalExecPayload {
+                session_id: "test".into(),
+                command: "pwd".into(),
+                timeout_ms: 5_000,
+                cwd: Some(dir.path().to_str().unwrap().into()),
+                agent_id: None,
+            },
+        )
+        .await
+        .unwrap();
         assert!(result.contains(dir.path().to_str().unwrap()));
     }
 
@@ -2094,13 +2220,18 @@ mod tests {
         let pool = app.state::<crate::pty_pool::PtyPool>();
         let reg = app.state::<AgentRegistry>();
 
-        let result = terminal_exec(pool, reg, TerminalExecPayload {
-            session_id: "test".into(),
-            command: "npm create vite@latest".into(),
-            timeout_ms: 5_000,
-            cwd: None,
-            agent_id: None,
-        }).await;
+        let result = terminal_exec(
+            pool,
+            reg,
+            TerminalExecPayload {
+                session_id: "test".into(),
+                command: "npm create vite@latest".into(),
+                timeout_ms: 5_000,
+                cwd: None,
+                agent_id: None,
+            },
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("interactive"));
     }
@@ -2178,13 +2309,10 @@ mod tests {
     #[test]
     fn ipc_agent_status_returns_empty() {
         let (_app, webview) = ipc_app();
-        let res = tauri::test::get_ipc_response(
-            &webview,
-            ipc_req("agent_status", serde_json::json!({})),
-        );
+        let res =
+            tauri::test::get_ipc_response(&webview, ipc_req("agent_status", serde_json::json!({})));
         assert!(res.is_ok());
-        let val: crate::agent_registry::AgentStatusResponse =
-            res.unwrap().deserialize().unwrap();
+        let val: crate::agent_registry::AgentStatusResponse = res.unwrap().deserialize().unwrap();
         assert_eq!(val.used_slots, 0);
     }
 
@@ -2207,16 +2335,27 @@ mod tests {
         let reg = app.state::<AgentRegistry>();
 
         let dir = tempfile::tempdir().unwrap();
-        let id = reg.spawn("worker", Some("t-1".into()), None,
-            Some(dir.path().to_str().unwrap().to_string())).unwrap();
+        let id = reg
+            .spawn(
+                "worker",
+                Some("t-1".into()),
+                None,
+                Some(dir.path().to_str().unwrap().to_string()),
+            )
+            .unwrap();
 
-        let result = terminal_exec(pool, reg, TerminalExecPayload {
-            session_id: "test".into(),
-            command: "echo hi".into(),
-            timeout_ms: 5_000,
-            cwd: None,
-            agent_id: Some(id),
-        }).await;
+        let result = terminal_exec(
+            pool,
+            reg,
+            TerminalExecPayload {
+                session_id: "test".into(),
+                command: "echo hi".into(),
+                timeout_ms: 5_000,
+                cwd: None,
+                agent_id: Some(id),
+            },
+        )
+        .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cwd"));
     }

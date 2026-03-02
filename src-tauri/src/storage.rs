@@ -612,13 +612,23 @@ mod tests {
         let layouts = vec![
             SessionLayoutRow {
                 session_id: "s1".into(),
-                x: 10.0, y: 20.0, w: 300.0, h: 400.0,
-                collapsed: false, node_type: "agent".into(), payload: "{}".into(),
+                x: 10.0,
+                y: 20.0,
+                w: 300.0,
+                h: 400.0,
+                collapsed: false,
+                node_type: "agent".into(),
+                payload: "{}".into(),
             },
             SessionLayoutRow {
                 session_id: "s2".into(),
-                x: 100.0, y: 200.0, w: 500.0, h: 600.0,
-                collapsed: true, node_type: "terminal".into(), payload: r#"{"cmd":"ls"}"#.into(),
+                x: 100.0,
+                y: 200.0,
+                w: 500.0,
+                h: 600.0,
+                collapsed: true,
+                node_type: "terminal".into(),
+                payload: r#"{"cmd":"ls"}"#.into(),
             },
         ];
         db.save_canvas_layouts(&layouts).unwrap();
@@ -636,8 +646,13 @@ mod tests {
         let (_dir, db) = temp_meta_db();
         let first = vec![SessionLayoutRow {
             session_id: "old".into(),
-            x: 0.0, y: 0.0, w: 100.0, h: 100.0,
-            collapsed: false, node_type: "agent".into(), payload: "{}".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+            collapsed: false,
+            node_type: "agent".into(),
+            payload: "{}".into(),
         }];
         db.save_canvas_layouts(&first).unwrap();
         assert_eq!(db.load_canvas_layouts().unwrap().len(), 1);
@@ -645,13 +660,23 @@ mod tests {
         let second = vec![
             SessionLayoutRow {
                 session_id: "new1".into(),
-                x: 0.0, y: 0.0, w: 100.0, h: 100.0,
-                collapsed: false, node_type: "agent".into(), payload: "{}".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+                collapsed: false,
+                node_type: "agent".into(),
+                payload: "{}".into(),
             },
             SessionLayoutRow {
                 session_id: "new2".into(),
-                x: 0.0, y: 0.0, w: 100.0, h: 100.0,
-                collapsed: false, node_type: "agent".into(), payload: "{}".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+                collapsed: false,
+                node_type: "agent".into(),
+                payload: "{}".into(),
             },
         ];
         db.save_canvas_layouts(&second).unwrap();
@@ -664,8 +689,10 @@ mod tests {
     fn create_session_if_missing_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let db = MetaDb::open(&dir.path().join("meta.db")).unwrap();
-        db.create_session_if_missing(dir.path(), "sess-1", "Session 1").unwrap();
-        db.create_session_if_missing(dir.path(), "sess-1", "Session 1 Again").unwrap();
+        db.create_session_if_missing(dir.path(), "sess-1", "Session 1")
+            .unwrap();
+        db.create_session_if_missing(dir.path(), "sess-1", "Session 1 Again")
+            .unwrap();
         let sessions = db.list_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
         // Name should be the original (INSERT OR IGNORE)
@@ -676,9 +703,11 @@ mod tests {
     fn list_sessions_ordered_by_created_desc() {
         let dir = tempfile::tempdir().unwrap();
         let db = MetaDb::open(&dir.path().join("meta.db")).unwrap();
-        db.create_session_if_missing(dir.path(), "older", "Older").unwrap();
+        db.create_session_if_missing(dir.path(), "older", "Older")
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        db.create_session_if_missing(dir.path(), "newer", "Newer").unwrap();
+        db.create_session_if_missing(dir.path(), "newer", "Newer")
+            .unwrap();
         let sessions = db.list_sessions().unwrap();
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].id, "newer");
@@ -700,9 +729,27 @@ mod tests {
     fn insert_and_query_events() {
         let (_dir, db) = temp_session_db();
         let events = vec![
-            EventRow { id: "a".into(), seq: 1, ts_us: 1000, type_: "chunk".into(), payload: "{}".into() },
-            EventRow { id: "b".into(), seq: 2, ts_us: 2000, type_: "chunk".into(), payload: "{}".into() },
-            EventRow { id: "c".into(), seq: 3, ts_us: 3000, type_: "tool".into(), payload: "{}".into() },
+            EventRow {
+                id: "a".into(),
+                seq: 1,
+                ts_us: 1000,
+                type_: "chunk".into(),
+                payload: "{}".into(),
+            },
+            EventRow {
+                id: "b".into(),
+                seq: 2,
+                ts_us: 2000,
+                type_: "chunk".into(),
+                payload: "{}".into(),
+            },
+            EventRow {
+                id: "c".into(),
+                seq: 3,
+                ts_us: 3000,
+                type_: "tool".into(),
+                payload: "{}".into(),
+            },
         ];
         db.insert_events(&events).unwrap();
         assert_eq!(db.event_count().unwrap(), 3);
@@ -719,8 +766,11 @@ mod tests {
         let (_dir, db) = temp_session_db();
         let events: Vec<EventRow> = (1..=10)
             .map(|i| EventRow {
-                id: format!("e{i}"), seq: i, ts_us: i * 1000,
-                type_: "chunk".into(), payload: "{}".into(),
+                id: format!("e{i}"),
+                seq: i,
+                ts_us: i * 1000,
+                type_: "chunk".into(),
+                payload: "{}".into(),
             })
             .collect();
         db.insert_events(&events).unwrap();
@@ -740,13 +790,18 @@ mod tests {
     #[test]
     fn snapshot_round_trip() {
         let (_dir, db) = temp_session_db();
-        let events = vec![
-            EventRow { id: "a".into(), seq: 1, ts_us: 1000, type_: "chunk".into(), payload: "{}".into() },
-        ];
+        let events = vec![EventRow {
+            id: "a".into(),
+            seq: 1,
+            ts_us: 1000,
+            type_: "chunk".into(),
+            payload: "{}".into(),
+        }];
         db.insert_events(&events).unwrap();
 
         let snap = SnapshotRow {
-            seq_at: 1, ts_us: 1000,
+            seq_at: 1,
+            ts_us: 1000,
             terminal_buffer: "$ ls\nfoo bar".into(),
             browser_url: "http://localhost:3000".into(),
             browser_screenshot_path: "/tmp/ss.png".into(),
@@ -766,20 +821,25 @@ mod tests {
         let (_dir, db) = temp_session_db();
         let events: Vec<EventRow> = (1..=20)
             .map(|i| EventRow {
-                id: format!("e{i}"), seq: i, ts_us: i * 1000,
-                type_: "chunk".into(), payload: "{}".into(),
+                id: format!("e{i}"),
+                seq: i,
+                ts_us: i * 1000,
+                type_: "chunk".into(),
+                payload: "{}".into(),
             })
             .collect();
         db.insert_events(&events).unwrap();
 
         for seq in [5, 10, 15] {
             db.insert_snapshot(&SnapshotRow {
-                seq_at: seq, ts_us: seq * 1000,
+                seq_at: seq,
+                ts_us: seq * 1000,
                 terminal_buffer: format!("snap-{seq}"),
                 browser_url: String::new(),
                 browser_screenshot_path: String::new(),
                 agent_phase: "idle".into(),
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         // Query at seq 12 should return snapshot at 10
@@ -802,16 +862,22 @@ mod tests {
         // Insert 25 snapshots with corresponding events
         for i in 1..=25i64 {
             db.insert_events(&[EventRow {
-                id: format!("e{i}"), seq: i, ts_us: i * 1000,
-                type_: "chunk".into(), payload: "{}".into(),
-            }]).unwrap();
+                id: format!("e{i}"),
+                seq: i,
+                ts_us: i * 1000,
+                type_: "chunk".into(),
+                payload: "{}".into(),
+            }])
+            .unwrap();
             db.insert_snapshot(&SnapshotRow {
-                seq_at: i, ts_us: i * 1000,
+                seq_at: i,
+                ts_us: i * 1000,
                 terminal_buffer: format!("buf-{i}"),
                 browser_url: String::new(),
                 browser_screenshot_path: String::new(),
                 agent_phase: "idle".into(),
-            }).unwrap();
+            })
+            .unwrap();
         }
         assert_eq!(db.event_count().unwrap(), 25);
         db.compact().unwrap();
@@ -829,8 +895,11 @@ mod tests {
         let batcher = WriteBatcher::new(dir.path().to_path_buf());
 
         let event = EventRow {
-            id: "e1".into(), seq: 1, ts_us: 1000,
-            type_: "chunk".into(), payload: "{}".into(),
+            id: "e1".into(),
+            seq: 1,
+            ts_us: 1000,
+            type_: "chunk".into(),
+            payload: "{}".into(),
         };
         batcher.push("sess-1", event).unwrap();
         assert_eq!(batcher.buffered_count("sess-1"), 1);
@@ -854,10 +923,18 @@ mod tests {
         let batcher = WriteBatcher::new(dir.path().to_path_buf());
 
         for (sid, seq) in [("s1", 1), ("s2", 2), ("s1", 3)] {
-            batcher.push(sid, EventRow {
-                id: format!("e{seq}"), seq, ts_us: seq * 1000,
-                type_: "chunk".into(), payload: "{}".into(),
-            }).unwrap();
+            batcher
+                .push(
+                    sid,
+                    EventRow {
+                        id: format!("e{seq}"),
+                        seq,
+                        ts_us: seq * 1000,
+                        type_: "chunk".into(),
+                        payload: "{}".into(),
+                    },
+                )
+                .unwrap();
         }
         batcher.flush(&meta_db, None).unwrap();
         let sessions = meta_db.list_sessions().unwrap();
@@ -870,10 +947,18 @@ mod tests {
         let meta_db = MetaDb::open(&dir.path().join("meta.db")).unwrap();
         let batcher = WriteBatcher::new(dir.path().to_path_buf());
 
-        batcher.push("sess-close", EventRow {
-            id: "e1".into(), seq: 1, ts_us: 1000,
-            type_: "chunk".into(), payload: "{}".into(),
-        }).unwrap();
+        batcher
+            .push(
+                "sess-close",
+                EventRow {
+                    id: "e1".into(),
+                    seq: 1,
+                    ts_us: 1000,
+                    type_: "chunk".into(),
+                    payload: "{}".into(),
+                },
+            )
+            .unwrap();
         batcher.flush(&meta_db, None).unwrap();
         assert!(batcher.has_session_db("sess-close"));
 

@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn default_creates_bus() {
-        let _bus = CoalescingBus::default();
+        let _bus = CoalescingBus;
     }
 
     #[test]
