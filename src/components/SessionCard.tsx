@@ -74,20 +74,20 @@ const PHASE_COLORS: Record<string, string> = {
 
 /** PM execution phase labels. */
 const PM_PHASE_LABELS: Record<string, string> = {
-  Exploration: "Exploring",
-  TaskDrafting: "Drafting Tasks",
-  DependencyReview: "Reviewing Deps",
-  Finalization: "Finalizing",
-  Revising: "Revising",
+  exploration: "Exploring",
+  task_drafting: "Drafting Tasks",
+  dependency_review: "Reviewing Deps",
+  finalization: "Finalizing",
+  revising: "Revising",
 };
 
 /** PM phase badge colors. */
 const PM_PHASE_COLORS: Record<string, string> = {
-  Exploration: "#3b82f6",      // blue
-  TaskDrafting: "#f59e0b",     // amber
-  DependencyReview: "#8b5cf6", // violet
-  Finalization: "#10b981",     // emerald
-  Revising: "#ef4444",         // red
+  exploration: "#3b82f6",      // blue
+  task_drafting: "#f59e0b",     // amber
+  dependency_review: "#8b5cf6", // violet
+  finalization: "#10b981",     // emerald
+  revising: "#ef4444",         // red
 };
 
 function parseRole(payload: string | undefined): AgentRole | null {

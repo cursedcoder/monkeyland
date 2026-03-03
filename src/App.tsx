@@ -722,8 +722,11 @@ export default function App() {
             console.warn(`[Agent ${agentNodeId}] Backend state changed to "${state}" — aborting frontend`);
             controller.abort();
           }
-          // Poll for PM phase during heartbeat
-          if (role === "project_manager") {
+          // Poll for execution phase during heartbeat
+          if (role === "developer") {
+            const devPhase = await invoke<string | null>("agent_get_phase", { agentId: agentNodeId });
+            if (devPhase) updatePayload({ executionPhase: devPhase });
+          } else if (role === "project_manager") {
             const pmPhase = await invoke<string | null>("agent_get_pm_phase", { agentId: agentNodeId });
             if (pmPhase) updatePayload({ pmExecutionPhase: pmPhase });
           }
@@ -760,8 +763,14 @@ export default function App() {
                 (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
               if (statusText) updatePayload({ status: "loading", toolActivity: statusText });
               
-              // Poll for PM phase when tool activity happens
-              if (role === "project_manager") {
+              // Poll for execution phase when tool activity happens
+              if (role === "developer") {
+                invoke<string | null>("agent_get_phase", { agentId: agentNodeId })
+                  .then((devPhase) => {
+                    if (devPhase) updatePayload({ executionPhase: devPhase });
+                  })
+                  .catch(() => {});
+              } else if (role === "project_manager") {
                 invoke<string | null>("agent_get_pm_phase", { agentId: agentNodeId })
                   .then((pmPhase) => {
                     if (pmPhase) updatePayload({ pmExecutionPhase: pmPhase });
