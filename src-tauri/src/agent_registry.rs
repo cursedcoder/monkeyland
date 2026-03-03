@@ -3,6 +3,7 @@
 
 use crate::agent_state_machine::{self, Event, State, Tool};
 use crate::developer_phases::{self, EnforcementMode, Phase, PhaseEvent};
+use crate::pm_phases::{self, PMPhase, PMPhaseEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -122,6 +123,9 @@ pub struct AgentEntry {
     /// Execution phase for developer agents (Planning, Implementing, Testing, Finalizing, Revising).
     /// None for non-developer roles.
     pub execution_phase: Option<Phase>,
+    /// Execution phase for PM agents (Exploration, TaskDrafting, DependencyReview, Finalization, Revising).
+    /// None for non-PM roles.
+    pub pm_execution_phase: Option<PMPhase>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +173,8 @@ pub struct DebugAgentEntry {
     pub yield_summary: Option<String>,
     /// Execution phase for developer agents (planning, implementing, testing, finalizing, revising).
     pub execution_phase: Option<String>,
+    /// Execution phase for PM agents (exploration, task_drafting, dependency_review, finalization, revising).
+    pub pm_execution_phase: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -221,6 +227,21 @@ struct ValidationState {
     results: Vec<ValidatorResult>,
 }
 
+/// PM validation state: tracks whether PM task breakdown validation has started/completed.
+#[derive(Debug, Clone)]
+pub struct PMValidationState {
+    pub pm_agent_id: String,
+    pub epic_id: Option<String>,
+    /// Whether validation is in progress (started but not completed).
+    pub in_progress: bool,
+    /// DAG validation passed.
+    pub dag_passed: Option<bool>,
+    /// Sequencing validation passed.
+    pub sequencing_passed: Option<bool>,
+    /// Error messages from validation.
+    pub errors: Vec<String>,
+}
+
 struct AgentRegistryInner {
     agents: HashMap<String, AgentEntry>,
     role_config: HashMap<String, RoleConfig>,
@@ -228,6 +249,8 @@ struct AgentRegistryInner {
     queue_depth: usize,
     /// Developer agent_id -> validation state (3 validators must report).
     validation: HashMap<String, ValidationState>,
+    /// PM agent_id -> PM validation state.
+    pm_validation: HashMap<String, PMValidationState>,
 }
 
 pub struct AgentRegistry {
@@ -254,6 +277,7 @@ impl AgentRegistry {
                 inbox: HashMap::new(),
                 queue_depth: 0,
                 validation: HashMap::new(),
+                pm_validation: HashMap::new(),
             }),
         }
     }
@@ -326,6 +350,13 @@ impl AgentRegistry {
             None
         };
 
+        // PM agents start in Exploration phase; other roles don't use PM phases.
+        let pm_execution_phase = if role == "project_manager" {
+            Some(PMPhase::Exploration)
+        } else {
+            None
+        };
+
         let entry = AgentEntry {
             id: id.clone(),
             role: role.to_string(),
@@ -342,6 +373,7 @@ impl AgentRegistry {
             project_path,
             worktree_path: None,
             execution_phase,
+            pm_execution_phase,
         };
         inner.agents.insert(id.clone(), entry);
 
@@ -385,6 +417,14 @@ impl AgentRegistry {
                 None
             };
 
+            // Restore PM agents with their execution phase.
+            // If restoring mid-task, default to TaskDrafting since we don't persist phase.
+            let pm_execution_phase = if a.role == "project_manager" && !state.is_terminal() {
+                Some(PMPhase::TaskDrafting)
+            } else {
+                None
+            };
+
             inner.agents.insert(
                 a.id.clone(),
                 AgentEntry {
@@ -403,6 +443,7 @@ impl AgentRegistry {
                     project_path: a.project_path,
                     worktree_path: a.worktree_path,
                     execution_phase,
+                    pm_execution_phase,
                 },
             );
             restored.push(a.id);
@@ -480,6 +521,7 @@ impl AgentRegistry {
                 worktree_path: e.worktree_path.clone(),
                 yield_summary: e.yield_diff_summary.clone(),
                 execution_phase: e.execution_phase.map(|p| p.to_string()),
+                pm_execution_phase: e.pm_execution_phase.map(|p| p.to_string()),
             })
             .collect();
 
@@ -639,6 +681,200 @@ impl AgentRegistry {
         let new_phase = developer_phases::try_phase_transition(current, PhaseEvent::ValidationFailed)?;
         entry.execution_phase = Some(new_phase);
         Ok(Some(new_phase))
+    }
+
+    /// Get the current execution phase for a PM agent.
+    /// Returns None if the agent doesn't exist or is not a PM.
+    pub fn get_pm_execution_phase(&self, agent_id: &str) -> Result<Option<PMPhase>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        Ok(inner.agents.get(agent_id).and_then(|e| e.pm_execution_phase))
+    }
+
+    /// Transition a PM agent to a new execution phase.
+    /// Returns the new phase on success, or an error if the transition is illegal.
+    pub fn transition_pm_phase(
+        &self,
+        agent_id: &str,
+        event: PMPhaseEvent,
+    ) -> Result<Option<PMPhase>, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = inner
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("Agent {agent_id} not found"))?;
+
+        // Only PM agents have PM phases
+        let current = match entry.pm_execution_phase {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // Must be in Running state to transition phases
+        if entry.state != State::Running {
+            return Err(format!(
+                "Agent must be in Running state to transition phases, currently {:?}",
+                entry.state
+            ));
+        }
+
+        let new_phase = pm_phases::try_pm_phase_transition(current, event)?;
+        entry.pm_execution_phase = Some(new_phase);
+        Ok(Some(new_phase))
+    }
+
+    /// Handle PM validation failure: transitions the PM agent from Finalization to Revising phase.
+    /// This is called by the orchestration layer when PM validators reject the task breakdown.
+    pub fn handle_pm_validation_failure(&self, agent_id: &str) -> Result<Option<PMPhase>, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = inner
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("Agent {agent_id} not found"))?;
+
+        // Only PM agents have PM phases
+        let current = match entry.pm_execution_phase {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // Transition phase from Finalization to Revising
+        let new_phase = pm_phases::try_pm_phase_transition(current, PMPhaseEvent::ValidationFailed)?;
+        entry.pm_execution_phase = Some(new_phase);
+        Ok(Some(new_phase))
+    }
+
+    /// Returns PM agents in Yielded state that haven't had PM validation started yet.
+    /// Returns (pm_agent_id, epic_id).
+    pub fn pm_yield_queue(&self) -> Result<Vec<(String, Option<String>)>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for (id, entry) in inner.agents.iter() {
+            if entry.role != "project_manager" {
+                continue;
+            }
+            if entry.state != State::Yielded {
+                continue;
+            }
+            if inner.pm_validation.contains_key(id) {
+                continue;
+            }
+            out.push((id.clone(), entry.task_id.clone()));
+        }
+        Ok(out)
+    }
+
+    /// Start PM validation for a yielded PM agent.
+    /// Transitions agent from Yielded to InReview and creates the pm_validation tracking entry.
+    pub fn start_pm_validation(&self, pm_agent_id: &str, epic_id: Option<String>) -> Result<(), String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = inner
+            .agents
+            .get_mut(pm_agent_id)
+            .ok_or_else(|| format!("Agent {pm_agent_id} not found"))?;
+
+        if entry.role != "project_manager" {
+            return Err(format!("Agent {pm_agent_id} is not a project_manager"));
+        }
+
+        // Transition to InReview
+        let new_state = agent_state_machine::try_transition(entry.state, Event::StartReview, &entry.role)?;
+        entry.state = new_state;
+        entry.state_entered_at = Instant::now();
+
+        // Create PM validation tracking entry
+        inner.pm_validation.insert(
+            pm_agent_id.to_string(),
+            PMValidationState {
+                pm_agent_id: pm_agent_id.to_string(),
+                epic_id,
+                in_progress: true,
+                dag_passed: None,
+                sequencing_passed: None,
+                errors: Vec::new(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Submit PM validation results. Returns whether validation passed.
+    /// If passed: transitions agent to Done.
+    /// If failed with retries remaining: transitions back to Running (for revision).
+    /// If failed with no retries: transitions to Blocked.
+    pub fn complete_pm_validation(
+        &self,
+        pm_agent_id: &str,
+        dag_passed: bool,
+        sequencing_passed: bool,
+        errors: Vec<String>,
+    ) -> Result<bool, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        
+        // First, check if agent exists and is a PM
+        {
+            let entry = inner
+                .agents
+                .get(pm_agent_id)
+                .ok_or_else(|| format!("Agent {pm_agent_id} not found"))?;
+            if entry.role != "project_manager" {
+                return Err(format!("Agent {pm_agent_id} is not a project_manager"));
+            }
+        }
+
+        let all_passed = dag_passed && sequencing_passed;
+
+        // Update validation state
+        if let Some(vs) = inner.pm_validation.get_mut(pm_agent_id) {
+            vs.in_progress = false;
+            vs.dag_passed = Some(dag_passed);
+            vs.sequencing_passed = Some(sequencing_passed);
+            vs.errors = errors;
+        }
+
+        // Now update the agent entry
+        let entry = inner
+            .agents
+            .get_mut(pm_agent_id)
+            .ok_or_else(|| format!("Agent {pm_agent_id} not found"))?;
+
+        if all_passed {
+            // Validation passed - transition to Done
+            let new_state = agent_state_machine::try_transition(entry.state, Event::ValidationPass, &entry.role)?;
+            entry.state = new_state;
+            entry.state_entered_at = Instant::now();
+        } else {
+            entry.validation_retry_count += 1;
+            if entry.validation_retry_count >= 3 {
+                // Max retries exceeded - block
+                let new_state = agent_state_machine::try_transition(entry.state, Event::ValidationBlock, &entry.role)?;
+                entry.state = new_state;
+                entry.state_entered_at = Instant::now();
+            } else {
+                // Retries remaining - back to Running for revision
+                let new_state = agent_state_machine::try_transition(entry.state, Event::ValidationFail, &entry.role)?;
+                entry.state = new_state;
+                entry.state_entered_at = Instant::now();
+
+                // Transition PM phase to Revising
+                if let Some(current_phase) = entry.pm_execution_phase {
+                    if let Ok(new_phase) = pm_phases::try_pm_phase_transition(current_phase, PMPhaseEvent::ValidationFailed) {
+                        entry.pm_execution_phase = Some(new_phase);
+                    }
+                }
+            }
+        }
+
+        // Remove the pm_validation entry so the agent can be re-processed if needed
+        drop(entry);
+        inner.pm_validation.remove(pm_agent_id);
+
+        Ok(all_passed)
+    }
+
+    /// Get PM validation state for an agent.
+    pub fn get_pm_validation_state(&self, pm_agent_id: &str) -> Result<Option<PMValidationState>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        Ok(inner.pm_validation.get(pm_agent_id).cloned())
     }
 
     pub fn yield_for_review(&self, agent_id: &str, payload: YieldPayload) -> Result<(), String> {
@@ -822,13 +1058,17 @@ impl AgentRegistry {
         }))
     }
 
-    /// Returns (task_id, git_branch, diff_summary) for agents in Yielded state that have not yet had validation started.
+    /// Returns (task_id, git_branch, diff_summary) for developer agents in Yielded state that have not yet had validation started.
+    /// Note: Project managers are handled separately via pm_yield_queue().
     pub fn yield_queue(
         &self,
     ) -> Result<Vec<(String, Option<String>, Option<String>, Option<String>)>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for (id, entry) in inner.agents.iter() {
+            if entry.role == "project_manager" {
+                continue;
+            }
             if entry.state != State::Yielded {
                 continue;
             }
@@ -923,6 +1163,7 @@ impl AgentRegistry {
             &entry.role,
             entry.state,
             entry.execution_phase,
+            entry.pm_execution_phase,
             EnforcementMode::Passive,
             tool,
             entry.token_used,
@@ -2398,5 +2639,250 @@ mod tests {
         let snap = registry.debug_snapshot().unwrap();
         let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
         assert_eq!(agent.execution_phase, Some("implementing".to_string()));
+    }
+
+    // --- PM Phase Tests ---
+
+    #[test]
+    fn pm_spawns_with_exploration_phase() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("project_manager", Some("epic-1".into()), None, None)
+            .unwrap();
+
+        let phase = registry.get_pm_execution_phase(&id).unwrap();
+        assert_eq!(phase, Some(PMPhase::Exploration));
+    }
+
+    #[test]
+    fn non_pm_has_no_pm_phase() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("workforce_manager", None, None, None).unwrap();
+
+        let phase = registry.get_pm_execution_phase(&id).unwrap();
+        assert_eq!(phase, None);
+    }
+
+    #[test]
+    fn pm_transition_exploration_to_task_drafting() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("project_manager", Some("epic-1".into()), None, None)
+            .unwrap();
+
+        let new_phase = registry
+            .transition_pm_phase(&id, PMPhaseEvent::ExplorationComplete)
+            .unwrap();
+        assert_eq!(new_phase, Some(PMPhase::TaskDrafting));
+
+        let phase = registry.get_pm_execution_phase(&id).unwrap();
+        assert_eq!(phase, Some(PMPhase::TaskDrafting));
+    }
+
+    #[test]
+    fn pm_transition_full_cycle() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("project_manager", Some("epic-1".into()), None, None)
+            .unwrap();
+
+        // Exploration → TaskDrafting
+        registry
+            .transition_pm_phase(&id, PMPhaseEvent::ExplorationComplete)
+            .unwrap();
+        assert_eq!(
+            registry.get_pm_execution_phase(&id).unwrap(),
+            Some(PMPhase::TaskDrafting)
+        );
+
+        // TaskDrafting → DependencyReview
+        registry
+            .transition_pm_phase(&id, PMPhaseEvent::DraftingComplete)
+            .unwrap();
+        assert_eq!(
+            registry.get_pm_execution_phase(&id).unwrap(),
+            Some(PMPhase::DependencyReview)
+        );
+
+        // DependencyReview → Finalization
+        registry
+            .transition_pm_phase(&id, PMPhaseEvent::ReviewComplete)
+            .unwrap();
+        assert_eq!(
+            registry.get_pm_execution_phase(&id).unwrap(),
+            Some(PMPhase::Finalization)
+        );
+    }
+
+    #[test]
+    fn pm_yield_queue_returns_yielded_pms() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("project_manager", Some("epic-1".into()), None, None)
+            .unwrap();
+
+        // Initially not in yield queue (Running state)
+        let queue = registry.pm_yield_queue().unwrap();
+        assert!(queue.is_empty());
+
+        // Yield the PM
+        registry
+            .yield_for_review(
+                &id,
+                YieldPayload {
+                    status: "ready".into(),
+                    git_branch: None,
+                    diff_summary: None,
+                },
+            )
+            .unwrap();
+
+        // Now should be in yield queue
+        let queue = registry.pm_yield_queue().unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].0, id);
+        assert_eq!(queue[0].1, Some("epic-1".to_string()));
+    }
+
+    #[test]
+    fn pm_validation_flow_pass() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("project_manager", Some("epic-1".into()), None, None)
+            .unwrap();
+
+        // Yield the PM
+        registry
+            .yield_for_review(
+                &id,
+                YieldPayload {
+                    status: "ready".into(),
+                    git_branch: None,
+                    diff_summary: None,
+                },
+            )
+            .unwrap();
+
+        // Start PM validation
+        registry.start_pm_validation(&id, Some("epic-1".into())).unwrap();
+
+        // Check PM is in InReview state
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.state, "InReview");
+
+        // Complete PM validation with pass
+        let passed = registry
+            .complete_pm_validation(&id, true, true, vec![])
+            .unwrap();
+        assert!(passed);
+
+        // Check PM is in Done state
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.state, "Done");
+    }
+
+    #[test]
+    fn pm_validation_flow_fail_with_retries() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("project_manager", Some("epic-1".into()), None, None)
+            .unwrap();
+
+        // Move PM to Finalization phase (required for Revising transition)
+        registry
+            .transition_pm_phase(&id, PMPhaseEvent::ExplorationComplete)
+            .unwrap();
+        registry
+            .transition_pm_phase(&id, PMPhaseEvent::DraftingComplete)
+            .unwrap();
+        registry
+            .transition_pm_phase(&id, PMPhaseEvent::ReviewComplete)
+            .unwrap();
+        assert_eq!(
+            registry.get_pm_execution_phase(&id).unwrap(),
+            Some(PMPhase::Finalization)
+        );
+
+        // Yield the PM
+        registry
+            .yield_for_review(
+                &id,
+                YieldPayload {
+                    status: "ready".into(),
+                    git_branch: None,
+                    diff_summary: None,
+                },
+            )
+            .unwrap();
+
+        // Start and fail PM validation
+        registry.start_pm_validation(&id, Some("epic-1".into())).unwrap();
+        let passed = registry
+            .complete_pm_validation(&id, false, false, vec!["DAG cycle detected".into()])
+            .unwrap();
+        assert!(!passed);
+
+        // Check PM is back in Running state (retry)
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.state, "Running");
+        assert_eq!(agent.retry_count, 1);
+
+        // Check PM is in Revising phase
+        assert_eq!(
+            registry.get_pm_execution_phase(&id).unwrap(),
+            Some(PMPhase::Revising)
+        );
+    }
+
+    #[test]
+    fn pm_validation_max_retries_blocks() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("project_manager", Some("epic-1".into()), None, None)
+            .unwrap();
+
+        // Fail validation 3 times
+        for _ in 0..3 {
+            registry
+                .yield_for_review(
+                    &id,
+                    YieldPayload {
+                        status: "ready".into(),
+                        git_branch: None,
+                        diff_summary: None,
+                    },
+                )
+                .unwrap();
+            registry.start_pm_validation(&id, Some("epic-1".into())).unwrap();
+            let _ = registry.complete_pm_validation(&id, false, false, vec![]);
+        }
+
+        // Check PM is in Blocked state
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.state, "Blocked");
+    }
+
+    #[test]
+    fn debug_snapshot_includes_pm_execution_phase() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("project_manager", Some("epic-1".into()), None, None)
+            .unwrap();
+
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.pm_execution_phase, Some("exploration".to_string()));
+
+        // Transition and check again
+        registry
+            .transition_pm_phase(&id, PMPhaseEvent::ExplorationComplete)
+            .unwrap();
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.pm_execution_phase, Some("task_drafting".to_string()));
     }
 }

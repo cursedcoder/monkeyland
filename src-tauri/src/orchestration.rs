@@ -226,6 +226,12 @@ pub struct ValidationRequestedPayload {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PMValidationRequestedPayload {
+    pub pm_agent_id: String,
+    pub epic_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct EpicProgressPayload {
     pub epic_id: String,
     pub total: u32,
@@ -608,6 +614,42 @@ pub async fn tick(
             eprintln!("[orch] FAILED to emit validation_requested: {}", e);
         }
     }
+
+    // 4a. Process PM yield queue: PM agents in Yielded state get PM validation started
+    let pm_yield_queue = registry.pm_yield_queue()?;
+    for (pm_agent_id, epic_id) in pm_yield_queue {
+        eprintln!(
+            "[orch] Processing PM yield queue: PM {} in Yielded state for epic {:?}",
+            pm_agent_id, epic_id
+        );
+        match registry.start_pm_validation(&pm_agent_id, epic_id.clone()) {
+            Ok(_) => eprintln!(
+                "[orch] start_pm_validation succeeded for {}",
+                pm_agent_id
+            ),
+            Err(e) => {
+                eprintln!(
+                    "[orch] start_pm_validation FAILED for {}: {}",
+                    pm_agent_id, e
+                );
+            }
+        }
+        eprintln!(
+            "[orch] Emitting pm_validation_requested for PM {}",
+            pm_agent_id
+        );
+        if let Err(e) = env_emit(
+            env,
+            "pm_validation_requested",
+            &PMValidationRequestedPayload {
+                pm_agent_id: pm_agent_id.clone(),
+                epic_id,
+            },
+        ) {
+            eprintln!("[orch] FAILED to emit pm_validation_requested: {}", e);
+        }
+    }
+
     // 4b. SAFETY NET: Force-yield developers stuck in Running state for > 5 minutes.
     // This catches ALL cases: nudge failed, frontend crashed, LLM looped forever, etc.
     // After force_yield, the agent goes to Yielded without a validation entry,
@@ -3365,8 +3407,20 @@ mod tests {
             assert!(wt.is_some(), "developer {} should have a worktree", dev_id);
         }
 
-        // PM completes its task (non-developer can self-complete)
-        registry.complete_task(&pm_id).unwrap();
+        // PM yields for review (PMs must yield, like developers)
+        // First transition PM through phases to Finalization
+        use crate::pm_phases::PMPhaseEvent;
+        registry.transition_pm_phase(&pm_id, PMPhaseEvent::ExplorationComplete).unwrap();
+        registry.transition_pm_phase(&pm_id, PMPhaseEvent::DraftingComplete).unwrap();
+        registry.transition_pm_phase(&pm_id, PMPhaseEvent::ReviewComplete).unwrap();
+        
+        let pm_task_id = pm[0]["task_id"].as_str().unwrap();
+        let yp = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some(format!("task/{pm_task_id}")),
+        };
+        registry.yield_for_review(&pm_id, yp).unwrap();
 
         // Both developers do work and yield
         for dev_id in &dev_ids {
@@ -3397,20 +3451,36 @@ mod tests {
             registry.yield_for_review(dev_id, yp).unwrap();
         }
 
-        // Tick 2: PM killed (done non-dev), devs enter validation
+        // Tick 2: PM enters validation, devs enter validation
         env.set_ready_tasks("[]");
         tick(&env, &meta_db, &registry, &merge_queue, &metrics)
             .await
             .unwrap();
 
-        // PM should be killed now (step 5: "PM agents are killed immediately")
+        // PM should be in InReview state (pending validation)
+        let snap = registry.debug_snapshot().unwrap();
+        let pm_agent = snap
+            .agents
+            .iter()
+            .find(|a| a.role == "project_manager")
+            .expect("PM should still exist");
+        assert_eq!(pm_agent.state, "InReview", "PM should be in InReview state");
+        
+        // Check that pm_validation_requested was emitted
+        let pm_val_events = env.events_named("pm_validation_requested");
+        assert_eq!(pm_val_events.len(), 1, "pm_validation_requested should be emitted");
+        
+        // Complete PM validation (simulating frontend validation passing)
+        registry.complete_pm_validation(&pm_id, true, true, vec![]).unwrap();
+        
+        // PM should now be Done
         let snap = registry.debug_snapshot().unwrap();
         let live_pms: Vec<_> = snap
             .agents
             .iter()
-            .filter(|a| a.role == "project_manager")
+            .filter(|a| a.role == "project_manager" && a.state != "Done")
             .collect();
-        assert_eq!(live_pms.len(), 0, "PM should be killed after completing");
+        assert_eq!(live_pms.len(), 0, "PM should be Done after validation passes");
 
         let val_events = env.events_named("validation_requested");
         assert_eq!(val_events.len(), 2, "both devs get validation_requested");

@@ -184,4 +184,43 @@ describe("CreateBeadsTaskPlugin", () => {
     await plugin.execute({}, { title: "X" });
     expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ agentId: null }));
   });
+
+  it("adds --defer flag when deferred is true", async () => {
+    mockInvoke.mockResolvedValueOnce("bd-42");
+    const plugin = new CreateBeadsTaskPlugin("agent-1");
+    plugin.setProjectPath("/proj");
+    await plugin.execute({}, { title: "Draft task", deferred: true });
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const args = (call[1] as { args: string[] }).args;
+    expect(args).toContain("--defer");
+    expect(args[args.indexOf("--defer") + 1]).toBe("+100y");
+  });
+
+  it("does not add --defer flag when deferred is false", async () => {
+    mockInvoke.mockResolvedValueOnce("bd-42");
+    const plugin = new CreateBeadsTaskPlugin("agent-1");
+    plugin.setProjectPath("/proj");
+    await plugin.execute({}, { title: "Normal task", deferred: false });
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const args = (call[1] as { args: string[] }).args;
+    expect(args).not.toContain("--defer");
+  });
+
+  it("does not add --defer flag when deferred is not provided", async () => {
+    mockInvoke.mockResolvedValueOnce("bd-42");
+    const plugin = new CreateBeadsTaskPlugin("agent-1");
+    plugin.setProjectPath("/proj");
+    await plugin.execute({}, { title: "Normal task" });
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const args = (call[1] as { args: string[] }).args;
+    expect(args).not.toContain("--defer");
+  });
+
+  it("includes deferred status in result message", async () => {
+    mockInvoke.mockResolvedValueOnce("bd-42");
+    const plugin = new CreateBeadsTaskPlugin("agent-1");
+    plugin.setProjectPath("/proj");
+    const result = await plugin.execute({}, { title: "Draft task", deferred: true });
+    expect(result.result).toContain("deferred");
+  });
 });

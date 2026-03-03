@@ -21,6 +21,15 @@ import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
 import type { ToolName } from "./agentPrompts";
 import { createCostStore, CostStoreContext } from "./costStore";
 import { getValidatorSpawnFailureSubmissions, normalizeValidatorOutput } from "./validatorSafety";
+import {
+  validateDAG,
+  buildSequencingValidatorPrompt,
+  parseSequencingValidatorResponse,
+  formatPMValidationFeedback,
+  runPMValidation,
+  SEQUENCING_VALIDATOR_PROMPT,
+} from "./pmValidation";
+import type { BeadsTask } from "./types";
 import "./App.css";
 import type { SessionLayout, CanvasLayoutPayload, CanvasNodeType, AgentRole } from "./types";
 import {
@@ -1750,6 +1759,188 @@ export default function App() {
           taskId: task_id,
           projectPath: resolvedProjectPath,
         });
+      }
+    });
+
+    return () => {
+      safeUnlisten(unlisten);
+    };
+  }, []);
+
+  // Listen for pm_validation_requested: validate PM's task breakdown
+  useEffect(() => {
+    const unlisten = listen<{
+      pm_agent_id: string;
+      epic_id: string | null;
+    }>("pm_validation_requested", async (event) => {
+      const { pm_agent_id, epic_id } = event.payload;
+
+      console.log(`[PM Validation] Processing validation request for PM ${pm_agent_id}, epic ${epic_id}`);
+
+      let resolvedProjectPath: string | null = null;
+      try {
+        resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
+      } catch { /* */ }
+
+      if (!resolvedProjectPath || !epic_id) {
+        console.error("[PM Validation] Missing project path or epic ID");
+        try {
+          await invoke<boolean>("pm_validation_submit", {
+            payload: {
+              pm_agent_id,
+              dag_passed: false,
+              sequencing_passed: false,
+              errors: ["Missing project path or epic ID for validation"],
+            },
+          });
+        } catch { /* best effort */ }
+        return;
+      }
+
+      // ── 1. Fetch all tasks that are children of this epic ──
+      let tasks: BeadsTask[] = [];
+      try {
+        const stdout = await invoke<string>("beads_run", {
+          projectPath: resolvedProjectPath,
+          args: ["list", "--parent", epic_id, "--json"],
+        });
+        const parsed = JSON.parse(stdout);
+        tasks = Array.isArray(parsed) ? parsed : (parsed.issues ?? []);
+      } catch (e) {
+        console.error("[PM Validation] Failed to fetch tasks:", e);
+        try {
+          await invoke<boolean>("pm_validation_submit", {
+            payload: {
+              pm_agent_id,
+              dag_passed: false,
+              sequencing_passed: false,
+              errors: [`Failed to fetch tasks: ${e instanceof Error ? e.message : String(e)}`],
+            },
+          });
+        } catch { /* best effort */ }
+        return;
+      }
+
+      if (tasks.length === 0) {
+        console.warn("[PM Validation] No tasks found for epic");
+        try {
+          await invoke<boolean>("pm_validation_submit", {
+            payload: {
+              pm_agent_id,
+              dag_passed: false,
+              sequencing_passed: false,
+              errors: ["No tasks were created for this epic. PM must create at least one task."],
+            },
+          });
+        } catch { /* best effort */ }
+        return;
+      }
+
+      console.log(`[PM Validation] Found ${tasks.length} tasks for epic ${epic_id}`);
+
+      // ── 2. Run DAG validator (deterministic, code-based) ──
+      const dagResult = validateDAG(tasks, epic_id);
+      console.log(`[PM Validation] DAG validation: ${dagResult.valid ? "PASS" : "FAIL"}`, dagResult.errors);
+
+      // ── 3. Run Sequencing validator (LLM-based) ──
+      let sequencingPassed = true;
+      const sequencingErrors: string[] = [];
+
+      if (dagResult.valid) {
+        try {
+          const userMessage = buildSequencingValidatorPrompt(tasks);
+          let accumulatedText = "";
+          const abortController = new AbortController();
+
+          await runAgent({
+            systemPrompt: SEQUENCING_VALIDATOR_PROMPT,
+            userMessage,
+            plugins: [],
+            signal: abortController.signal,
+            callbacks: {
+              onChunk: (c) => {
+                if ((c.type === "content" || c.type === "reasoning") && c.text) {
+                  accumulatedText += c.text;
+                }
+              },
+              onUsage: (usage) => {
+                costStore.reportUsage(
+                  `pm-validator-${pm_agent_id}`, "validator", "unknown",
+                  usage.prompt_tokens, usage.completion_tokens, 0, 0,
+                );
+              },
+              onDone: () => {},
+              onError: () => {},
+              onStopped: () => {},
+            },
+          });
+
+          const seqResult = parseSequencingValidatorResponse(accumulatedText);
+          sequencingPassed = seqResult.valid;
+          sequencingErrors.push(...seqResult.reasons);
+          console.log(`[PM Validation] Sequencing validation: ${seqResult.valid ? "PASS" : "FAIL"}`, seqResult.reasons);
+        } catch (e) {
+          console.error("[PM Validation] Sequencing validator failed:", e);
+          sequencingPassed = false;
+          sequencingErrors.push(`Sequencing validator failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      } else {
+        // Skip sequencing validation if DAG failed
+        sequencingPassed = false;
+      }
+
+      // ── 4. Combine results and submit ──
+      const allErrors = [...dagResult.errors, ...sequencingErrors];
+
+      try {
+        const passed = await invoke<boolean>("pm_validation_submit", {
+          payload: {
+            pm_agent_id,
+            dag_passed: dagResult.valid,
+            sequencing_passed: sequencingPassed,
+            errors: allErrors,
+          },
+        });
+
+        console.log(`[PM Validation] Submitted results: ${passed ? "PASSED" : "FAILED"}`);
+
+        // ── 5. If passed, promote all deferred tasks ──
+        if (passed) {
+          console.log(`[PM Validation] Promoting deferred tasks for epic ${epic_id}`);
+          for (const task of tasks) {
+            if (task.status === "deferred") {
+              try {
+                await invoke<string>("beads_run", {
+                  projectPath: resolvedProjectPath,
+                  args: ["update", task.id, "--defer", ""],
+                });
+                console.log(`[PM Validation] Promoted task ${task.id}`);
+              } catch (e) {
+                console.error(`[PM Validation] Failed to promote task ${task.id}:`, e);
+              }
+            }
+          }
+        }
+
+        // ── 6. If failed, send feedback to PM agent ──
+        if (!passed) {
+          const pmResult = runPMValidation(
+            tasks,
+            epic_id,
+            sequencingPassed ? undefined : { valid: false, missingSequences: [], reasons: sequencingErrors }
+          );
+          const feedback = formatPMValidationFeedback(pmResult);
+
+          startAgentConversationRef.current({
+            agentNodeId: pm_agent_id,
+            role: "project_manager",
+            userMessage: feedback,
+            taskId: epic_id,
+            projectPath: resolvedProjectPath,
+          });
+        }
+      } catch (e) {
+        console.error("[PM Validation] Failed to submit results:", e);
       }
     });
 

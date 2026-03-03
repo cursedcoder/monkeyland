@@ -46,6 +46,7 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         crate::commands::agent_message,
         crate::commands::agent_poll_messages,
         crate::commands::validation_submit,
+        crate::commands::pm_validation_submit,
         crate::commands::agent_complete_task,
         crate::commands::agent_turn_ended,
         crate::commands::agent_force_yield,
@@ -207,6 +208,7 @@ mod agent_registry;
 mod agent_state_machine;
 mod browser_pool;
 mod developer_phases;
+mod pm_phases;
 mod coalescing;
 mod commands;
 mod local_proxy;

@@ -98,6 +98,12 @@ export class CreateBeadsTaskPlugin extends Plugin {
         description: "Time estimate in minutes (e.g. 30 for half an hour, 120 for 2 hours)",
         required: false,
       },
+      {
+        name: "deferred",
+        type: "boolean",
+        description: "Create as deferred/draft (hidden from bd ready until promoted). PM agents MUST set this to true for all tasks.",
+        required: false,
+      },
     ];
   }
 
@@ -113,6 +119,7 @@ export class CreateBeadsTaskPlugin extends Plugin {
       labels?: string;
       acceptance_criteria?: string;
       estimate_minutes?: number;
+      deferred?: boolean;
     },
   ): Promise<{ result: string }> {
     const title = parameters.title?.trim();
@@ -164,6 +171,12 @@ export class CreateBeadsTaskPlugin extends Plugin {
       args.push("--estimate", String(parameters.estimate_minutes));
     }
 
+    // Deferred tasks are hidden from bd ready until promoted
+    // PM agents should always use deferred=true for draft tasks
+    if (parameters.deferred) {
+      args.push("--defer", "+100y");
+    }
+
     try {
       const stdout = await invoke<string>("beads_run", {
         projectPath,
@@ -172,8 +185,9 @@ export class CreateBeadsTaskPlugin extends Plugin {
       });
 
       const taskId = stdout.trim();
+      const deferredNote = parameters.deferred ? " (deferred - pending PM validation)" : "";
 
-      return { result: `Created ${issueType} "${title}" with ID: ${taskId}` };
+      return { result: `Created ${issueType} "${title}" with ID: ${taskId}${deferredNote}` };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return { result: `Error creating task: ${msg}` };

@@ -677,6 +677,29 @@ pub async fn validation_submit(
     )
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PMValidationSubmitPayload {
+    pub pm_agent_id: String,
+    pub dag_passed: bool,
+    pub sequencing_passed: bool,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
+/// Submit PM validation results. Returns whether validation passed.
+#[tauri::command]
+pub async fn pm_validation_submit(
+    registry: State<'_, AgentRegistry>,
+    payload: PMValidationSubmitPayload,
+) -> Result<bool, String> {
+    registry.complete_pm_validation(
+        &payload.pm_agent_id,
+        payload.dag_passed,
+        payload.sequencing_passed,
+        payload.errors,
+    )
+}
+
 fn write_file_core(path: &str, content: &str) -> Result<(), String> {
     let p = std::path::Path::new(path);
     if let Some(parent) = p.parent() {

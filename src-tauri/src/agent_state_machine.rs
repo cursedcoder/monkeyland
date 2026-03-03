@@ -4,8 +4,12 @@
 //! If a transition or tool call is not explicitly listed here, it is rejected.
 
 use crate::developer_phases::{self, EnforcementMode, Phase};
+use crate::pm_phases::{self, PMPhase};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+
+/// Roles that must yield for review and cannot self-complete.
+const YIELD_REQUIRED_ROLES: &[&str] = &["developer", "project_manager"];
 
 /// Agent lifecycle states. Transitions are enforced by `try_transition`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
@@ -81,13 +85,16 @@ pub fn try_transition(current: State, event: Event, role: &str) -> Result<State,
     match (current, event) {
         (State::Spawned, Event::Start) => Ok(State::Running),
 
-        // Developer must yield; cannot self-complete.
-        (State::Running, Event::Yield) if role == "developer" => Ok(State::Yielded),
+        // Developers and PMs must yield; cannot self-complete.
+        (State::Running, Event::Yield) if YIELD_REQUIRED_ROLES.contains(&role) => Ok(State::Yielded),
         (State::Running, Event::Complete) if role == "developer" => {
             Err("Developers cannot self-complete. Use yield_for_review.".into())
         }
+        (State::Running, Event::Complete) if role == "project_manager" => {
+            Err("Project Managers cannot self-complete. Use yield_for_review.".into())
+        }
 
-        // Non-developers can complete directly.
+        // Other roles can complete directly.
         (State::Running, Event::Complete) => Ok(State::Done),
 
         (State::Yielded, Event::StartReview) => Ok(State::InReview),
@@ -195,12 +202,14 @@ pub fn allowed_tools(role: &str) -> HashSet<Tool> {
 /// Returns Ok(()) if allowed, Err with reason if not.
 ///
 /// The `phase` parameter is optional and only applies to developer agents.
+/// The `pm_phase` parameter is optional and only applies to project_manager agents.
 /// When provided, the tool call will also be checked against phase-specific permissions.
 /// The `enforcement_mode` controls how phase violations are handled (Passive, Soft, Hard).
 pub fn gate_tool_call(
     role: &str,
     state: State,
     phase: Option<Phase>,
+    pm_phase: Option<PMPhase>,
     enforcement_mode: EnforcementMode,
     tool: Tool,
     token_used: u64,
@@ -224,6 +233,11 @@ pub fn gate_tool_call(
     // This is more restrictive than role permissions - a tool must pass both checks.
     if let Some(p) = phase {
         developer_phases::gate_tool_for_phase(p, tool, enforcement_mode)?;
+    }
+
+    // 2.6. PM Phase permission check (project_manager agents only).
+    if let Some(p) = pm_phase {
+        pm_phases::gate_tool_for_pm_phase(p, tool, enforcement_mode)?;
     }
 
     // 3. Token quota hard limit.
@@ -264,6 +278,19 @@ mod tests {
     fn worker_can_complete() {
         let result = try_transition(State::Running, Event::Complete, "worker");
         assert_eq!(result.unwrap(), State::Done);
+    }
+
+    #[test]
+    fn pm_cannot_self_complete() {
+        let result = try_transition(State::Running, Event::Complete, "project_manager");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("yield_for_review"));
+    }
+
+    #[test]
+    fn pm_can_yield() {
+        let result = try_transition(State::Running, Event::Yield, "project_manager");
+        assert_eq!(result.unwrap(), State::Yielded);
     }
 
     #[test]
@@ -316,6 +343,7 @@ mod tests {
             "developer",
             State::Yielded,
             None,
+            None,
             EnforcementMode::Passive,
             Tool::WriteFile,
             0,
@@ -332,6 +360,7 @@ mod tests {
             "workforce_manager",
             State::Running,
             None,
+            None,
             EnforcementMode::Passive,
             Tool::WriteFile,
             0,
@@ -347,6 +376,7 @@ mod tests {
         let result = gate_tool_call(
             "developer",
             State::Running,
+            None,
             None,
             EnforcementMode::Passive,
             Tool::WriteFile,
@@ -423,6 +453,7 @@ mod tests {
             "developer",
             State::Running,
             None,
+            None,
             EnforcementMode::Passive,
             Tool::WriteFile,
             0,
@@ -438,6 +469,7 @@ mod tests {
         let result = gate_tool_call(
             "developer",
             State::Running,
+            None,
             None,
             EnforcementMode::Passive,
             Tool::WriteFile,
@@ -457,6 +489,7 @@ mod tests {
             "developer",
             State::Running,
             Some(Phase::Planning),
+            None,
             EnforcementMode::Hard,
             Tool::WriteFile,
             0,
@@ -475,6 +508,7 @@ mod tests {
             "developer",
             State::Running,
             Some(Phase::Implementing),
+            None,
             EnforcementMode::Hard,
             Tool::WriteFile,
             0,
@@ -492,8 +526,46 @@ mod tests {
             "developer",
             State::Running,
             Some(Phase::Planning),
+            None,
             EnforcementMode::Soft,
             Tool::WriteFile,
+            0,
+            200_000,
+            Instant::now(),
+            Duration::from_secs(900),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn gate_tool_call_with_pm_phase_hard_enforcement() {
+        // In Exploration phase, BeadsRun should be rejected with Hard enforcement
+        let result = gate_tool_call(
+            "project_manager",
+            State::Running,
+            None,
+            Some(PMPhase::Exploration),
+            EnforcementMode::Hard,
+            Tool::BeadsRun,
+            0,
+            200_000,
+            Instant::now(),
+            Duration::from_secs(900),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not permitted in PM exploration phase"));
+    }
+
+    #[test]
+    fn gate_tool_call_with_pm_phase_allows_valid_tool() {
+        // In TaskDrafting phase, BeadsRun should be allowed
+        let result = gate_tool_call(
+            "project_manager",
+            State::Running,
+            None,
+            Some(PMPhase::TaskDrafting),
+            EnforcementMode::Hard,
+            Tool::BeadsRun,
             0,
             200_000,
             Instant::now(),
