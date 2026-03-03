@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { SessionLayout, AgentRole } from "../types";
+import type { SessionLayout } from "../types";
 import {
   PROMPT_CARD_MIN_W,
   PROMPT_CARD_MIN_H,
@@ -13,8 +13,6 @@ import { snap } from "../utils/layoutHelpers";
 import {
   WM_PHASE_LABELS,
   WM_PHASE_COLORS,
-  ROLE_LABELS,
-  AGENT_STATUS_LABELS,
   type WMPhase,
 } from "../constants/phases";
 
@@ -26,16 +24,6 @@ export interface WMChatMessage {
   content: string;
   timestamp: number;
   toolCalls?: Array<{ name: string; status: string }>;
-}
-
-export interface AgentActivityInfo {
-  id: string;
-  role: AgentRole;
-  status: "loading" | "done" | "error" | "stopped" | "in_review";
-  toolActivity?: string;
-  answer?: string;
-  taskTitle?: string;
-  turnStartedAt?: number;
 }
 
 interface WMChatCardProps {
@@ -63,10 +51,6 @@ interface WMChatCardProps {
   onPause?: () => void;
   onResume?: () => void;
   onCancelAll?: () => void;
-
-  /** Agent activity display */
-  agentActivities?: AgentActivityInfo[];
-  onStopAgent?: (agentId: string) => void;
 }
 
 export function WMChatCard({
@@ -88,8 +72,6 @@ export function WMChatCard({
   onPause,
   onResume,
   onCancelAll,
-  agentActivities = [],
-  onStopAgent,
 }: WMChatCardProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
@@ -97,7 +79,6 @@ export function WMChatCard({
   const [inputText, setInputText] = useState("");
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [showConfirmDialog, setShowConfirmDialog] = useState<"cancel_all" | null>(null);
-  const [agentsPanelExpanded, setAgentsPanelExpanded] = useState(true);
 
   const minW = mode === "prompt" ? PROMPT_CARD_MIN_W : WM_CHAT_CARD_MIN_W;
   const minH = mode === "prompt" ? PROMPT_CARD_MIN_H : WM_CHAT_CARD_MIN_H;
@@ -437,56 +418,6 @@ export function WMChatCard({
           </button>
         )}
       </div>
-
-      {/* Agent Activity Panel */}
-      {agentActivities.length > 0 && (
-        <div className="wm-chat-card-agents" onPointerDown={(e) => e.stopPropagation()}>
-          <button
-            type="button"
-            className="wm-chat-card-agents-toggle"
-            onClick={() => setAgentsPanelExpanded(!agentsPanelExpanded)}
-          >
-            <span>Agents ({agentActivities.length})</span>
-            <span>{agentsPanelExpanded ? "▼" : "▶"}</span>
-          </button>
-          {agentsPanelExpanded && (
-            <div className="wm-chat-card-agents-list">
-              {agentActivities.map((agent) => (
-                <div key={agent.id} className={`wm-chat-card-agent wm-chat-card-agent--${agent.status}`}>
-                  <div className="wm-chat-card-agent-header">
-                    <span className="wm-chat-card-agent-role">{ROLE_LABELS[agent.role]}</span>
-                    <span className={`wm-chat-card-agent-status wm-chat-card-agent-status--${agent.status}`}>
-                      {AGENT_STATUS_LABELS[agent.status] || agent.status}
-                    </span>
-                    {agent.status === "loading" && onStopAgent && (
-                      <button
-                        type="button"
-                        className="wm-chat-card-agent-stop"
-                        onClick={() => onStopAgent(agent.id)}
-                      >
-                        Stop
-                      </button>
-                    )}
-                  </div>
-                  {agent.taskTitle && (
-                    <div className="wm-chat-card-agent-task">{agent.taskTitle}</div>
-                  )}
-                  {agent.toolActivity && agent.status === "loading" && (
-                    <div className="wm-chat-card-agent-activity">{agent.toolActivity}</div>
-                  )}
-                  {agent.answer && (
-                    <div className="wm-chat-card-agent-answer">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {agent.answer.length > 300 ? agent.answer.slice(0, 300) + "..." : agent.answer}
-                      </ReactMarkdown>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Quick Actions */}
       <div className="wm-chat-card-actions" onPointerDown={(e) => e.stopPropagation()}>

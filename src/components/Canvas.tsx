@@ -1,14 +1,15 @@
 import { useRef, useCallback, useMemo, useState } from "react";
 import { useCanvasPanZoom } from "../hooks/useCanvasPanZoom";
 import { useViewportBounds, rectIntersects } from "../hooks/useViewportBounds";
+import { SessionCard } from "./SessionCard";
 import { TerminalCard } from "./TerminalCard";
 import { BrowserCard } from "./BrowserCard";
 import { BeadsCard } from "./BeadsCard";
 import { BeadsTaskCard } from "./BeadsTaskCard";
 import { TerminalLogCard } from "./TerminalLogCard";
 import { ValidatorCard } from "./ValidatorCard";
-import { WMChatCard, type WMChatMessage, type WMPhase, type AgentActivityInfo } from "./WMChatCard";
-import type { SessionLayout, AgentRole } from "../types";
+import { WMChatCard, type WMChatMessage, type WMPhase } from "./WMChatCard";
+import type { SessionLayout } from "../types";
 import { CULL_MARGIN } from "../types";
 
 interface CanvasProps {
@@ -40,46 +41,6 @@ function parsePromptPayload(payload?: string): string {
   } catch {
     return "";
   }
-}
-
-function extractAgentActivities(layouts: SessionLayout[], wmNodeId?: string): AgentActivityInfo[] {
-  if (!wmNodeId) return [];
-  
-  const activities: AgentActivityInfo[] = [];
-  for (const layout of layouts) {
-    const nodeType = layout.node_type ?? "agent";
-    if (nodeType !== "agent" && nodeType !== "worker") continue;
-    if (!layout.payload) continue;
-    
-    try {
-      const p = JSON.parse(layout.payload) as {
-        role?: AgentRole;
-        status?: "loading" | "done" | "error" | "stopped" | "in_review";
-        toolActivity?: string;
-        answer?: string;
-        taskTitle?: string;
-        turnStartedAt?: number;
-        parent_agent_id?: string;
-        parentAgentId?: string;
-        sourcePromptId?: string;
-      };
-      
-      if (!p.role || !p.status) continue;
-      
-      activities.push({
-        id: layout.session_id,
-        role: p.role,
-        status: p.status,
-        toolActivity: p.toolActivity,
-        answer: p.answer,
-        taskTitle: p.taskTitle,
-        turnStartedAt: p.turnStartedAt,
-      });
-    } catch {
-      continue;
-    }
-  }
-  return activities;
 }
 
 /** Build SVG path d for a curved line from (x1,y1) to (x2,y2) using quadratic Bezier. */
@@ -314,6 +275,18 @@ export function Canvas({
     return lines;
   }, [layouts, effectiveLayoutById]);
 
+  const agentLikeIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    let index = 0;
+    for (const l of layouts) {
+      const nodeType = l.node_type ?? "agent";
+      if (nodeType === "agent" || nodeType === "worker") {
+        map.set(l.session_id, index++);
+      }
+    }
+    return map;
+  }, [layouts]);
+
   // ViewBox and SVG extend into negative coords so lines don't clip when cards are dragged left/up
   const svgExtent = 8000;
   const svgSize = svgExtent * 2;
@@ -366,7 +339,6 @@ export function Canvas({
           const nodeType = layout.node_type ?? "agent";
 
           if (nodeType === "wm_chat") {
-            const agentActivities = extractAgentActivities(layouts, layout.session_id);
             return (
               <WMChatCard
                 key={layout.session_id}
@@ -381,8 +353,6 @@ export function Canvas({
                 onPause={onWMPause}
                 onResume={onWMResume}
                 onCancelAll={onWMCancelAll}
-                agentActivities={agentActivities}
-                onStopAgent={onStopAgent}
                 onLayoutChange={handleCardLayoutChange(layout.session_id)}
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onDragStart={handleDragStart}
@@ -491,9 +461,20 @@ export function Canvas({
             );
           }
 
-          // agent/worker nodes are now displayed inside WMChatCard's agent panel
-          // Skip rendering them as separate cards
-          return null;
+          // agent, worker: SessionCard
+          const index = agentLikeIndexById.get(layout.session_id) ?? 0;
+          return (
+            <SessionCard
+              key={layout.session_id}
+              layout={layout}
+              index={index}
+              onLayoutChange={handleCardLayoutChange(layout.session_id)}
+              onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
+              onDragStart={handleDragStart}
+              onStop={() => onStopAgent?.(layout.session_id)}
+              scale={viewport.scale}
+            />
+          );
         })}
       </div>
     </div>
