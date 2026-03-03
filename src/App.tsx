@@ -116,6 +116,7 @@ export default function App() {
 
   const abortControllers = useRef(new Map<string, AbortController>());
   const activeWmNodeId = useRef<string | null>(null);
+  const wmCardSessionId = useRef<string | null>(null);
 
   // WM Conversation state
   const [wmConversation, setWmConversation] = useState<WMChatMessage[]>([]);
@@ -201,6 +202,12 @@ export default function App() {
           if (filtered.length < raw.length && !cancelled) {
             persistLayoutsRef.current(filtered);
           }
+        }
+
+        // Find the wm_chat card's session_id from loaded layouts
+        const wmChatCard = filtered.find((l) => l.node_type === "wm_chat");
+        if (wmChatCard) {
+          wmCardSessionId.current = wmChatCard.session_id;
         }
       } catch (_) {
         // First run or no saved layout
@@ -959,6 +966,7 @@ export default function App() {
       }
       
       activeWmNodeId.current = newWmNodeId;
+      wmCardSessionId.current = nodeId;
       setWmNodeId(newWmNodeId);
       setWmPhase("project_setup");
 
@@ -1101,6 +1109,7 @@ export default function App() {
           currentWmNodeId = result.agent_id;
           setWmNodeId(currentWmNodeId);
           activeWmNodeId.current = currentWmNodeId;
+          wmCardSessionId.current = currentWmNodeId;
           setWmPhase("project_setup");
 
           // Create the WM agent layout for tracking
@@ -1668,8 +1677,9 @@ export default function App() {
         }
       }
 
-      const wmId = activeWmNodeId.current;
-      const parentRef = parent_agent_id ?? wmId ?? undefined;
+      // Use wmCardSessionId for connection lines (card session_id, not backend agent ID)
+      const wmCardId = wmCardSessionId.current;
+      const parentRef = parent_agent_id ?? wmCardId ?? undefined;
 
       startAgentConversationRef.current({
         agentNodeId: agent_id,
@@ -2395,6 +2405,7 @@ export default function App() {
     }
     abortControllers.current.clear();
     activeWmNodeId.current = null;
+    wmCardSessionId.current = null;
 
     // 2. Clear frontend layouts + persist
     setLayouts([]);

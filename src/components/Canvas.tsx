@@ -175,14 +175,15 @@ export function Canvas({
         };
         const parentId = p.parentAgentId ?? p.parent_agent_id ?? p.parentBeadsId;
 
-        // Prompt → Agent connection (use effective layout so lines follow dragged cards)
+        // WM Chat / Prompt → Agent connection (use effective layout so lines follow dragged cards)
+        // sourcePromptId points to the original prompt card which may now be a wm_chat card
         if (layout.node_type === "agent" && p.sourcePromptId) {
-          const prompt = effectiveLayoutById.get(p.sourcePromptId);
+          const wmOrPrompt = effectiveLayoutById.get(p.sourcePromptId);
           const agent = sourceOrTargetLayout;
-          if (prompt && agent) {
+          if (wmOrPrompt && agent) {
             lines.push({
-              x1: prompt.x + prompt.w / 2,
-              y1: prompt.y + prompt.h,
+              x1: wmOrPrompt.x + wmOrPrompt.w / 2,
+              y1: wmOrPrompt.y + wmOrPrompt.h,
               x2: agent.x + agent.w / 2,
               y2: agent.y,
             });
