@@ -26,7 +26,7 @@ export class UpdateBeadsTaskPlugin extends Plugin {
   getDescription(): string {
     return [
       "Update an existing task in the Beads task graph.",
-      "Use to change status, priority, assignee, labels, description, or append progress notes.",
+      "Use to change status, priority, parent_id, deps, assignee, labels, description, or append progress notes.",
       "Requires the task ID.",
     ].join(" ");
   }
@@ -56,6 +56,18 @@ export class UpdateBeadsTaskPlugin extends Plugin {
         name: "priority",
         type: "string",
         description: "New priority: 0 (highest) to 4 (lowest)",
+        required: false,
+      },
+      {
+        name: "parent_id",
+        type: "string",
+        description: "Set or change the parent task/epic ID",
+        required: false,
+      },
+      {
+        name: "deps",
+        type: "string",
+        description: "Comma-separated task IDs this task depends on (replaces existing deps)",
         required: false,
       },
       {
@@ -97,6 +109,8 @@ export class UpdateBeadsTaskPlugin extends Plugin {
       task_id: string;
       status?: string;
       priority?: string;
+      parent_id?: string;
+      deps?: string;
       assignee?: string;
       description?: string;
       append_notes?: string;
@@ -133,6 +147,12 @@ export class UpdateBeadsTaskPlugin extends Plugin {
     if (parameters.priority) {
       args.push("--priority", parameters.priority);
     }
+    if (parameters.parent_id) {
+      args.push("--parent", parameters.parent_id.trim());
+    }
+    if (parameters.deps) {
+      args.push("--deps", parameters.deps.trim());
+    }
     if (parameters.assignee) {
       args.push("--assignee", parameters.assignee);
     }
@@ -154,7 +174,7 @@ export class UpdateBeadsTaskPlugin extends Plugin {
     }
 
     if (args.length === 2) {
-      return { result: "Error: No fields to update. Provide at least one field (status, priority, etc.)." };
+      return { result: "Error: No fields to update. Provide at least one field (status, priority, deps, etc.)." };
     }
 
     try {
