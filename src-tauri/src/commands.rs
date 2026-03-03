@@ -2442,6 +2442,17 @@ pub async fn agent_get_phase(
     Ok(phase.map(|p| p.to_string()))
 }
 
+/// Get the current execution phase for a PM agent.
+/// Returns null if the agent doesn't exist or is not a PM.
+#[tauri::command]
+pub async fn agent_get_pm_phase(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+) -> Result<Option<String>, String> {
+    let phase = registry.get_pm_execution_phase(&agent_id)?;
+    Ok(phase.map(|p| p.to_string()))
+}
+
 /// Transition a developer agent to a new execution phase.
 /// event should be one of: "plan_complete", "impl_complete", "tests_passed", "tests_failed",
 /// "validation_failed", "revision_complete", "reset".

@@ -72,6 +72,24 @@ const PHASE_COLORS: Record<string, string> = {
   revising: "#ef4444",     // red
 };
 
+/** PM execution phase labels. */
+const PM_PHASE_LABELS: Record<string, string> = {
+  Exploration: "Exploring",
+  TaskDrafting: "Drafting Tasks",
+  DependencyReview: "Reviewing Deps",
+  Finalization: "Finalizing",
+  Revising: "Revising",
+};
+
+/** PM phase badge colors. */
+const PM_PHASE_COLORS: Record<string, string> = {
+  Exploration: "#3b82f6",      // blue
+  TaskDrafting: "#f59e0b",     // amber
+  DependencyReview: "#8b5cf6", // violet
+  Finalization: "#10b981",     // emerald
+  Revising: "#ef4444",         // red
+};
+
 function parseRole(payload: string | undefined): AgentRole | null {
   if (!payload) return null;
   try {
@@ -90,6 +108,18 @@ function parsePhase(payload: string | undefined): string | null {
     const p = JSON.parse(payload) as { executionPhase?: string };
     if (p.executionPhase && Object.prototype.hasOwnProperty.call(PHASE_LABELS, p.executionPhase))
       return p.executionPhase;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function parsePMPhase(payload: string | undefined): string | null {
+  if (!payload) return null;
+  try {
+    const p = JSON.parse(payload) as { pmExecutionPhase?: string };
+    if (p.pmExecutionPhase && Object.prototype.hasOwnProperty.call(PM_PHASE_LABELS, p.pmExecutionPhase))
+      return p.pmExecutionPhase;
   } catch {
     /* ignore */
   }
@@ -115,6 +145,31 @@ function PhaseBadge({ phase }: { phase: string }) {
         opacity: 0.9,
       }}
       title={`Execution phase: ${label}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function PMPhaseBadge({ phase }: { phase: string }) {
+  const label = PM_PHASE_LABELS[phase] ?? phase;
+  const color = PM_PHASE_COLORS[phase] ?? "#6b7280";
+  return (
+    <span
+      className="session-card-phase-badge"
+      style={{
+        marginLeft: 6,
+        padding: "1px 6px",
+        borderRadius: 4,
+        fontSize: "0.7em",
+        fontWeight: 500,
+        textTransform: "uppercase",
+        letterSpacing: "0.02em",
+        backgroundColor: color,
+        color: "#fff",
+        opacity: 0.9,
+      }}
+      title={`PM phase: ${label}`}
     >
       {label}
     </span>
@@ -347,6 +402,10 @@ export function SessionCard({
           {/* Show phase badge for developer agents */}
           {parseRole(layout.payload) === "developer" && parsePhase(layout.payload) && (
             <PhaseBadge phase={parsePhase(layout.payload)!} />
+          )}
+          {/* Show phase badge for PM agents */}
+          {parseRole(layout.payload) === "project_manager" && parsePMPhase(layout.payload) && (
+            <PMPhaseBadge phase={parsePMPhase(layout.payload)!} />
           )}
         </span>
         <div className="session-card-header-actions">

@@ -53,6 +53,7 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         crate::commands::agent_set_yield_summary,
         crate::commands::agent_gate_tool,
         crate::commands::agent_get_phase,
+        crate::commands::agent_get_pm_phase,
         crate::commands::agent_transition_phase,
         crate::commands::write_clipboard_text,
         crate::commands::fetch_json,

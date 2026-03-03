@@ -722,6 +722,11 @@ export default function App() {
             console.warn(`[Agent ${agentNodeId}] Backend state changed to "${state}" — aborting frontend`);
             controller.abort();
           }
+          // Poll for PM phase during heartbeat
+          if (role === "project_manager") {
+            const pmPhase = await invoke<string | null>("agent_get_pm_phase", { agentId: agentNodeId });
+            if (pmPhase) updatePayload({ pmExecutionPhase: pmPhase });
+          }
         } catch { /* best effort */ }
       }, HEARTBEAT_INTERVAL_MS);
 
@@ -754,6 +759,15 @@ export default function App() {
                 c.state === "preparing" ? `Calling ${c.name}…` :
                 (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
               if (statusText) updatePayload({ status: "loading", toolActivity: statusText });
+              
+              // Poll for PM phase when tool activity happens
+              if (role === "project_manager") {
+                invoke<string | null>("agent_get_pm_phase", { agentId: agentNodeId })
+                  .then((pmPhase) => {
+                    if (pmPhase) updatePayload({ pmExecutionPhase: pmPhase });
+                  })
+                  .catch(() => {});
+              }
             }
           },
           onUsage: (usage) => {
