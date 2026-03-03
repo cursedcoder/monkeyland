@@ -586,6 +586,13 @@ export function SessionCard({
                     <p className="session-card-response-error-msg">
                       {p.errorMessage ?? "Error"}
                     </p>
+                    {p.answer ? (
+                      <div className="session-card-response-text session-card-markdown">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {p.answer}
+                        </ReactMarkdown>
+                      </div>
+                    ) : null}
                   </div>
                 );
               }

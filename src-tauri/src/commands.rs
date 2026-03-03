@@ -2506,6 +2506,15 @@ pub async fn agent_set_yield_summary(
     registry.set_yield_summary(&agent_id, diff_summary)
 }
 
+/// Return the worktree path for an agent (if one was assigned).
+#[tauri::command]
+pub async fn get_agent_worktree_path(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+) -> Result<Option<String>, String> {
+    registry.get_worktree_path(&agent_id)
+}
+
 /// Explicit gate check. Frontend plugins can call this before executing any tool
 /// to get a clear error message if the agent is not allowed.
 #[tauri::command]

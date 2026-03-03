@@ -297,6 +297,13 @@ impl Project {
             }
         }
 
+        // bd init creates AGENTS.md by default; remove it since Monkeyland
+        // manages its own agent prompts and the file pollutes the project.
+        let agents_md = self.path.join("AGENTS.md");
+        if agents_md.exists() {
+            let _ = std::fs::remove_file(&agents_md);
+        }
+
         self.state = ProjectState::BeadsReady;
         Ok(())
     }

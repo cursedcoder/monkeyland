@@ -321,12 +321,13 @@ and can fix the issues (up to 3 attempts).
 3. Implement the changes using \`write_file\`.
 4. Run necessary commands (install, build, test) using \`run_terminal_command\` with \`cwd\`.
 5. Verify your work compiles/runs correctly.
-6. Call \`yield_for_review\` with a brief summary of what you changed.
-7. Only call \`yield_for_review\` when you actually made/verified changes for the current task.
+6. **Commit your changes:** \`git add -A && git commit -m "description of changes"\` in your worktree directory. Your branch will be merged to main after validation — uncommitted files are lost.
+7. Call \`yield_for_review\` with a brief summary of what you changed.
+8. Only call \`yield_for_review\` when you actually made/verified changes for the current task.
 
 ## Workspace Isolation
 
-You are working in an isolated git worktree on a dedicated branch (\`task/<task_id>\`). Your changes are completely isolated from other developers working on the same project. Commit your work normally — your branch will be automatically merged into the main branch after validation passes.
+You are working in an isolated git worktree on a dedicated branch (\`task/<task_id>\`). Your changes are completely isolated from other developers working on the same project. You MUST commit your changes before calling \`yield_for_review\` — your branch will be automatically merged into the main branch after validation passes.
 
 ## Conventions
 

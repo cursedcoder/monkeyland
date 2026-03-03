@@ -24,6 +24,14 @@ function failedResult(reason: string): CheckResult {
   return { status: "fail", reasons: [reason] };
 }
 
+function normalizeStatus(status: string): "pass" | "fail" {
+  return status.toLowerCase() === "pass" ? "pass" : "fail";
+}
+
+function normalizeCheck(check: CheckResult): CheckResult {
+  return { ...check, status: normalizeStatus(check.status) };
+}
+
 export function normalizeValidatorOutput(rawText: string): ParsedValidatorResults {
   const cleaned = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
   let parsed: Partial<ParsedValidatorResults> = {};
@@ -53,10 +61,10 @@ export function normalizeValidatorOutput(rawText: string): ParsedValidatorResult
   }
 
   const out: ParsedValidatorResults = {
-    code_review: parsed.code_review ?? failedResult("Missing validator result for code_review"),
-    business_logic: parsed.business_logic ?? failedResult("Missing validator result for business_logic"),
-    scope: parsed.scope ?? failedResult("Missing validator result for scope"),
+    code_review: normalizeCheck(parsed.code_review ?? failedResult("Missing validator result for code_review")),
+    business_logic: normalizeCheck(parsed.business_logic ?? failedResult("Missing validator result for business_logic")),
+    scope: normalizeCheck(parsed.scope ?? failedResult("Missing validator result for scope")),
   };
-  if (parsed.visual) out.visual = parsed.visual;
+  if (parsed.visual) out.visual = normalizeCheck(parsed.visual);
   return out;
 }

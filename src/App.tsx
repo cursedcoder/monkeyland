@@ -813,7 +813,10 @@ export default function App() {
       const heartbeat = setInterval(async () => {
         try {
           const state = await invoke<string>("agent_check_state", { agentId: agentNodeId });
-          if (state !== "Running" && state !== "Spawned" && state !== "unknown") {
+          // Only abort for forceful/terminal states (Stopped, Blocked).
+          // Yielded/InReview/Done are expected lifecycle transitions — let the
+          // stream finish naturally so onDone fires with the full answer text.
+          if (state === "Stopped" || state === "Blocked") {
             backendRevoked = true;
             console.warn(`[Agent ${agentNodeId}] Backend state changed to "${state}" — aborting frontend`);
             controller.abort();
@@ -1053,7 +1056,15 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
                   updatePayload({ status: "error", errorMessage: `Agent stuck: ${reason}`, answer: fullText, toolCalls: [] }, true, true);
                 }
               } else {
-                updatePayload({ status: "error", errorMessage: `Agent aborted: ${reason}`, answer: fullText, toolCalls: [] }, true, true);
+                // For PM/Validator: check if agent already yielded — if so, treat
+                // as "in_review" rather than error so the answer stays visible.
+                const agentState = await invoke<string>("agent_check_state", { agentId: agentNodeId }).catch(() => "unknown");
+                const alreadyYielded = agentState === "Yielded" || agentState === "InReview" || agentState === "Done";
+                if (alreadyYielded) {
+                  updatePayload({ status: "in_review", answer: fullText, toolActivity: "Awaiting validation…", toolCalls: [] }, true, true);
+                } else {
+                  updatePayload({ status: "error", errorMessage: `Agent aborted: ${reason}`, answer: fullText, toolCalls: [] }, true, true);
+                }
                 invoke("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => {});
               }
             } else {

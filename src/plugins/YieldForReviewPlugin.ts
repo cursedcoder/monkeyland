@@ -8,6 +8,9 @@ import { invoke } from "@tauri-apps/api/core";
  *
  * The developer CANNOT self-complete. Only the orchestration loop can mark a task
  * as Done after all 3 validators pass.
+ *
+ * Safety net: before yielding, auto-commits any uncommitted changes in the
+ * agent's worktree so they survive worktree removal and make it into the merge.
  */
 export class YieldForReviewPlugin extends Plugin {
   private agentId: string;
@@ -55,11 +58,70 @@ export class YieldForReviewPlugin extends Plugin {
     ];
   }
 
+  /**
+   * Auto-commit any uncommitted changes in the worktree before yielding.
+   * Without this, worktree removal destroys uncommitted files and the merge
+   * has nothing to apply to the main branch.
+   */
+  private async autoCommitWorktree(summary: string): Promise<void> {
+    let worktreePath: string | null = null;
+    try {
+      worktreePath = await invoke<string | null>("get_agent_worktree_path", {
+        agentId: this.agentId,
+      });
+    } catch {
+      return;
+    }
+    if (!worktreePath) return;
+
+    try {
+      // Stage all changes (new, modified, deleted)
+      await invoke<string>("terminal_exec", {
+        payload: {
+          session_id: `autocommit-${this.agentId}`,
+          command: "git add -A",
+          cwd: worktreePath,
+          timeout_ms: 10_000,
+        },
+      });
+
+      // Check if there is anything to commit
+      const status = await invoke<string>("terminal_exec", {
+        payload: {
+          session_id: `autocommit-${this.agentId}`,
+          command: "git diff --cached --quiet && echo CLEAN || echo DIRTY",
+          cwd: worktreePath,
+          timeout_ms: 5_000,
+        },
+      });
+
+      if (status.trim().includes("DIRTY")) {
+        const commitMsg = summary
+          ? `task: ${summary.slice(0, 200)}`
+          : "task: auto-commit before validation";
+        await invoke<string>("terminal_exec", {
+          payload: {
+            session_id: `autocommit-${this.agentId}`,
+            command: `git commit -m ${JSON.stringify(commitMsg)}`,
+            cwd: worktreePath,
+            timeout_ms: 10_000,
+          },
+        });
+        console.log(`[YieldForReview] Auto-committed uncommitted changes for ${this.agentId}`);
+      }
+    } catch (e) {
+      console.warn(`[YieldForReview] Auto-commit failed for ${this.agentId}:`, e);
+    }
+  }
+
   async execute(
     _context: PluginExecutionContext,
     parameters: { diff_summary: string; git_branch?: string },
   ): Promise<{ result: string }> {
     try {
+      // Safety net: commit any uncommitted work before yielding
+      await this.autoCommitWorktree(parameters.diff_summary ?? "");
+
       await invoke("agent_yield", {
         agentId: this.agentId,
         payload: {

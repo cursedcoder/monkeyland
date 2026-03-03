@@ -66,22 +66,16 @@ Let me know if you need more details.`;
     expect(parsed.code_review.status).toBe("pass");
   });
 
-  // BUG PROBE: LLM returns "PASS"/"FAIL" (uppercase) instead of "pass"/"fail".
-  // If the code does strict equality, this silently passes through as a
-  // non-"fail" status and gets treated as pass.
-  it("does NOT normalize uppercase status values (documents current behavior)", () => {
+  it("normalizes uppercase status values to lowercase", () => {
     const input = JSON.stringify({
       code_review: { status: "PASS", reasons: [] },
       business_logic: { status: "FAIL", reasons: ["bad"] },
-      scope: { status: "pass", reasons: [] },
+      scope: { status: "Pass", reasons: [] },
     });
     const parsed = normalizeValidatorOutput(input);
-    // Current behavior: the raw string is preserved. "PASS" !== "pass".
-    // Downstream code comparing === "pass" would MISS this.
-    // This test documents the bug — normalizeValidatorOutput should
-    // lowercase the status field but currently doesn't.
-    expect(parsed.code_review.status).toBe("PASS");
-    expect(parsed.business_logic.status).toBe("FAIL");
+    expect(parsed.code_review.status).toBe("pass");
+    expect(parsed.business_logic.status).toBe("fail");
+    expect(parsed.scope.status).toBe("pass");
   });
 
   // BUG PROBE: Partial results — LLM returns some fields but not all

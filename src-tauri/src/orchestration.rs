@@ -400,43 +400,47 @@ pub async fn tick(
     };
     let max_merges_per_tick = if safety_mode_enabled { 1usize } else { 3usize };
 
-    // 1. bd ready --json
-    let args = vec!["ready".to_string(), "--json".to_string()];
-    let stdout = env.run_bd(path, &args)?;
-
-    let tasks: Vec<BeadsIssue> = match serde_json::from_str(&stdout) {
-        Ok(v) => v,
-        Err(_) => {
-            // bd might return empty array or different shape
-            if let Ok(arr) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                if let Some(arr) = arr.as_array() {
-                    let mut out = Vec::new();
-                    for item in arr {
-                        if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                            let issue_type = item
-                                .get("issue_type")
-                                .or_else(|| item.get("type"))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("task")
-                                .to_string();
-                            let priority =
-                                item.get("priority").and_then(|v| v.as_u64()).unwrap_or(2) as u8;
-                            out.push(BeadsIssue {
-                                id: id.to_string(),
-                                issue_type,
-                                priority,
-                            });
+    // 1. bd ready --json — failure must NOT prevent steps 3–6 (merge train, cleanup, etc.)
+    let tasks: Vec<BeadsIssue> =
+        match env.run_bd(path, &vec!["ready".to_string(), "--json".to_string()]) {
+            Ok(stdout) => match serde_json::from_str(&stdout) {
+                Ok(v) => v,
+                Err(_) => {
+                    if let Ok(arr) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                        if let Some(arr) = arr.as_array() {
+                            let mut out = Vec::new();
+                            for item in arr {
+                                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                                    let issue_type = item
+                                        .get("issue_type")
+                                        .or_else(|| item.get("type"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("task")
+                                        .to_string();
+                                    let priority =
+                                        item.get("priority").and_then(|v| v.as_u64()).unwrap_or(2)
+                                            as u8;
+                                    out.push(BeadsIssue {
+                                        id: id.to_string(),
+                                        issue_type,
+                                        priority,
+                                    });
+                                }
+                            }
+                            out
+                        } else {
+                            Vec::new()
                         }
+                    } else {
+                        Vec::new()
                     }
-                    out
-                } else {
-                    return Ok(());
                 }
-            } else {
-                return Ok(());
+            },
+            Err(e) => {
+                eprintln!("[orch] bd ready failed (non-fatal, continuing tick): {e}");
+                Vec::new()
             }
-        }
-    };
+        };
 
     // 2. For each task, try to spawn and claim (skip if already claimed by an agent we track)
     let claimed_task_ids = registry.claimed_task_ids()?;
@@ -773,7 +777,9 @@ pub async fn tick(
                 "--status".to_string(),
                 "done".to_string(),
             ];
-            let _ = env.run_bd(path, &done_args);
+            if let Err(e) = env.run_bd(path, &done_args) {
+                eprintln!("[orch] WARNING: bd update --status done failed for {task_id}: {e}");
+            }
             let _ = registry.kill(&agent_id);
             let _ = env.kill_pty(&agent_id);
             let _ = env_emit(
@@ -871,7 +877,16 @@ pub async fn tick(
                         "--status".to_string(),
                         "done".to_string(),
                     ];
-                    let _ = env.run_bd(path, &done_args);
+                    if let Err(e) = env.run_bd(path, &done_args) {
+                        eprintln!(
+                            "[orch] WARNING: bd update --status done failed for {task_id}: {e}; retrying once"
+                        );
+                        if let Err(e2) = env.run_bd(path, &done_args) {
+                            eprintln!(
+                                "[orch] ERROR: bd update --status done retry also failed for {task_id}: {e2}"
+                            );
+                        }
+                    }
                     let del_path = path.to_path_buf();
                     let del_task = task_id.clone();
                     let _ = tokio::task::spawn_blocking(move || {
