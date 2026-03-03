@@ -201,6 +201,7 @@ pub struct AgentSpawnedPayload {
     pub task_id: Option<String>,
     pub parent_agent_id: Option<String>,
     pub merge_context: Option<MergeContext>,
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -223,6 +224,7 @@ pub struct ValidationRequestedPayload {
     pub task_id: Option<String>,
     pub git_branch: Option<String>,
     pub diff_summary: Option<String>,
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -527,6 +529,11 @@ pub async fn tick(
         ];
         let _ = env.run_bd(path, &claim_args);
 
+        let worktree_path = if role == "developer" {
+            Some(agent_cwd.to_string_lossy().to_string())
+        } else {
+            None
+        };
         let _ = env_emit(
             env,
             "agent_spawned",
@@ -536,6 +543,7 @@ pub async fn tick(
                 task_id: Some(task.id.clone()),
                 parent_agent_id: None,
                 merge_context: None,
+                worktree_path,
             },
         );
         spawned_this_tick += 1;
@@ -595,9 +603,14 @@ pub async fn tick(
                 let _ = registry.force_start_validation(&developer_agent_id);
             }
         }
+        // Get the developer's worktree path so the validator can work on the same code
+        let worktree_path = registry
+            .get_worktree_path(&developer_agent_id)
+            .ok()
+            .flatten();
         eprintln!(
-            "[orch] Emitting validation_requested for developer {}",
-            developer_agent_id
+            "[orch] Emitting validation_requested for developer {} (worktree: {:?})",
+            developer_agent_id, worktree_path
         );
         if let Err(e) = env_emit(
             env,
@@ -607,6 +620,7 @@ pub async fn tick(
                 task_id,
                 git_branch,
                 diff_summary,
+                worktree_path,
             },
         ) {
             eprintln!("[orch] FAILED to emit validation_requested: {}", e);
@@ -1194,6 +1208,7 @@ async fn handle_merge_conflict(
                 conflict_diff: conflict_context,
                 task_description: task_desc,
             }),
+            worktree_path: Some(agent_cwd.to_string_lossy().to_string()),
         },
     );
 

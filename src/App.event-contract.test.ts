@@ -169,6 +169,162 @@ describe("App event contracts", () => {
 
       expect(taskDescription).toBe("Execute task bd-55.");
     });
+
+    it("includes worktree_path in developer task description when provided", async () => {
+      mockInvoke
+        .mockResolvedValueOnce("/tmp/project")  // get_beads_project_path
+        .mockResolvedValueOnce(                  // beads_run (show task --json)
+          JSON.stringify({
+            id: "bd-42",
+            title: "Setup project",
+            type: "task",
+            description: "Initialize the React project.",
+          }),
+        );
+
+      const payload = {
+        agent_id: "dev-123",
+        role: "developer",
+        task_id: "bd-42",
+        parent_agent_id: null,
+        worktree_path: "/tmp/project/.worktrees/dev-123",
+        merge_context: null,
+      };
+
+      const { task_id, worktree_path } = payload;
+      let taskDescription = `Execute task ${task_id ?? "unknown"}.`;
+      let resolvedProjectPath: string | null = null;
+
+      try {
+        resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
+      } catch { /* */ }
+
+      if (task_id && resolvedProjectPath) {
+        try {
+          const jsonOut = await invoke<string>("beads_run", {
+            projectPath: resolvedProjectPath,
+            args: ["show", task_id, "--json"],
+          });
+          const raw = JSON.parse(jsonOut.trim());
+          const parsed = (Array.isArray(raw) ? raw[0] : raw) as Record<string, unknown>;
+          if (parsed) {
+            const bodyText = ((parsed.description || parsed.title) as string) || "";
+            const worktreeInfo = worktree_path
+              ? `\n\n**IMPORTANT - Your isolated worktree path:** \`${worktree_path}\`\nAll file operations (read, write, terminal commands) MUST use this directory as the base. Do NOT use ${resolvedProjectPath} directly.`
+              : "";
+            taskDescription = task_id
+              ? `Task ID: ${task_id}${worktreeInfo}\n\n${bodyText}`.trim()
+              : bodyText || taskDescription;
+          }
+        } catch { /* */ }
+      }
+
+      expect(taskDescription).toContain("Task ID: bd-42");
+      expect(taskDescription).toContain("**IMPORTANT - Your isolated worktree path:**");
+      expect(taskDescription).toContain("/tmp/project/.worktrees/dev-123");
+      expect(taskDescription).toContain("Do NOT use /tmp/project directly");
+      expect(taskDescription).toContain("Initialize the React project");
+    });
+
+    it("does NOT include worktree info when worktree_path is null (non-developer)", async () => {
+      mockInvoke
+        .mockResolvedValueOnce("/tmp/project")  // get_beads_project_path
+        .mockResolvedValueOnce(                  // beads_run (show task --json)
+          JSON.stringify({
+            id: "epic-1",
+            title: "Build auth",
+            type: "epic",
+            description: "Implement authentication.",
+          }),
+        );
+
+      const payload = {
+        agent_id: "pm-456",
+        role: "project_manager",
+        task_id: "epic-1",
+        parent_agent_id: null,
+        worktree_path: null,  // PM doesn't get a worktree
+        merge_context: null,
+      };
+
+      const { task_id, worktree_path } = payload;
+      let taskDescription = `Execute task ${task_id ?? "unknown"}.`;
+      let resolvedProjectPath: string | null = null;
+
+      try {
+        resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
+      } catch { /* */ }
+
+      if (task_id && resolvedProjectPath) {
+        try {
+          const jsonOut = await invoke<string>("beads_run", {
+            projectPath: resolvedProjectPath,
+            args: ["show", task_id, "--json"],
+          });
+          const raw = JSON.parse(jsonOut.trim());
+          const parsed = (Array.isArray(raw) ? raw[0] : raw) as Record<string, unknown>;
+          if (parsed) {
+            const bodyText = ((parsed.description || parsed.title) as string) || "";
+            const worktreeInfo = worktree_path
+              ? `\n\n**IMPORTANT - Your isolated worktree path:** \`${worktree_path}\`\nAll file operations...`
+              : "";
+            taskDescription = task_id
+              ? `Task ID: ${task_id}${worktreeInfo}\n\n${bodyText}`.trim()
+              : bodyText || taskDescription;
+          }
+        } catch { /* */ }
+      }
+
+      expect(taskDescription).toContain("Task ID: epic-1");
+      expect(taskDescription).not.toContain("worktree path");
+      expect(taskDescription).not.toContain("IMPORTANT");
+      expect(taskDescription).toContain("Implement authentication");
+    });
+
+    it("includes worktree_path in merge_agent description when provided", async () => {
+      mockInvoke.mockResolvedValueOnce("/tmp/project"); // get_beads_project_path
+
+      const payload = {
+        agent_id: "merge-1",
+        role: "merge_agent",
+        task_id: "bd-99",
+        parent_agent_id: "dev-1",
+        worktree_path: "/tmp/project/.worktrees/merge-1",
+        merge_context: {
+          base_branch: "main",
+          task_branch: "task/bd-99",
+          conflict_diff: "--- a/file.txt\n+++ b/file.txt",
+          task_description: "Fix the login bug",
+        },
+      };
+
+      const { role, task_id, worktree_path, merge_context } = payload;
+      let taskDescription = `Execute task ${task_id ?? "unknown"}.`;
+
+      if (role === "merge_agent" && merge_context) {
+        const worktreeInfo = worktree_path
+          ? `\n\n**Your worktree path:** \`${worktree_path}\`\nAll file operations MUST use this path as the base directory.`
+          : "";
+        taskDescription = [
+          `Resolve merge conflicts for task ${task_id}.`,
+          ``,
+          `Base branch: ${merge_context.base_branch}`,
+          `Task branch: ${merge_context.task_branch}`,
+          worktreeInfo,
+          ``,
+          `## Original task description`,
+          merge_context.task_description || "(not available)",
+          ``,
+          `## Conflict diff`,
+          merge_context.conflict_diff || "(not available)",
+        ].join("\n");
+      }
+
+      expect(taskDescription).toContain("Resolve merge conflicts for task bd-99");
+      expect(taskDescription).toContain("**Your worktree path:**");
+      expect(taskDescription).toContain("/tmp/project/.worktrees/merge-1");
+      expect(taskDescription).toContain("MUST use this path");
+    });
   });
 
   describe("agent_killed event", () => {
@@ -231,7 +387,7 @@ describe("App event contracts", () => {
   });
 
   describe("validation_requested event", () => {
-    it("spawns a validator agent via invoke", async () => {
+    it("spawns a validator agent in developer's worktree when worktree_path is provided", async () => {
       mockInvoke
         .mockResolvedValueOnce("/tmp/project")   // get_beads_project_path
         .mockResolvedValueOnce({ agent_id: "val-1" }); // agent_spawn
@@ -241,6 +397,7 @@ describe("App event contracts", () => {
         task_id: "bd-42",
         git_branch: "task/bd-42",
         diff_summary: "Added auth module",
+        worktree_path: "/tmp/project/.worktrees/dev-1",
       };
 
       let resolvedProjectPath: string | null = null;
@@ -248,12 +405,15 @@ describe("App event contracts", () => {
         resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
       } catch { /* */ }
 
+      // Use the developer's worktree path so the validator sees the actual changes
+      const validatorCwd = payload.worktree_path || resolvedProjectPath;
+
       const result = await invoke<{ agent_id: string }>("agent_spawn", {
         payload: {
           role: "validator",
           task_id: payload.task_id,
           parent_agent_id: payload.developer_agent_id,
-          cwd: resolvedProjectPath,
+          cwd: validatorCwd,
         },
       });
 
@@ -263,7 +423,46 @@ describe("App event contracts", () => {
           role: "validator",
           task_id: "bd-42",
           parent_agent_id: "dev-1",
-          cwd: "/tmp/project",
+          cwd: "/tmp/project/.worktrees/dev-1",
+        },
+      });
+    });
+
+    it("falls back to project path when worktree_path is null", async () => {
+      mockInvoke
+        .mockResolvedValueOnce("/tmp/project")   // get_beads_project_path
+        .mockResolvedValueOnce({ agent_id: "val-2" }); // agent_spawn
+
+      const payload = {
+        developer_agent_id: "dev-2",
+        task_id: "bd-99",
+        git_branch: "task/bd-99",
+        diff_summary: "Fixed bug",
+        worktree_path: null,  // No worktree (legacy or PM scenario)
+      };
+
+      let resolvedProjectPath: string | null = null;
+      try {
+        resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
+      } catch { /* */ }
+
+      const validatorCwd = payload.worktree_path || resolvedProjectPath;
+
+      await invoke<{ agent_id: string }>("agent_spawn", {
+        payload: {
+          role: "validator",
+          task_id: payload.task_id,
+          parent_agent_id: payload.developer_agent_id,
+          cwd: validatorCwd,
+        },
+      });
+
+      expect(mockInvoke).toHaveBeenCalledWith("agent_spawn", {
+        payload: {
+          role: "validator",
+          task_id: "bd-99",
+          parent_agent_id: "dev-2",
+          cwd: "/tmp/project",  // Falls back to project path
         },
       });
     });

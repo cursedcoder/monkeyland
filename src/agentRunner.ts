@@ -299,6 +299,22 @@ async function loadLlmModel(): Promise<LoadedModel> {
  * For multi-turn conversations, pass the full conversation history via `messages`.
  * For single-turn (one-shot), pass `userMessage` which will be wrapped with the system prompt.
  */
+const MAX_RATE_LIMIT_RETRIES = 3;
+const INITIAL_BACKOFF_MS = 5000;
+
+function isRateLimitError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  const lowerMsg = msg.toLowerCase();
+  return (
+    lowerMsg.includes("too many requests") ||
+    lowerMsg.includes("rate_limit") ||
+    lowerMsg.includes("rate limit") ||
+    lowerMsg.includes("429") ||
+    lowerMsg.includes("quota") ||
+    lowerMsg.includes("retryerror")
+  );
+}
+
 export async function runAgent(params: AgentRunnerParams): Promise<void> {
   const { systemPrompt, userMessage, messages: inputMessages, plugins, signal, callbacks, attachment } = params;
 
@@ -327,6 +343,8 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
     outputPricePerM: loaded.outputPricePerM,
   });
   
+  let rateLimitRetries = 0;
+  while (rateLimitRetries <= MAX_RATE_LIMIT_RETRIES) {
   try {
     const tools: Record<string, Tool> = {};
     for (const plugin of plugins) {
@@ -374,6 +392,7 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
       tools: Object.keys(tools).length > 0 ? tools : undefined,
       stopWhen: stepCountIs(10),
       abortSignal: signal,
+      maxRetries: 5,
       onStepFinish: (event) => {
         if (event.usage) {
           callbacks.onUsage?.({
@@ -412,12 +431,27 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
     }
 
     await emitDone();
+    return;
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
       await emitStopped();
-    } else {
-      const msg = e instanceof Error ? e.message : String(e);
-      await emitError(msg);
+      return;
     }
+    
+    const msg = e instanceof Error ? e.message : String(e);
+    
+    if (isRateLimitError(e) && rateLimitRetries < MAX_RATE_LIMIT_RETRIES) {
+      rateLimitRetries++;
+      const backoffMs = INITIAL_BACKOFF_MS * Math.pow(2, rateLimitRetries - 1);
+      console.warn(`[agentRunner] Rate limit hit, retry ${rateLimitRetries}/${MAX_RATE_LIMIT_RETRIES} after ${backoffMs}ms: ${msg}`);
+      callbacks.onChunk({ type: "content", text: `\n\n[Rate limited, retrying in ${backoffMs / 1000}s...]\n\n` });
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      fullText = "";
+      continue;
+    }
+    
+    await emitError(msg);
+    return;
+  }
   }
 }

@@ -421,6 +421,61 @@ describe("runAgent", () => {
     expect(cb.onError).not.toHaveBeenCalled();
   });
 
+  it("retries on rate limit error with exponential backoff", async () => {
+    setupLoadLlmModel();
+    const rateLimitError = new Error("AI_RetryError: Failed after 3 attempts. Last error: Too Many Requests");
+    
+    mockStreamText
+      .mockImplementationOnce(() => { throw rateLimitError; })
+      .mockImplementationOnce(() => { throw rateLimitError; })
+      .mockReturnValueOnce(fakeStream([
+        { type: "text-delta", text: "success after retry" },
+      ]));
+    
+    const cb = makeCallbacks();
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: cb,
+    });
+
+    expect(mockStreamText).toHaveBeenCalledTimes(3);
+    expect(cb.onDone).toHaveBeenCalledWith("success after retry");
+    expect(cb.onError).not.toHaveBeenCalled();
+    expect(cb.onChunk).toHaveBeenCalledWith(expect.objectContaining({
+      type: "content",
+      text: expect.stringContaining("Rate limited"),
+    }));
+  }, 30000);
+
+  it("gives up after max rate limit retries", async () => {
+    setupLoadLlmModel();
+    const rateLimitError = new Error("Too Many Requests");
+    
+    mockStreamText
+      .mockImplementationOnce(() => { throw rateLimitError; })
+      .mockImplementationOnce(() => { throw rateLimitError; })
+      .mockImplementationOnce(() => { throw rateLimitError; })
+      .mockImplementationOnce(() => { throw rateLimitError; });
+    
+    const cb = makeCallbacks();
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: cb,
+    });
+
+    expect(mockStreamText).toHaveBeenCalledTimes(4);
+    expect(cb.onError).toHaveBeenCalledWith("Too Many Requests");
+    expect(cb.onDone).not.toHaveBeenCalled();
+  }, 60000);
+
   it("calls onError when streamText throws non-abort error", async () => {
     setupLoadLlmModel();
     mockStreamText.mockImplementationOnce(() => { throw new Error("network failure"); });

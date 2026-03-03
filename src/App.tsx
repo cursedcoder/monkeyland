@@ -1780,6 +1780,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       role: string;
       task_id: string | null;
       parent_agent_id: string | null;
+      worktree_path?: string | null;
       merge_context?: {
         base_branch: string;
         task_branch: string;
@@ -1787,7 +1788,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         task_description: string;
       } | null;
     }>("agent_spawned", async (event) => {
-      const { agent_id, role, task_id, parent_agent_id, merge_context } = event.payload;
+      const { agent_id, role, task_id, parent_agent_id, worktree_path, merge_context } = event.payload;
 
       let taskDescription = `Execute task ${task_id ?? "unknown"}.`;
       let taskMeta: { title?: string; type?: string; priority?: number; description?: string } | undefined;
@@ -1798,11 +1799,13 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
 
       // Merge agents get a specialized prompt with conflict context
       if (role === "merge_agent" && merge_context) {
+        const worktreeInfo = worktree_path ? `\n\n**Your worktree path:** \`${worktree_path}\`\nAll file operations MUST use this path as the base directory.` : "";
         taskDescription = [
           `Resolve merge conflicts for task ${task_id}.`,
           ``,
           `Base branch: ${merge_context.base_branch}`,
           `Task branch: ${merge_context.task_branch}`,
+          worktreeInfo,
           ``,
           `## Original task description`,
           merge_context.task_description || "(not available)",
@@ -1827,8 +1830,12 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
                 description: ((parsed.description ?? parsed.body) as string) ?? undefined,
               };
               const bodyText = taskMeta.description || taskMeta.title || "";
+              // Include worktree path prominently for developers
+              const worktreeInfo = worktree_path
+                ? `\n\n**IMPORTANT - Your isolated worktree path:** \`${worktree_path}\`\nAll file operations (read, write, terminal commands) MUST use this directory as the base. Do NOT use ${resolvedProjectPath} directly.`
+                : "";
               taskDescription = task_id
-                ? `Epic ID: ${task_id}\n\n${bodyText}`.trim()
+                ? `Task ID: ${task_id}${worktreeInfo}\n\n${bodyText}`.trim()
                 : bodyText || taskDescription;
             }
           } catch {
@@ -1892,13 +1899,18 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       task_id: string | null;
       git_branch: string | null;
       diff_summary: string | null;
+      worktree_path: string | null;
     }>("validation_requested", async (event) => {
-      const { developer_agent_id, task_id, diff_summary } = event.payload;
+      const { developer_agent_id, task_id, diff_summary, worktree_path } = event.payload;
 
       let resolvedProjectPath: string | null = null;
       try {
         resolvedProjectPath = await invoke<string | null>("get_beads_project_path");
       } catch { /* */ }
+
+      // Use the developer's worktree path so the validator sees the actual changes
+      const validatorCwd = worktree_path || resolvedProjectPath;
+      console.log(`[Validation] Spawning validator for ${developer_agent_id} in ${validatorCwd}`);
 
       // ── 1. Spawn 1 unified validator agent in the backend ──
       let validatorId: string;
@@ -1908,7 +1920,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
             role: "validator",
             task_id,
             parent_agent_id: developer_agent_id,
-            cwd: resolvedProjectPath,
+            cwd: validatorCwd,
           },
         });
         validatorId = result.agent_id;
@@ -1935,7 +1947,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
               "Then call yield_for_review again.",
             ].join("\n"),
             taskId: task_id,
-            projectPath: resolvedProjectPath,
+            projectPath: validatorCwd,
           });
         }
         return;
@@ -1998,7 +2010,8 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       const fileContents: Record<string, string> = {};
       let gitDiff = "";
 
-      if (resolvedProjectPath) {
+      // Use the worktree path for context gathering so we see the developer's actual changes
+      if (validatorCwd) {
         try {
           // Try git first; fall back to find if not a git repo or empty result
           let fileListOut = "";
@@ -2007,7 +2020,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
               payload: {
                 session_id: "ctx-gather",
                   command: "{ git ls-files -co --exclude-standard 2>/dev/null || true; } | awk 'NF' | sort -u | while IFS= read -r f; do git check-ignore -q --no-index \"$f\" && continue; printf '%s\\n' \"$f\"; done",
-                cwd: resolvedProjectPath,
+                cwd: validatorCwd,
               },
             });
           } catch { /* */ }
@@ -2018,7 +2031,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
                 payload: {
                   session_id: "ctx-gather",
                   command: "find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/dist/*' -not -path '*/build/*' -not -path '*/.next/*' | sed 's|^\\./||' | head -500",
-                  cwd: resolvedProjectPath,
+                  cwd: validatorCwd,
                 },
               });
             } catch { /* */ }
@@ -2034,14 +2047,14 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         for (const f of sourceFiles) {
           try {
             fileContents[f] = await invoke<string>("read_file", {
-              path: `${resolvedProjectPath}/${f}`,
+              path: `${validatorCwd}/${f}`,
             });
           } catch { /* skip unreadable */ }
         }
 
         // Use worktree-scoped diff when a task_id is available (agent has its own branch),
         // falling back to plain git diff for non-worktree scenarios.
-        if (task_id) {
+        if (task_id && resolvedProjectPath) {
           try {
             gitDiff = await invoke<string>("worktree_diff", {
               projectPath: resolvedProjectPath,
@@ -2053,7 +2066,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
                 payload: {
                   session_id: "ctx-gather",
                   command: "git diff HEAD 2>/dev/null || git diff 2>/dev/null || echo ''",
-                  cwd: resolvedProjectPath,
+                  cwd: validatorCwd,
                 },
               });
             } catch { /* no commits yet */ }
@@ -2064,7 +2077,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
               payload: {
                 session_id: "ctx-gather",
                 command: "git diff HEAD 2>/dev/null || git diff 2>/dev/null || echo ''",
-                cwd: resolvedProjectPath,
+                cwd: validatorCwd,
               },
             });
           } catch { /* no commits yet */ }
@@ -2087,7 +2100,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       const isFrontendProject = hasFrontendFiles && hasDevScript;
 
       let screenshotAttachment: Attachment | undefined;
-      if (isFrontendProject && resolvedProjectPath) {
+      if (isFrontendProject && validatorCwd) {
         const ssAbort = AbortSignal.timeout(20_000);
         let devServerPid: string | null = null;
         try {
@@ -2095,8 +2108,8 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
           const spawnOut = await invoke<string>("terminal_exec", {
             payload: {
               session_id: `validator-dev-${validatorId}`,
-              command: `cd "${resolvedProjectPath}" && ((setsid nohup ${devCmd} > /tmp/validator-dev-${validatorId}.log 2>&1 < /dev/null & echo $!) || (nohup ${devCmd} > /tmp/validator-dev-${validatorId}.log 2>&1 < /dev/null & echo $!))`,
-              cwd: resolvedProjectPath,
+              command: `cd "${validatorCwd}" && ((setsid nohup ${devCmd} > /tmp/validator-dev-${validatorId}.log 2>&1 < /dev/null & echo $!) || (nohup ${devCmd} > /tmp/validator-dev-${validatorId}.log 2>&1 < /dev/null & echo $!))`,
+              cwd: validatorCwd,
               timeout_ms: 10_000,
             },
           });
