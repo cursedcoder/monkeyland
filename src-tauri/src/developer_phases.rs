@@ -11,10 +11,13 @@ use crate::agent_state_machine::Tool;
 use std::collections::HashSet;
 
 /// Execution phases for developer agents within the Running state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     /// Agent reads files, understands codebase, formulates approach.
+    #[default]
     Planning,
     /// Agent writes code, creates/modifies files.
     Implementing,
@@ -24,12 +27,6 @@ pub enum Phase {
     Finalizing,
     /// Agent fixes issues based on validator feedback (post-validation failure).
     Revising,
-}
-
-impl Default for Phase {
-    fn default() -> Self {
-        Phase::Planning
-    }
 }
 
 impl std::fmt::Display for Phase {

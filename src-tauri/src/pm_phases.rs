@@ -12,10 +12,13 @@ use crate::developer_phases::EnforcementMode;
 use std::collections::HashSet;
 
 /// Execution phases for project manager agents within the Running state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PMPhase {
     /// PM reads files, understands codebase and epic requirements.
+    #[default]
     Exploration,
     /// PM creates tasks with deferred status (hidden from bd ready).
     TaskDrafting,
@@ -25,12 +28,6 @@ pub enum PMPhase {
     Finalization,
     /// PM fixes task breakdown based on validator feedback (post-validation failure).
     Revising,
-}
-
-impl Default for PMPhase {
-    fn default() -> Self {
-        PMPhase::Exploration
-    }
 }
 
 impl std::fmt::Display for PMPhase {
