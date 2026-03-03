@@ -2519,6 +2519,27 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
             }
           }
           console.log(`[PM Validation] Promoted ${promotedCount}/${tasks.length} tasks`);
+
+          // Update the PM card UI to show "done" status
+          setLayouts((prev) => {
+            const next = prev.map((layout) => {
+              if (layout.session_id === pm_agent_id && layout.node_type === "agent") {
+                try {
+                  const payload = JSON.parse(layout.payload || "{}");
+                  return {
+                    ...layout,
+                    payload: JSON.stringify({ ...payload, status: "done" }),
+                  };
+                } catch {
+                  return layout;
+                }
+              }
+              return layout;
+            });
+            if (loaded.current) persistLayouts(next);
+            return next;
+          });
+          console.log(`[PM Validation] Updated PM ${pm_agent_id} card status to done`);
         }
 
         // ── 6. If failed, send feedback to PM agent ──
