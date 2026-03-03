@@ -53,6 +53,28 @@ describe("repositionLayouts", () => {
     expect(rc2.y).toBe(rc1.y + rc1.h + GRID_STEP);
   });
 
+  it("stacks children vertically for wm_chat node", () => {
+    const wmChat = makeLayout({
+      session_id: "wm-chat", node_type: "wm_chat" as SessionLayout["node_type"], w: 300, h: 200,
+      payload: JSON.stringify({ promptText: "hello" }),
+    });
+    const dev1 = makeLayout({
+      session_id: "d1", node_type: "agent", h: 100,
+      payload: JSON.stringify({ parent_agent_id: "wm-chat", role: "developer" }),
+    });
+    const dev2 = makeLayout({
+      session_id: "d2", node_type: "agent", h: 100,
+      payload: JSON.stringify({ parent_agent_id: "wm-chat", role: "developer" }),
+    });
+    const result = repositionLayouts([wmChat, dev1, dev2]);
+    const rd1 = result.find(l => l.session_id === "d1")!;
+    const rd2 = result.find(l => l.session_id === "d2")!;
+    // Both developers have same X (stacked vertically)
+    expect(rd1.x).toBe(rd2.x);
+    // Second developer is below the first
+    expect(rd2.y).toBe(rd1.y + rd1.h + GRID_STEP);
+  });
+
   it("lays out children horizontally for developer", () => {
     const dev = makeLayout({
       session_id: "d1", node_type: "agent", w: 300,

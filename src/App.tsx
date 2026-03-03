@@ -1121,7 +1121,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
             node_type: "wm_chat" as CanvasNodeType,
             w: Math.max(l.w, WM_CHAT_CARD_DEFAULT_W),
             h: Math.max(l.h, WM_CHAT_CARD_DEFAULT_H),
-            payload: JSON.stringify({ promptText }),
+            payload: JSON.stringify({ promptText, role: "workforce_manager" }),
           };
         });
         if (loaded.current) persistLayouts(next);
@@ -2140,31 +2140,43 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
             // Run browser setup under the validator agent to avoid depending on
             // developer state transitions (developer may already be in_review).
             const browserPort = await invoke<number>("browser_ensure_started", { agentId: validatorId });
-            await fetch(`http://127.0.0.1:${browserPort}/session`, {
+            const sessionResp = await fetch(`http://127.0.0.1:${browserPort}/session`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ id: `validator-${validatorId}` }),
               signal: ssAbort,
             });
-            await fetch(`http://127.0.0.1:${browserPort}/session/validator-${validatorId}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "navigate", params: { url: devServerUrl } }),
-              signal: ssAbort,
-            });
-            await new Promise((r) => setTimeout(r, 2000));
-            const ssResp = await fetch(`http://127.0.0.1:${browserPort}/session/validator-${validatorId}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "screenshot", params: {} }),
-              signal: ssAbort,
-            });
-            const ssData = await ssResp.json() as { data?: string };
-            if (ssData.data) {
-              screenshotAttachment = { data: ssData.data, mimeType: "image/jpeg" };
-              updateValidatorPayload({
-                validationResults: { ...initialResults, visual: { status: "pending", reasons: [] } },
+            if (!sessionResp.ok) {
+              console.warn(`[Validator] Failed to create browser session: ${sessionResp.status}`);
+            } else {
+              const navResp = await fetch(`http://127.0.0.1:${browserPort}/session/validator-${validatorId}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "navigate", params: { url: devServerUrl } }),
+                signal: ssAbort,
               });
+              if (!navResp.ok) {
+                console.warn(`[Validator] Failed to navigate browser: ${navResp.status}`);
+              } else {
+                await new Promise((r) => setTimeout(r, 2000));
+                const ssResp = await fetch(`http://127.0.0.1:${browserPort}/session/validator-${validatorId}`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "screenshot", params: {} }),
+                  signal: ssAbort,
+                });
+                if (ssResp.ok) {
+                  const ssData = await ssResp.json() as { data?: string };
+                  if (ssData.data) {
+                    screenshotAttachment = { data: ssData.data, mimeType: "image/jpeg" };
+                    updateValidatorPayload({
+                      validationResults: { ...initialResults, visual: { status: "pending", reasons: [] } },
+                    });
+                  }
+                } else {
+                  console.warn(`[Validator] Failed to take screenshot: ${ssResp.status}`);
+                }
+              }
             }
           }
         } catch (e) {
@@ -2226,6 +2238,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       abortControllers.current.set(validatorId, controller);
 
       let accumulatedText = "";
+      let validatorError: string | null = null;
       try {
         await runAgent({
           systemPrompt: getPromptForRole("validator"),
@@ -2250,17 +2263,33 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
               }).catch(() => {});
             },
             onDone: () => { /* handled below */ },
-            onError: () => { /* handled below */ },
-            onStopped: () => { /* handled below */ },
+            onError: (msg) => { validatorError = msg; },
+            onStopped: () => { validatorError = "Validator was stopped"; },
           },
         });
-      } catch { /* handled below */ }
+      } catch (e) {
+        validatorError = e instanceof Error ? e.message : String(e);
+        console.error(`[Validator] LLM error for ${validatorId}:`, validatorError);
+      }
 
       abortControllers.current.delete(validatorId);
 
       // ── 7. Parse LLM JSON output → submit validation results ──
       type CheckResult = { status: "pass" | "fail"; reasons: string[]; out_of_scope_files?: string[] };
-      const parsed = normalizeValidatorOutput(accumulatedText);
+      
+      // If there was an error and no output, create a clear failure message
+      let parsed;
+      if (validatorError && !accumulatedText.trim()) {
+        const errorReason = `Validator LLM failed: ${validatorError}`;
+        console.error(`[Validator] ${validatorId} failed with no output:`, validatorError);
+        parsed = {
+          code_review: { status: "fail" as const, reasons: [errorReason] },
+          business_logic: { status: "fail" as const, reasons: [errorReason] },
+          scope: { status: "fail" as const, reasons: [errorReason] },
+        };
+      } else {
+        parsed = normalizeValidatorOutput(accumulatedText);
+      }
       const checkKeys = ["code_review", "business_logic", "scope"] as const;
 
       // Update the card with final results

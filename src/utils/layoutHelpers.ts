@@ -87,7 +87,7 @@ export function repositionLayouts(layouts: SessionLayout[]): SessionLayout[] {
     });
 
     const role = getRole(layout);
-    const isVertical = layout.node_type === "prompt" || role === "workforce_manager" || role === "project_manager";
+    const isVertical = layout.node_type === "prompt" || layout.node_type === "wm_chat" || role === "workforce_manager" || role === "project_manager";
 
     let subtreeW = nodeW;
     let subtreeH = nodeH;
