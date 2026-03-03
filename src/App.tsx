@@ -123,6 +123,8 @@ export default function App() {
   const [wmNodeId, setWmNodeId] = useState<string | null>(null);
   const [wmPhase, setWmPhase] = useState<WMPhase>("initial");
   const [wmIsProcessing, setWmIsProcessing] = useState(false);
+  const [wmStreamingContent, setWmStreamingContent] = useState<string>("");
+  const [wmStreamingToolCalls, setWmStreamingToolCalls] = useState<Array<{ name: string; status: string }>>([]);
   const [wmTaskProgress, _setWmTaskProgress] = useState({ done: 0, total: 0 });
   const [wmOrchStatus, setWmOrchStatus] = useState<"running" | "paused" | "idle">("idle");
 
@@ -1016,16 +1018,20 @@ export default function App() {
             onChunk: (c) => {
               if (c.type === "content" && c.text) {
                 accumulatedText += c.text;
+                setWmStreamingContent(accumulatedText);
               }
               if (c.type === "reasoning" && c.text) {
                 accumulatedText += c.text;
+                setWmStreamingContent(accumulatedText);
               }
               if (c.type === "tool") {
                 if (c.state === "running" || c.state === "preparing") {
                   toolCalls.push({ name: c.name ?? "unknown", status: "running" });
+                  setWmStreamingToolCalls([...toolCalls]);
                 } else if ((c.state === "done" || c.state === "completed") && c.name) {
                   const tc = toolCalls.find((t) => t.name === c.name && t.status === "running");
                   if (tc) tc.status = "done";
+                  setWmStreamingToolCalls([...toolCalls]);
                 }
               }
             },
@@ -1061,6 +1067,8 @@ export default function App() {
         setWmConversation((prev) => [...prev, errorMsg]);
       } finally {
         setWmIsProcessing(false);
+        setWmStreamingContent("");
+        setWmStreamingToolCalls([]);
         setWmOrchStatus("running");
         abortControllers.current.delete(newWmNodeId);
       }
@@ -1185,10 +1193,12 @@ export default function App() {
               if (c.type === "content" && c.text) {
                 accumulatedText += c.text;
                 updateAgentPayload({ status: "loading", answer: accumulatedText, toolActivity: "Generating…" });
+                setWmStreamingContent(accumulatedText);
               }
               if (c.type === "reasoning" && c.text) {
                 accumulatedText += c.text;
                 updateAgentPayload({ status: "loading", answer: accumulatedText, toolActivity: "Reasoning…" });
+                setWmStreamingContent(accumulatedText);
               }
               if (c.type === "tool") {
                 const statusText =
@@ -1198,8 +1208,13 @@ export default function App() {
                 if (statusText) {
                   updateAgentPayload({ status: "loading", toolActivity: statusText });
                 }
-                if ((c.state === "done" || c.state === "completed") && c.name) {
-                  toolCalls.push({ name: c.name, status: "done" });
+                if (c.state === "running" || c.state === "preparing") {
+                  toolCalls.push({ name: c.name ?? "unknown", status: "running" });
+                  setWmStreamingToolCalls([...toolCalls]);
+                } else if ((c.state === "done" || c.state === "completed") && c.name) {
+                  const tc = toolCalls.find((t) => t.name === c.name && t.status === "running");
+                  if (tc) tc.status = "done";
+                  setWmStreamingToolCalls([...toolCalls]);
                 }
               }
             },
@@ -1226,6 +1241,8 @@ export default function App() {
               };
               setWmConversation((prev) => [...prev, assistantMsg]);
               setWmIsProcessing(false);
+              setWmStreamingContent("");
+              setWmStreamingToolCalls([]);
               setWmPhase("monitoring");
 
               invoke("agent_turn_ended", { agentId: currentWmNodeId, role: "workforce_manager" }).catch(() => {});
@@ -1233,10 +1250,14 @@ export default function App() {
             onError: (msg) => {
               updateAgentPayload({ status: "error", errorMessage: msg });
               setWmIsProcessing(false);
+              setWmStreamingContent("");
+              setWmStreamingToolCalls([]);
             },
             onStopped: () => {
               updateAgentPayload({ status: "stopped", answer: accumulatedText, toolActivity: "" });
               setWmIsProcessing(false);
+              setWmStreamingContent("");
+              setWmStreamingToolCalls([]);
             },
           },
         });
@@ -2659,6 +2680,8 @@ export default function App() {
           wmChatMessages={wmConversation}
           wmPhase={wmPhase}
           wmIsProcessing={wmIsProcessing}
+          wmStreamingContent={wmStreamingContent}
+          wmStreamingToolCalls={wmStreamingToolCalls}
           wmTaskProgress={wmTaskProgress}
           wmOrchStatus={wmOrchStatus}
           onWMSendMessage={handleWMMessage}

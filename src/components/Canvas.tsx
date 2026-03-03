@@ -25,6 +25,8 @@ interface CanvasProps {
   wmChatMessages?: WMChatMessage[];
   wmPhase?: WMPhase;
   wmIsProcessing?: boolean;
+  wmStreamingContent?: string;
+  wmStreamingToolCalls?: Array<{ name: string; status: string }>;
   wmTaskProgress?: { done: number; total: number };
   wmOrchStatus?: "running" | "paused" | "idle";
   onWMSendMessage?: (text: string) => void;
@@ -76,6 +78,8 @@ export function Canvas({
   wmChatMessages = [],
   wmPhase = "initial",
   wmIsProcessing = false,
+  wmStreamingContent,
+  wmStreamingToolCalls,
   wmTaskProgress = { done: 0, total: 0 },
   wmOrchStatus = "idle",
   onWMSendMessage,
@@ -348,6 +352,8 @@ export function Canvas({
                 messages={wmChatMessages}
                 wmPhase={wmPhase}
                 isProcessing={wmIsProcessing}
+                streamingContent={wmStreamingContent}
+                streamingToolCalls={wmStreamingToolCalls}
                 taskProgress={wmTaskProgress}
                 orchStatus={wmOrchStatus}
                 onSendMessage={onWMSendMessage}

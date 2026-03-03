@@ -24,6 +24,7 @@ export interface WMChatMessage {
   content: string;
   timestamp: number;
   toolCalls?: Array<{ name: string; status: string }>;
+  isStreaming?: boolean;
 }
 
 interface WMChatCardProps {
@@ -45,6 +46,8 @@ interface WMChatCardProps {
   messages?: WMChatMessage[];
   wmPhase?: WMPhase;
   isProcessing?: boolean;
+  streamingContent?: string;
+  streamingToolCalls?: Array<{ name: string; status: string }>;
   taskProgress?: { done: number; total: number };
   orchStatus?: "running" | "paused" | "idle";
   onSendMessage?: (text: string) => void;
@@ -66,6 +69,8 @@ export function WMChatCard({
   messages = [],
   wmPhase = "initial",
   isProcessing = false,
+  streamingContent,
+  streamingToolCalls,
   taskProgress = { done: 0, total: 0 },
   orchStatus = "idle",
   onSendMessage,
@@ -400,11 +405,28 @@ export function WMChatCard({
           <div className="wm-chat-card-message wm-chat-card-message--assistant wm-chat-card-message--processing">
             <div className="wm-chat-card-message-avatar">WM</div>
             <div className="wm-chat-card-message-content">
-              <div className="wm-chat-card-typing">
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
+              {streamingContent ? (
+                <>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {streamingContent}
+                  </ReactMarkdown>
+                  {streamingToolCalls && streamingToolCalls.length > 0 && (
+                    <div className="wm-chat-card-message-tools">
+                      {streamingToolCalls.map((tc, i) => (
+                        <span key={i} className="wm-chat-card-tool-badge">
+                          {tc.name}: {tc.status}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="wm-chat-card-typing">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+              )}
             </div>
           </div>
         )}
