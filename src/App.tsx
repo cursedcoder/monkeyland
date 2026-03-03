@@ -1289,31 +1289,6 @@ export default function App() {
     );
   }, []);
 
-  /**
-   * Add a WM Chat card to the canvas
-   */
-  const handleAddWMChat = useCallback(() => {
-    // Check if a wm_chat card already exists
-    const existing = layoutsRef.current.find((l) => l.node_type === "wm_chat");
-    if (existing) return;
-
-    setLayouts((prev) => {
-      const newLayout: SessionLayout = {
-        session_id: generateNodeId(),
-        x: 0,
-        y: 0,
-        w: WM_CHAT_CARD_DEFAULT_W,
-        h: WM_CHAT_CARD_DEFAULT_H,
-        collapsed: false,
-        node_type: "wm_chat",
-        payload: JSON.stringify({}),
-      };
-      const next = repositionLayouts([...prev, newLayout]);
-      if (loaded.current) persistLayouts(next);
-      return next;
-    });
-  }, [persistLayouts]);
-
   // Auto-remove completed tasks and their children
   const completionTimesRef = useRef<Map<string, number>>(new Map());
 
@@ -2630,15 +2605,7 @@ export default function App() {
           <button
             type="button"
             className="app-add-prompt"
-            onClick={handleAddWMChat}
-          >
-            New Chat
-          </button>
-          <button
-            type="button"
-            className="app-add-prompt"
             onClick={handleAddPrompt}
-            style={{ marginLeft: 8 }}
           >
             Add prompt
           </button>
