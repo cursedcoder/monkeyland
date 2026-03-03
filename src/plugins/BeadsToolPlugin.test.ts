@@ -26,6 +26,27 @@ describe("BeadsToolPlugin", () => {
     expect(addBeadsNode).not.toHaveBeenCalled();
   });
 
+  it("uses canvasNodeId for card parent and backendAgentId for backend commands", async () => {
+    mockInvoke
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce("Beads initialized.");
+    
+    // WM scenario: canvas ID differs from backend ID
+    const canvasNodeId = "node-12345-abc";
+    const backendAgentId = "01KJTE-backend-id";
+    const plugin = new BeadsToolPlugin(canvasNodeId, backendAgentId, addBeadsNode, updateStatus);
+    await plugin.execute({}, { project_path: "/tmp/proj" });
+
+    // Backend commands should use backendAgentId
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "beads_dolt_start", { projectPath: "/tmp/proj", agentId: backendAgentId });
+    expect(mockInvoke).toHaveBeenNthCalledWith(2, "set_beads_project_path", { projectPath: "/tmp/proj", agentId: backendAgentId });
+    expect(mockInvoke).toHaveBeenNthCalledWith(3, "beads_init", { projectPath: "/tmp/proj", agentId: backendAgentId });
+    
+    // Card parent reference should use canvasNodeId (for connection lines)
+    expect(addBeadsNode).toHaveBeenCalledWith(canvasNodeId);
+  });
+
   it("calls all three invokes in order with init=true (default)", async () => {
     mockInvoke
       .mockResolvedValueOnce(undefined)
