@@ -689,4 +689,151 @@ mod tests {
             "agent-b should not appear in worktree list after remove_all"
         );
     }
+
+    // --- rebase_onto_base ---
+
+    #[test]
+    fn test_rebase_onto_base_clean() {
+        let dir = setup_git_repo();
+        let wt = create(dir.path(), "agent-r1", "bd-rebase-1").unwrap();
+
+        fs::write(wt.join("rebased.txt"), "task content").unwrap();
+        Command::new("git")
+            .args(["add", "rebased.txt"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "task commit"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+
+        remove(dir.path(), "agent-r1").unwrap();
+
+        let ok = rebase_onto_base(dir.path(), "bd-rebase-1").unwrap();
+        assert!(ok, "clean rebase should return true");
+
+        let head = Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let head_str = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(head_str, "main", "HEAD should be on main after rebase");
+    }
+
+    #[test]
+    fn test_rebase_onto_base_with_conflict_returns_false() {
+        let dir = setup_git_repo();
+
+        fs::write(dir.path().join("shared.txt"), "base v1").unwrap();
+        Command::new("git").args(["add", "shared.txt"]).current_dir(dir.path()).output().unwrap();
+        Command::new("git").args(["commit", "-m", "base v1"]).current_dir(dir.path()).output().unwrap();
+
+        let wt = create(dir.path(), "agent-r2", "bd-rebase-2").unwrap();
+        fs::write(wt.join("shared.txt"), "task content").unwrap();
+        Command::new("git").args(["add", "shared.txt"]).current_dir(&wt).output().unwrap();
+        Command::new("git").args(["commit", "-m", "task change"]).current_dir(&wt).output().unwrap();
+
+        remove(dir.path(), "agent-r2").unwrap();
+
+        fs::write(dir.path().join("shared.txt"), "base v2 conflicting").unwrap();
+        Command::new("git").args(["add", "shared.txt"]).current_dir(dir.path()).output().unwrap();
+        Command::new("git").args(["commit", "-m", "base conflict"]).current_dir(dir.path()).output().unwrap();
+
+        let ok = rebase_onto_base(dir.path(), "bd-rebase-2").unwrap();
+        assert!(!ok, "conflicting rebase should return false");
+
+        let head = Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let head_str = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(head_str, "main", "HEAD should be back on main after abort");
+    }
+
+    // --- delete_task_branch ---
+
+    #[test]
+    fn test_delete_task_branch() {
+        let dir = setup_git_repo();
+        let wt = create(dir.path(), "agent-d1", "bd-del-1").unwrap();
+        fs::write(wt.join("file.txt"), "content").unwrap();
+        Command::new("git").args(["add", "file.txt"]).current_dir(&wt).output().unwrap();
+        Command::new("git").args(["commit", "-m", "commit"]).current_dir(&wt).output().unwrap();
+        remove(dir.path(), "agent-d1").unwrap();
+
+        merge_to_base(dir.path(), "bd-del-1").unwrap();
+        delete_task_branch(dir.path(), "bd-del-1").unwrap();
+
+        assert!(!branch_exists(dir.path(), "task/bd-del-1"), "branch should be deleted");
+    }
+
+    // --- conflict_diff ---
+
+    #[test]
+    fn test_conflict_diff_shows_changed_files() {
+        let dir = setup_git_repo();
+        let wt = create(dir.path(), "agent-cd1", "bd-cdiff-1").unwrap();
+
+        fs::write(wt.join("changed.txt"), "new stuff").unwrap();
+        Command::new("git").args(["add", "changed.txt"]).current_dir(&wt).output().unwrap();
+        Command::new("git").args(["commit", "-m", "add changed"]).current_dir(&wt).output().unwrap();
+
+        remove(dir.path(), "agent-cd1").unwrap();
+
+        let diff = conflict_diff(dir.path(), "bd-cdiff-1").unwrap();
+        assert!(diff.contains("changed.txt"), "diff should mention changed file");
+        assert!(diff.contains("new stuff"), "diff should contain content");
+    }
+
+    #[test]
+    fn test_conflict_diff_truncates_large_diffs() {
+        let dir = setup_git_repo();
+        let wt = create(dir.path(), "agent-cd2", "bd-cdiff-2").unwrap();
+
+        let big_content = "x".repeat(10_000);
+        fs::write(wt.join("big.txt"), &big_content).unwrap();
+        Command::new("git").args(["add", "big.txt"]).current_dir(&wt).output().unwrap();
+        Command::new("git").args(["commit", "-m", "add big"]).current_dir(&wt).output().unwrap();
+
+        remove(dir.path(), "agent-cd2").unwrap();
+
+        let diff = conflict_diff(dir.path(), "bd-cdiff-2").unwrap();
+        assert!(diff.contains("[truncated"), "large diff should be truncated");
+    }
+
+    // --- prune ---
+
+    #[test]
+    fn test_prune_clean_repo() {
+        let dir = setup_git_repo();
+        prune(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn test_prune_cleans_stale_entries() {
+        let dir = setup_git_repo();
+        let wt = create(dir.path(), "agent-pr1", "bd-prune-1").unwrap();
+        assert!(wt.exists());
+
+        // Manually delete the worktree directory (simulating a crash)
+        fs::remove_dir_all(&wt).unwrap();
+
+        // prune should clean up the stale reference
+        prune(dir.path()).unwrap();
+
+        let list = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&list.stdout).to_string();
+        assert!(
+            !stdout.contains("agent-pr1"),
+            "stale worktree should be pruned"
+        );
+    }
 }

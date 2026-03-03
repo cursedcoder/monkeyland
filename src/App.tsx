@@ -26,7 +26,6 @@ import type { SessionLayout, CanvasLayoutPayload, CanvasNodeType, AgentRole } fr
 import {
   PROMPT_CARD_DEFAULT_W,
   PROMPT_CARD_DEFAULT_H,
-  GRID_STEP,
   BROWSER_CARD_DEFAULT_W,
   BROWSER_CARD_DEFAULT_H,
   TERMINAL_LOG_DEFAULT_W,
@@ -37,8 +36,7 @@ import {
   BEADS_TASK_CARD_DEFAULT_H,
   getDefaultSize,
 } from "./types";
-
-const REPOSITION_ORIGIN = { x: 80, y: 80 };
+import { repositionLayouts, getTerminalDiagnostics, buildDiagnosticNudge } from "./utils/layoutHelpers";
 const STREAM_PAYLOAD_FLUSH_MS = 60;
 const DEBUG_HISTORY_INTERVAL_MS = 15_000;
 const DEBUG_HISTORY_MAX_SAMPLES = 120;
@@ -67,143 +65,6 @@ function safeUnlisten(unlistenPromise: Promise<() => void>) {
     });
 }
 
-
-
-/** Returns new layouts organized in a tree structure based on parent-child relationships. */
-function repositionLayouts(layouts: SessionLayout[]): SessionLayout[] {
-  // 1. Build adjacency list
-  const childrenMap = new Map<string, string[]>();
-  const roots: string[] = [];
-  
-  // Find all nodes and their parents
-  const nodeMap = new Map(layouts.map(l => [l.session_id, l]));
-  
-      for (const layout of layouts) {
-        let parentId: string | undefined;
-        if (layout.payload) {
-          try {
-            const p = JSON.parse(layout.payload) as {
-              sourcePromptId?: string;
-              parentAgentId?: string;
-              parent_agent_id?: string;
-              parentBeadsId?: string;
-            };
-            parentId = p.sourcePromptId ?? p.parentAgentId ?? p.parent_agent_id ?? p.parentBeadsId;
-          } catch {
-            /* ignore */
-          }
-        }
-    
-    // If it has a parent that exists in our layout, add it to children
-    if (parentId && nodeMap.has(parentId)) {
-      if (!childrenMap.has(parentId)) childrenMap.set(parentId, []);
-      childrenMap.get(parentId)!.push(layout.session_id);
-    } else {
-      // It's a root node (usually a prompt, or an orphaned agent)
-      roots.push(layout.session_id);
-    }
-  }
-
-  // Sort roots: prompts first, then others
-  roots.sort((a, b) => {
-    const nodeA = nodeMap.get(a)!;
-    const nodeB = nodeMap.get(b)!;
-    if (nodeA.node_type === "prompt" && nodeB.node_type !== "prompt") return -1;
-    if (nodeA.node_type !== "prompt" && nodeB.node_type === "prompt") return 1;
-    return a.localeCompare(b);
-  });
-
-  const nextLayouts = [...layouts];
-
-  function getRole(layout: SessionLayout): string {
-    if (layout.payload) {
-      try {
-        const p = JSON.parse(layout.payload) as { role?: string };
-        return p.role ?? "";
-      } catch { return ""; }
-    }
-    return "";
-  }
-
-  // Recursive function to layout a subtree
-  // Returns the { w, h } consumed by this subtree
-  function layoutSubtree(nodeId: string, startX: number, startY: number): { w: number, h: number } {
-    const layoutIndex = nextLayouts.findIndex(l => l.session_id === nodeId);
-    if (layoutIndex === -1) return { w: 0, h: 0 };
-    
-    const layout = nextLayouts[layoutIndex];
-    const nodeW = layout.w;
-    const nodeH = layout.collapsed ? 48 : layout.h;
-    
-    // Position current node
-    nextLayouts[layoutIndex] = { ...layout, x: startX, y: startY };
-    
-    const children = childrenMap.get(nodeId) || [];
-    if (children.length === 0) {
-      return { w: nodeW, h: nodeH };
-    }
-
-    // Sort children for consistent ordering: PM first, then Beads, then others
-    children.sort((a, b) => {
-      const na = nodeMap.get(a)!;
-      const nb = nodeMap.get(b)!;
-      const ra = getRole(na);
-      const rb = getRole(nb);
-      if (ra === "project_manager" && rb !== "project_manager") return -1;
-      if (ra !== "project_manager" && rb === "project_manager") return 1;
-      if (na.node_type === "beads" && nb.node_type !== "beads") return -1;
-      if (na.node_type !== "beads" && nb.node_type === "beads") return 1;
-      return a.localeCompare(b);
-    });
-
-    const role = getRole(layout);
-    // Prompts and Managers stack their children vertically to the right
-    const isVertical = layout.node_type === "prompt" || role === "workforce_manager" || role === "project_manager";
-
-    let subtreeW = nodeW;
-    let subtreeH = nodeH;
-
-    if (isVertical) {
-      // Children stacked vertically to the right
-      let currentY = startY;
-      let maxChildW = 0;
-      const childX = startX + nodeW + GRID_STEP;
-      
-      for (const childId of children) {
-        const bbox = layoutSubtree(childId, childX, currentY);
-        currentY += bbox.h + GRID_STEP;
-        maxChildW = Math.max(maxChildW, bbox.w);
-      }
-      
-      subtreeW = nodeW + GRID_STEP + maxChildW;
-      subtreeH = Math.max(nodeH, currentY - startY - GRID_STEP);
-    } else {
-      // Developers/Workers/etc lay out their children (tools, validators) horizontally to the right
-      let currentX = startX + nodeW + GRID_STEP;
-      let maxChildH = 0;
-      
-      for (const childId of children) {
-        const bbox = layoutSubtree(childId, currentX, startY);
-        currentX += bbox.w + GRID_STEP;
-        maxChildH = Math.max(maxChildH, bbox.h);
-      }
-      
-      subtreeW = currentX - startX - GRID_STEP;
-      subtreeH = Math.max(nodeH, maxChildH);
-    }
-
-    return { w: subtreeW, h: subtreeH };
-  }
-
-  // Layout each root tree
-  let currentRootY = REPOSITION_ORIGIN.y;
-  for (const rootId of roots) {
-    const bbox = layoutSubtree(rootId, REPOSITION_ORIGIN.x, currentRootY);
-    currentRootY += bbox.h + GRID_STEP * 2; // Extra gap between root trees
-  }
-
-  return nextLayouts;
-}
 
 function generateNodeId(): string {
   return `node-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -616,7 +477,7 @@ export default function App() {
         if (result !== "needs_nudge") return;
 
         // Gather terminal diagnostics from the agent's terminal log card
-        const terminalDiag = getTerminalDiagnostics(agentNodeId);
+        const terminalDiag = getTerminalDiagnostics(layoutsRef.current, agentNodeId);
 
         const MAX_NUDGES = 2;
         for (let attempt = 1; attempt <= MAX_NUDGES; attempt++) {
@@ -705,101 +566,6 @@ export default function App() {
     },
     [buildPlugins, costStore],
   );
-
-  /** Extract recent terminal command output from this agent's terminal log card. */
-  function getTerminalDiagnostics(agentNodeId: string): string {
-    const termLogLayout = layoutsRef.current.find((l) => {
-      if (l.node_type !== "terminal_log") return false;
-      try {
-        const p = JSON.parse(l.payload ?? "{}") as { parentAgentId?: string };
-        return p.parentAgentId === agentNodeId;
-      } catch { return false; }
-    });
-    if (!termLogLayout) return "";
-    try {
-      const p = JSON.parse(termLogLayout.payload ?? "{}") as {
-        entries?: Array<{ command?: string; output?: string }>;
-      };
-      if (!p.entries?.length) return "";
-      // Take last 5 commands, truncate each output to keep it manageable
-      const recent = p.entries.slice(-5);
-      return recent.map((e) => {
-        const out = (e.output ?? "").slice(-500);
-        return `$ ${e.command ?? "?"}\n${out}`;
-      }).join("\n---\n");
-    } catch { return ""; }
-  }
-
-  /** Build a targeted nudge message by analyzing terminal output for common failure patterns. */
-  function buildDiagnosticNudge(
-    attempt: number,
-    maxAttempts: number,
-    userMessage: string,
-    taskId: string | null,
-    taskMeta: { title?: string; type?: string; priority?: number; description?: string } | undefined,
-    projectPath: string | null | undefined,
-    terminalDiag: string,
-  ): string {
-    const patterns: string[] = [];
-    const lower = terminalDiag.toLowerCase();
-
-    if (/y\/n|yes\/no|press enter|are you sure|confirm/i.test(terminalDiag)) {
-      patterns.push("DETECTED: Interactive prompt requiring user input. Use --yes or -y flags to skip prompts.");
-    }
-    if (/eaddrinuse|address already in use|port.*already/i.test(terminalDiag)) {
-      patterns.push("DETECTED: Port conflict. Kill the existing process or use a different port.");
-    }
-    if (/timed? ?out|timeout/i.test(lower)) {
-      patterns.push("DETECTED: Command timed out. Use background execution: nohup cmd > /tmp/out.log 2>&1 &");
-    }
-    if (/listening on|started server|ready on|compiled|waiting for/i.test(lower) && !/exit/i.test(lower)) {
-      patterns.push("DETECTED: A foreground server may be blocking. Run servers in background with nohup and &.");
-    }
-    if (/error|ERR!|ENOENT|not found|command not found|EACCES|permission denied/i.test(terminalDiag)) {
-      patterns.push("DETECTED: Command errors in terminal output. Fix the errors before submitting.");
-    }
-    if (/npm warn|deprecated/i.test(lower) && patterns.length === 0) {
-      patterns.push("NOTE: Warnings detected but no blocking errors. You can proceed to submit.");
-    }
-
-    const diagSection = patterns.length > 0
-      ? `\n## Diagnosis from your terminal output\n${patterns.join("\n")}\n`
-      : "";
-
-    const terminalSection = terminalDiag
-      ? `\n## Recent terminal output (last commands)\n\`\`\`\n${terminalDiag.slice(-1500)}\n\`\`\`\n`
-      : "";
-
-    const urgency = attempt >= maxAttempts
-      ? "THIS IS YOUR FINAL ATTEMPT. If you do not call yield_for_review, your work will be auto-submitted without your summary."
-      : `Attempt ${attempt}/${maxAttempts}. You must call yield_for_review when done.`;
-
-    return [
-      `# Self-Heal: Developer Task Recovery (attempt ${attempt}/${maxAttempts})`,
-      "",
-      urgency,
-      "",
-      "You are continuing the SAME developer task. Do NOT claim missing context or a fresh session.",
-      diagSection,
-      "## Your task",
-      `- task_id: ${taskId ?? "unknown"}`,
-      `- task_title: ${taskMeta?.title ?? "unknown"}`,
-      `- project_path: ${projectPath ?? "unknown"}`,
-      "",
-      "Original assignment:",
-      userMessage,
-      terminalSection,
-      "## What you must do NOW",
-      "",
-      "1. If there are errors or blocking issues in the terminal output above, FIX them:",
-      "   - Interactive prompts → rerun with --yes flag",
-      "   - Foreground servers → rerun with nohup in background",
-      "   - Build/compile errors → fix the code and rebuild",
-      "   - Port conflicts → kill the process or use a different port",
-      "2. Once implementation is complete and verified, call `yield_for_review` with an accurate diff_summary.",
-      "3. If implementation was already complete, just call `yield_for_review` immediately.",
-    ].join("\n");
-  }
 
   /**
    * Create an agent card on the canvas and start an LLM conversation.

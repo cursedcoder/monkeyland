@@ -29,8 +29,19 @@ vi.mock("multi-llm-ts", () => ({
   loadModels: vi.fn(),
 }));
 
+const { mockStreamText, mockStepCountIs } = vi.hoisted(() => ({
+  mockStreamText: vi.fn(),
+  mockStepCountIs: vi.fn(() => () => false),
+}));
+vi.mock("ai", () => ({
+  streamText: mockStreamText,
+  stepCountIs: mockStepCountIs,
+  tool: vi.fn((opts: any) => opts),
+}));
+
 import { invoke } from "@tauri-apps/api/core";
-import { getAiProviderModel, loadKiloModels } from "./agentRunner";
+import { getAiProviderModel, loadKiloModels, runAgent, type AgentRunnerCallbacks } from "./agentRunner";
+import { loadModels } from "multi-llm-ts";
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -254,5 +265,280 @@ describe("loadKiloModels", () => {
 
     const models = await loadKiloModels("key");
     expect(models).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runAgent tests
+// ---------------------------------------------------------------------------
+
+function fakeStream(chunks: Array<Record<string, any>>) {
+  return {
+    fullStream: (async function* () {
+      for (const c of chunks) yield c;
+    })(),
+  };
+}
+
+function setupLoadLlmModel() {
+  const mockLoadModels = vi.mocked(loadModels);
+  mockLoadModels.mockResolvedValue({
+    chat: [
+      {
+        id: "test-model",
+        name: "Test Model",
+        capabilities: { tools: true, vision: false, reasoning: false, caching: false },
+        pricing: { prompt: "0.000003", completion: "0.000015" },
+      },
+    ],
+  } as any);
+  mockInvoke
+    .mockResolvedValueOnce({ provider: "openai", model: "test-model" })
+    .mockResolvedValueOnce("sk-test-key");
+}
+
+function makeCallbacks(overrides?: Partial<AgentRunnerCallbacks>): AgentRunnerCallbacks {
+  return {
+    onChunk: vi.fn(),
+    onUsage: vi.fn(),
+    onModelLoaded: vi.fn(),
+    onDone: vi.fn(),
+    onError: vi.fn(),
+    onStopped: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe("runAgent", () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    mockStreamText.mockReset();
+  });
+
+  it("streams text-delta chunks and calls onDone with concatenated text", async () => {
+    setupLoadLlmModel();
+    mockStreamText.mockReturnValueOnce(fakeStream([
+      { type: "text-delta", text: "Hello " },
+      { type: "text-delta", text: "World" },
+    ]));
+    const cb = makeCallbacks();
+    const controller = new AbortController();
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: controller.signal,
+      callbacks: cb,
+    });
+
+    expect(cb.onChunk).toHaveBeenCalledWith({ type: "content", text: "Hello " });
+    expect(cb.onChunk).toHaveBeenCalledWith({ type: "content", text: "World" });
+    expect(cb.onDone).toHaveBeenCalledWith("Hello World");
+    expect(cb.onError).not.toHaveBeenCalled();
+  });
+
+  it("handles tool-call and tool-result chunks", async () => {
+    setupLoadLlmModel();
+    mockStreamText.mockReturnValueOnce(fakeStream([
+      { type: "tool-call", toolName: "write_file" },
+      { type: "tool-result", toolName: "write_file" },
+    ]));
+    const cb = makeCallbacks();
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: cb,
+    });
+
+    expect(cb.onChunk).toHaveBeenCalledWith(expect.objectContaining({
+      type: "tool", name: "write_file", state: "running",
+    }));
+    expect(cb.onChunk).toHaveBeenCalledWith(expect.objectContaining({
+      type: "tool", name: "write_file", state: "done", status: "success",
+    }));
+    expect(cb.onDone).toHaveBeenCalled();
+  });
+
+  it("handles reasoning-delta chunks", async () => {
+    setupLoadLlmModel();
+    mockStreamText.mockReturnValueOnce(fakeStream([
+      { type: "reasoning-delta", text: "thinking..." },
+    ]));
+    const cb = makeCallbacks();
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: cb,
+    });
+
+    expect(cb.onChunk).toHaveBeenCalledWith({ type: "reasoning", text: "thinking..." });
+    expect(cb.onDone).toHaveBeenCalledWith("thinking...");
+  });
+
+  it("calls onError on stream error chunk", async () => {
+    setupLoadLlmModel();
+    mockStreamText.mockReturnValueOnce(fakeStream([
+      { type: "text-delta", text: "partial" },
+      { type: "error", error: "rate_limit_exceeded" },
+    ]));
+    const cb = makeCallbacks();
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: cb,
+    });
+
+    expect(cb.onError).toHaveBeenCalledWith("rate_limit_exceeded");
+    expect(cb.onDone).not.toHaveBeenCalled();
+  });
+
+  it("calls onStopped when signal is aborted", async () => {
+    setupLoadLlmModel();
+    const abortError = new DOMException("signal is aborted", "AbortError");
+    mockStreamText.mockImplementationOnce(() => { throw abortError; });
+    const cb = makeCallbacks();
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: cb,
+    });
+
+    expect(cb.onStopped).toHaveBeenCalled();
+    expect(cb.onDone).not.toHaveBeenCalled();
+    expect(cb.onError).not.toHaveBeenCalled();
+  });
+
+  it("calls onError when streamText throws non-abort error", async () => {
+    setupLoadLlmModel();
+    mockStreamText.mockImplementationOnce(() => { throw new Error("network failure"); });
+    const cb = makeCallbacks();
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: cb,
+    });
+
+    expect(cb.onError).toHaveBeenCalledWith("network failure");
+    expect(cb.onDone).not.toHaveBeenCalled();
+  });
+
+  it("only fires the first terminal callback (error before done)", async () => {
+    setupLoadLlmModel();
+    mockStreamText.mockReturnValueOnce(fakeStream([
+      { type: "error", error: "fail" },
+    ]));
+    const cb = makeCallbacks();
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: cb,
+    });
+
+    expect(cb.onError).toHaveBeenCalledTimes(1);
+    expect(cb.onDone).not.toHaveBeenCalled();
+  });
+
+  it("passes tools: undefined when no plugins provided", async () => {
+    setupLoadLlmModel();
+    mockStreamText.mockReturnValueOnce(fakeStream([]));
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: makeCallbacks(),
+    });
+
+    expect(mockStreamText).toHaveBeenCalledWith(
+      expect.objectContaining({ tools: undefined }),
+    );
+  });
+
+  it("filters out disabled plugins", async () => {
+    setupLoadLlmModel();
+    mockStreamText.mockReturnValueOnce(fakeStream([]));
+
+    const enabledPlugin = {
+      isEnabled: () => true,
+      getName: () => "enabled_tool",
+      toAiTool: () => ({ description: "enabled" }),
+    };
+    const disabledPlugin = {
+      isEnabled: () => false,
+      getName: () => "disabled_tool",
+      toAiTool: () => ({ description: "disabled" }),
+    };
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [enabledPlugin as any, disabledPlugin as any],
+      signal: new AbortController().signal,
+      callbacks: makeCallbacks(),
+    });
+
+    const toolsArg = mockStreamText.mock.calls[0][0].tools;
+    expect(toolsArg).toHaveProperty("enabled_tool");
+    expect(toolsArg).not.toHaveProperty("disabled_tool");
+  });
+
+  it("includes image content block when attachment is provided", async () => {
+    setupLoadLlmModel();
+    mockStreamText.mockReturnValueOnce(fakeStream([]));
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "check this",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: makeCallbacks(),
+      attachment: { data: "base64data", mimeType: "image/png" },
+    });
+
+    const messages = mockStreamText.mock.calls[0][0].messages;
+    const userMsg = messages[1];
+    expect(Array.isArray(userMsg.content)).toBe(true);
+    expect(userMsg.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "text", text: "check this" }),
+      expect.objectContaining({ type: "image", image: "base64data", mediaType: "image/png" }),
+    ]));
+  });
+
+  it("calls onModelLoaded with model info", async () => {
+    setupLoadLlmModel();
+    mockStreamText.mockReturnValueOnce(fakeStream([]));
+    const cb = makeCallbacks();
+
+    await runAgent({
+      systemPrompt: "test",
+      userMessage: "hi",
+      plugins: [],
+      signal: new AbortController().signal,
+      callbacks: cb,
+    });
+
+    expect(cb.onModelLoaded).toHaveBeenCalledWith(
+      expect.objectContaining({ modelName: expect.any(String) }),
+    );
   });
 });
