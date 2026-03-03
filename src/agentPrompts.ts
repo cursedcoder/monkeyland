@@ -151,6 +151,12 @@ Modify tasks after creation:
 - \`append_notes\` — add notes (e.g. "blocked by missing API endpoint")
 - \`add_labels\` / \`remove_labels\` — adjust labels
 
+### list_beads_tasks
+List all tasks in the Beads project. Use this to:
+- See what tasks already exist under the epic
+- Verify your task breakdown before submitting for validation
+- Check current task state after making updates
+
 ### read_file
 Read existing code to understand the codebase before planning.
 
@@ -494,6 +500,7 @@ export type ToolName =
   | "open_project_with_beads"
   | "create_beads_task"
   | "update_beads_task"
+  | "list_beads_tasks"
   | "dispatch_agent"
   | "yield_for_review"
   | "complete_task"
@@ -530,7 +537,7 @@ export const ROLE_TOOLS: Record<AgentRole | "orchestrator", ToolName[]> = {
     "message_agent",
     "get_orchestration_status",
   ],
-  project_manager: ["read_file", "create_beads_task", "update_beads_task", "yield_for_review"],
+  project_manager: ["read_file", "create_beads_task", "update_beads_task", "list_beads_tasks", "yield_for_review"],
   developer: ["write_file", "read_file", "run_terminal_command", "browser_action", "yield_for_review", "update_beads_task"],
   operator: ["read_file", "run_terminal_command", "browser_action"],
   worker: ["write_file", "read_file", "run_terminal_command", "complete_task"],

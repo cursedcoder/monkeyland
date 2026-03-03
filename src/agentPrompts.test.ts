@@ -26,7 +26,7 @@ const ALL_ROLES: AgentRole[] = [
 const ALL_TOOL_NAMES: ToolName[] = [
   "write_file", "read_file", "run_terminal_command", "browser_action",
   "open_project_with_beads", "create_beads_task", "update_beads_task",
-  "dispatch_agent", "yield_for_review", "complete_task",
+  "list_beads_tasks", "dispatch_agent", "yield_for_review", "complete_task",
   "pause_orchestration", "resume_orchestration", "cancel_task",
   "reprioritize_task", "message_agent", "get_orchestration_status",
 ];

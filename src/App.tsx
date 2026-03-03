@@ -11,6 +11,7 @@ import { BrowserToolPlugin } from "./plugins/BrowserToolPlugin";
 import { BeadsToolPlugin } from "./plugins/BeadsToolPlugin";
 import { CreateBeadsTaskPlugin } from "./plugins/CreateBeadsTaskPlugin";
 import { UpdateBeadsTaskPlugin } from "./plugins/UpdateBeadsTaskPlugin";
+import { ListBeadsTasksPlugin } from "./plugins/ListBeadsTasksPlugin";
 import { YieldForReviewPlugin } from "./plugins/YieldForReviewPlugin";
 import { CompleteTaskPlugin } from "./plugins/CompleteTaskPlugin";
 import { WriteFileToolPlugin } from "./plugins/WriteFileToolPlugin";
@@ -498,6 +499,9 @@ export default function App() {
       }
       if (allowed.has("update_beads_task")) {
         plugins.push(new UpdateBeadsTaskPlugin(backendAgentId, role));
+      }
+      if (allowed.has("list_beads_tasks")) {
+        plugins.push(new ListBeadsTasksPlugin(backendAgentId));
       }
       if (allowed.has("dispatch_agent")) {
         plugins.push(new DispatchAgentPlugin(backendAgentId, (p) => dispatchAgentRef.current(p)));
