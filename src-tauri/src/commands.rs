@@ -239,57 +239,48 @@ pub async fn browser_ensure_started(
 /// Initialize Beads in the given project path. Creates .beads/ with Dolt database.
 /// Creates the directory if it doesn't exist. Returns Ok even if `bd` is not installed
 /// (the caller can proceed without Beads).
+///
+/// Uses the Project abstraction to ensure proper state transitions:
+/// Uninitialized -> GitOnly -> Ready -> BeadsReady
 #[tauri::command]
 pub async fn beads_init(
     registry: State<'_, AgentRegistry>,
     project_path: String,
     agent_id: Option<String>,
 ) -> Result<String, String> {
+    use crate::project::{Project, ProjectError, ProjectState};
+
     if let Some(ref aid) = agent_id {
         registry.gate_tool(aid, "beads_init")?;
     }
+
     let path = Path::new(&project_path);
+
+    // Create directory if it doesn't exist
     if !path.exists() {
         std::fs::create_dir_all(path)
             .map_err(|e| format!("Failed to create directory {}: {e}", project_path))?;
     }
-    if !path.is_dir() {
-        return Err(format!("Not a directory: {}", project_path));
-    }
-    // Skip if already initialized
-    if path.join(".beads").exists() {
+
+    // Open project and detect state
+    let mut project = Project::open(path).map_err(|e| e.to_string())?;
+
+    // Skip if already fully initialized
+    if project.state() == ProjectState::BeadsReady {
         return Ok("Beads already initialized.".to_string());
     }
-    // Beads requires a git repo; ensure one exists before bd init.
-    if !path.join(".git").exists() {
-        let git_out = Command::new("git")
-            .arg("init")
-            .current_dir(path)
-            .output()
-            .map_err(|e| format!("Failed to run git init: {e}"))?;
-        if !git_out.status.success() {
-            let stderr = String::from_utf8_lossy(&git_out.stderr);
-            return Err(format!("git init failed: {}", stderr.trim()));
+
+    // Ensure project is ready for beads (git + initial commit)
+    project.ensure_ready().map_err(|e| e.to_string())?;
+
+    // Initialize beads
+    match project.ensure_beads() {
+        Ok(()) => Ok("Beads initialized.".to_string()),
+        Err(ProjectError::BeadsError(e)) if e.contains("not found on PATH") => {
+            Ok("bd not found on PATH — Beads skipped. Install with: npm i -g @anthropic-ai/beads".to_string())
         }
+        Err(e) => Err(e.to_string()),
     }
-    let out = match Command::new("bd")
-        .args(["init", "--quiet"])
-        .current_dir(path)
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return Ok("bd not found on PATH — Beads skipped. Install with: npm i -g @anthropic-ai/beads".to_string());
-            }
-            return Err(format!("Failed to run bd: {e}"));
-        }
-    };
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Ok(format!("bd init warning: {}", stderr.trim()));
-    }
-    Ok("Beads initialized.".to_string())
 }
 
 /// Run a Beads CLI command in the given project path. Returns stdout.

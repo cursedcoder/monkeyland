@@ -19,6 +19,68 @@ pub fn worktree_path_for(project_path: &Path, agent_id: &str) -> PathBuf {
     project_path.join(".worktrees").join(agent_id)
 }
 
+/// Check if the git repository has at least one commit (HEAD exists and is valid).
+pub fn has_commits(project_path: &Path) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .current_dir(project_path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Ensure the git repository has an initial commit. Creates one if missing.
+/// This is required for worktree creation to work (needs a valid HEAD).
+pub fn ensure_initial_commit(project_path: &Path) -> Result<(), String> {
+    if has_commits(project_path) {
+        return Ok(());
+    }
+
+    // Configure user identity if not set (required for commit)
+    let _ = Command::new("git")
+        .args(["config", "user.email"])
+        .current_dir(project_path)
+        .output()
+        .and_then(|o| {
+            if !o.status.success() || o.stdout.is_empty() {
+                Command::new("git")
+                    .args(["config", "user.email", "monkeyland@local"])
+                    .current_dir(project_path)
+                    .output()
+            } else {
+                Ok(o)
+            }
+        });
+
+    let _ = Command::new("git")
+        .args(["config", "user.name"])
+        .current_dir(project_path)
+        .output()
+        .and_then(|o| {
+            if !o.status.success() || o.stdout.is_empty() {
+                Command::new("git")
+                    .args(["config", "user.name", "Monkeyland"])
+                    .current_dir(project_path)
+                    .output()
+            } else {
+                Ok(o)
+            }
+        });
+
+    let out = Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "Initial commit"])
+        .current_dir(project_path)
+        .output()
+        .map_err(|e| format!("git commit: {e}"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("initial commit failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
 /// Detect the default branch name (`main`, `master`, or fall back to `HEAD`).
 pub fn detect_base_branch(project_path: &Path) -> String {
     let out = Command::new("git")
@@ -84,7 +146,12 @@ fn branch_exists(project_path: &Path, branch: &str) -> bool {
 /// - Branch: `task/<task_id>` (created from base if new, reused if exists)
 ///
 /// Returns the absolute path to the worktree directory.
+///
+/// Note: Automatically ensures the repo has at least one commit (required for worktrees).
 pub fn create(project_path: &Path, agent_id: &str, task_id: &str) -> Result<PathBuf, String> {
+    // Ensure repo has an initial commit (required for worktree creation)
+    ensure_initial_commit(project_path)?;
+
     ensure_gitignore_entry(project_path)?;
 
     let wt_dir = worktree_path_for(project_path, agent_id);
@@ -420,6 +487,78 @@ mod tests {
     fn test_detect_base_branch_master_fallback() {
         let dir = setup_git_repo_master();
         assert_eq!(detect_base_branch(dir.path()), "master");
+    }
+
+    // Helper to create a git repo without any commits (for testing ensure_initial_commit)
+    fn setup_git_repo_no_commits() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_has_commits_true_when_commits_exist() {
+        let dir = setup_git_repo();
+        assert!(has_commits(dir.path()), "should have commits");
+    }
+
+    #[test]
+    fn test_has_commits_false_when_empty_repo() {
+        let dir = setup_git_repo_no_commits();
+        assert!(!has_commits(dir.path()), "should not have commits");
+    }
+
+    #[test]
+    fn test_ensure_initial_commit_creates_commit_when_missing() {
+        let dir = setup_git_repo_no_commits();
+        assert!(!has_commits(dir.path()), "precondition: no commits");
+
+        ensure_initial_commit(dir.path()).unwrap();
+
+        assert!(has_commits(dir.path()), "should have commits after ensure");
+    }
+
+    #[test]
+    fn test_ensure_initial_commit_is_idempotent() {
+        let dir = setup_git_repo();
+        let log_before = Command::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let count_before = String::from_utf8_lossy(&log_before.stdout)
+            .trim()
+            .parse::<usize>()
+            .unwrap();
+
+        ensure_initial_commit(dir.path()).unwrap();
+
+        let log_after = Command::new("git")
+            .args(["rev-list", "--count", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let count_after = String::from_utf8_lossy(&log_after.stdout)
+            .trim()
+            .parse::<usize>()
+            .unwrap();
+
+        assert_eq!(count_before, count_after, "should not create extra commits");
+    }
+
+    #[test]
+    fn test_create_worktree_on_empty_repo_auto_commits() {
+        let dir = setup_git_repo_no_commits();
+        assert!(!has_commits(dir.path()), "precondition: no commits");
+
+        let wt = create(dir.path(), "agent-auto", "bd-auto").unwrap();
+
+        assert!(wt.exists(), "worktree directory should exist");
+        assert!(has_commits(dir.path()), "repo should now have commits");
     }
 
     #[test]

@@ -104,9 +104,9 @@ pub fn run() {
             if let Some(db) = app.try_state::<storage::MetaDb>() {
                 if let Ok(Some(pp)) = db.get_setting("beads_project_path") {
                     if !pp.is_empty() {
-                        let path = std::path::Path::new(&pp).to_path_buf();
-                        if path.join(".git").exists() {
-                            let _ = worktree::prune(&path);
+                        let path = std::path::Path::new(&pp);
+                        if let Ok(project) = project::Project::open(path) {
+                            let _ = project.prune_worktrees();
                         }
                     }
                 }
@@ -211,6 +211,7 @@ mod coalescing;
 mod commands;
 mod local_proxy;
 mod orchestration;
+mod project;
 mod pty_pool;
 mod storage;
 mod worktree;

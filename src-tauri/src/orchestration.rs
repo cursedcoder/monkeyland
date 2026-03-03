@@ -461,7 +461,17 @@ pub async fn tick(
             let wt_agent_id = agent_id.clone();
             let wt_task_id = task.id.clone();
             match tokio::task::spawn_blocking(move || {
-                crate::worktree::create(&wt_path_buf, &wt_agent_id, &wt_task_id)
+                // Use Project abstraction for proper state validation
+                let mut project = crate::project::Project::open(&wt_path_buf)
+                    .map_err(|e| e.to_string())?;
+
+                // Ensure project is ready (has commits) before creating worktree
+                project.ensure_ready().map_err(|e| e.to_string())?;
+
+                // Create the worktree
+                project
+                    .create_worktree(&wt_agent_id, &wt_task_id)
+                    .map_err(|e| e.to_string())
             })
             .await
             {
@@ -471,13 +481,17 @@ pub async fn tick(
                 }
                 Ok(Err(e)) => {
                     eprintln!(
-                        "[orch] worktree creation failed for {agent_id}: {e} — using project dir"
+                        "[orch] worktree creation failed for {agent_id}: {e}"
                     );
-                    path.to_path_buf()
+                    // Kill the agent rather than falling back to project dir
+                    // This ensures isolation is maintained
+                    let _ = registry.kill(&agent_id);
+                    continue;
                 }
                 Err(join_err) => {
-                    eprintln!("[orch] worktree spawn_blocking panicked for {agent_id}: {join_err} — using project dir");
-                    path.to_path_buf()
+                    eprintln!("[orch] worktree spawn_blocking panicked for {agent_id}: {join_err}");
+                    let _ = registry.kill(&agent_id);
+                    continue;
                 }
             }
         } else {
@@ -1057,7 +1071,13 @@ async fn handle_merge_conflict(
     let wt_agent = merge_agent_id.clone();
     let wt_task = task_id.clone();
     let agent_cwd = match tokio::task::spawn_blocking(move || {
-        crate::worktree::create(&wt_path, &wt_agent, &wt_task)
+        // Use Project abstraction for proper state validation
+        let mut project =
+            crate::project::Project::open(&wt_path).map_err(|e| e.to_string())?;
+        project.ensure_ready().map_err(|e| e.to_string())?;
+        project
+            .create_worktree(&wt_agent, &wt_task)
+            .map_err(|e| e.to_string())
     })
     .await
     {
@@ -1065,9 +1085,27 @@ async fn handle_merge_conflict(
             let _ = registry.set_worktree_path(&merge_agent_id, wt.to_str().unwrap_or_default());
             wt
         }
-        _ => {
-            eprintln!("[orch] merge agent worktree creation failed for {task_id}");
-            project_path.to_path_buf()
+        Ok(Err(e)) => {
+            eprintln!("[orch] merge agent worktree creation failed for {task_id}: {e}");
+            let _ = registry.kill(&merge_agent_id);
+            metrics.inc_merge_retry();
+            let _ = merge_queue.push(MergeEntry {
+                agent_id,
+                task_id: task_id.clone(),
+                retry_count: entry.retry_count + 1,
+            });
+            return;
+        }
+        Err(join_err) => {
+            eprintln!("[orch] merge agent worktree spawn_blocking panicked for {task_id}: {join_err}");
+            let _ = registry.kill(&merge_agent_id);
+            metrics.inc_merge_retry();
+            let _ = merge_queue.push(MergeEntry {
+                agent_id,
+                task_id: task_id.clone(),
+                retry_count: entry.retry_count + 1,
+            });
+            return;
         }
     };
 
