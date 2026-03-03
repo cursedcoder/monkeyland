@@ -348,8 +348,13 @@ export function runPMValidation(
 
 /**
  * Formats PM validation results into a human-readable summary for the PM agent.
+ * Includes full task context so the PM knows what it created.
  */
-export function formatPMValidationFeedback(result: PMValidationResult): string {
+export function formatPMValidationFeedback(
+  result: PMValidationResult,
+  tasks?: BeadsTask[],
+  epicId?: string | null
+): string {
   const lines: string[] = [];
 
   if (result.allPassed) {
@@ -357,10 +362,30 @@ export function formatPMValidationFeedback(result: PMValidationResult): string {
     return lines.join("\n");
   }
 
-  lines.push("✗ Task breakdown validation failed. Issues found:\n");
+  lines.push("# Validation Failed\n");
+
+  // Include context so PM knows what it's working with
+  if (epicId) {
+    lines.push(`**Epic ID:** ${epicId}\n`);
+  }
+
+  if (tasks && tasks.length > 0) {
+    lines.push("## Current Tasks\n");
+    lines.push("Here are the tasks you created:\n");
+    for (const task of tasks) {
+      const deps = normalizeDeps(task);
+      const parentId = task.parent ?? task.parent_id ?? task.parentId ?? "(none)";
+      lines.push(`- **${task.id}**: ${task.title}`);
+      lines.push(`  - parent: ${parentId}`);
+      lines.push(`  - deps: ${deps.length > 0 ? deps.join(", ") : "(none)"}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("## Issues Found\n");
 
   if (!result.dagValidation.valid) {
-    lines.push("## DAG Structure Issues\n");
+    lines.push("### DAG Structure Issues\n");
     for (const error of result.dagValidation.errors) {
       lines.push(`- ${error}`);
     }
@@ -368,7 +393,7 @@ export function formatPMValidationFeedback(result: PMValidationResult): string {
   }
 
   if (result.sequencingValidation && !result.sequencingValidation.valid) {
-    lines.push("## Missing Dependencies\n");
+    lines.push("### Missing Dependencies\n");
     for (const issue of result.sequencingValidation.missingSequences) {
       lines.push(`- Task ${issue.taskId} should depend on ${issue.shouldDependOn}`);
       lines.push(`  Reason: ${issue.reason}`);
@@ -376,7 +401,8 @@ export function formatPMValidationFeedback(result: PMValidationResult): string {
     lines.push("");
   }
 
-  lines.push("Please fix these issues and yield for review again.");
+  lines.push("## Instructions\n");
+  lines.push("Use `update_beads_task` to fix the issues above, then call `yield_for_review` again.");
 
   return lines.join("\n");
 }

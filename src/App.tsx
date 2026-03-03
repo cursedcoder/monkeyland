@@ -2396,7 +2396,8 @@ export default function App() {
             epic_id,
             sequencingPassed ? undefined : { valid: false, missingSequences: [], reasons: sequencingErrors }
           );
-          const feedback = formatPMValidationFeedback(pmResult);
+          // Include full task list and epic ID so PM has context
+          const feedback = formatPMValidationFeedback(pmResult, tasks, epic_id);
 
           startAgentConversationRef.current({
             agentNodeId: pm_agent_id,

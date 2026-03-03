@@ -330,4 +330,29 @@ describe('formatPMValidationFeedback', () => {
     expect(feedback).toContain('Missing Dependencies');
     expect(feedback).toContain('bd-2');
   });
+
+  it('includes task context when tasks and epicId are provided', () => {
+    const tasks: BeadsTask[] = [
+      { id: 'bd-1', title: 'Setup project', type: 'task', status: 'deferred', parent_id: 'epic-1' },
+      { id: 'bd-2', title: 'Install deps', type: 'task', status: 'deferred', deps: ['bd-1'] }, // Missing parent_id
+    ];
+    const result = runPMValidation(tasks, 'epic-1');
+    const feedback = formatPMValidationFeedback(result, tasks, 'epic-1');
+
+    // Should include epic ID
+    expect(feedback).toContain('epic-1');
+
+    // Should include task IDs and titles
+    expect(feedback).toContain('bd-1');
+    expect(feedback).toContain('Setup project');
+    expect(feedback).toContain('bd-2');
+    expect(feedback).toContain('Install deps');
+
+    // Should show task dependencies
+    expect(feedback).toContain('deps:');
+
+    // Should include instructions
+    expect(feedback).toContain('update_beads_task');
+    expect(feedback).toContain('yield_for_review');
+  });
 });
