@@ -1012,8 +1012,8 @@ export default function App() {
       setWmConversation([userMsg]);
       setWmIsProcessing(true);
 
-      // Build plugins for WM
-      const plugins = buildPlugins("workforce_manager", newWmNodeId, null, null);
+      // Build plugins for WM - use nodeId (canvas session_id) for parent references in child cards
+      const plugins = buildPlugins("workforce_manager", nodeId, null, null);
 
       // Run the agent turn
       const controller = new AbortController();
@@ -1172,8 +1172,9 @@ export default function App() {
         }
       }
 
-      // Build plugins for WM
-      const plugins = buildPlugins("workforce_manager", currentWmNodeId, null, null);
+      // Build plugins for WM - use canvas session_id for parent references in child cards
+      const canvasCardId = wmCardSessionId.current ?? currentWmNodeId;
+      const plugins = buildPlugins("workforce_manager", canvasCardId, null, null);
 
       // Run the agent turn
       const controller = new AbortController();
