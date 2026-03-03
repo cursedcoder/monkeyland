@@ -40,7 +40,22 @@ export interface PMValidationResult {
 
 // --- DAG Validator (deterministic, code-based) ---
 
-function normalizeDeps(deps: string[] | string | undefined): string[] {
+function normalizeDeps(task: BeadsTask): string[] {
+  // Beads CLI may return dependencies in multiple formats:
+  // 1. deps: string[] | string (simple list)
+  // 2. blocked_by: string[] | string (simple list)
+  // 3. dependencies: Array<{depends_on_id, type}> (structured, filter to "blocks" type only)
+  
+  // Try structured dependencies first (excludes parent-child relationships)
+  if (task.dependencies && Array.isArray(task.dependencies)) {
+    return task.dependencies
+      .filter(d => d.type === "blocks")
+      .map(d => d.depends_on_id)
+      .filter(Boolean);
+  }
+  
+  // Fall back to simple formats
+  const deps = task.deps ?? task.blocked_by;
   if (!deps) return [];
   if (Array.isArray(deps)) return deps.map(d => d.trim()).filter(Boolean);
   return deps.split(",").map(d => d.trim()).filter(Boolean);
@@ -49,9 +64,9 @@ function normalizeDeps(deps: string[] | string | undefined): string[] {
 function detectCycles(tasks: BeadsTask[]): { hasCycles: boolean; cycleDetails: string[] } {
   const taskIds = new Set(tasks.map(t => t.id));
   const graph = new Map<string, string[]>();
-  
+
   for (const task of tasks) {
-    const deps = normalizeDeps(task.deps ?? task.blocked_by);
+    const deps = normalizeDeps(task);
     graph.set(task.id, deps.filter(d => taskIds.has(d)));
   }
 
@@ -97,7 +112,7 @@ function findMissingDeps(tasks: BeadsTask[]): string[] {
   const missing: string[] = [];
 
   for (const task of tasks) {
-    const deps = normalizeDeps(task.deps ?? task.blocked_by);
+    const deps = normalizeDeps(task);
     for (const dep of deps) {
       if (!taskIds.has(dep)) {
         missing.push(`Task ${task.id} references non-existent dependency: ${dep}`);
@@ -110,12 +125,12 @@ function findMissingDeps(tasks: BeadsTask[]): string[] {
 
 function findOrphanTasks(tasks: BeadsTask[], _epicId: string | undefined): string[] {
   if (tasks.length <= 1) return [];
-  
+
   const orphans: string[] = [];
   let hasFirstTask = false;
 
   for (const task of tasks) {
-    const deps = normalizeDeps(task.deps ?? task.blocked_by);
+    const deps = normalizeDeps(task);
     
     if (deps.length === 0) {
       if (!hasFirstTask) {
@@ -254,7 +269,7 @@ export function buildSequencingValidatorPrompt(tasks: BeadsTask[]): string {
     id: t.id,
     title: t.title,
     description: t.description?.slice(0, 500) ?? "(no description)",
-    deps: normalizeDeps(t.deps ?? t.blocked_by),
+    deps: normalizeDeps(t),
   }));
 
   return `Review these tasks for missing dependencies:

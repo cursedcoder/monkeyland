@@ -18,6 +18,12 @@ export interface BeadsStatus {
   lastRefresh?: number;
 }
 
+export interface BeadsDependency {
+  issue_id: string;
+  depends_on_id: string;
+  type: "blocks" | "parent-child" | string;
+}
+
 export interface BeadsTask {
   id: string;
   title: string;
@@ -29,6 +35,8 @@ export interface BeadsTask {
   priority?: number;
   deps?: string[] | string;
   blocked_by?: string[] | string;
+  dependencies?: BeadsDependency[];
+  dependency_count?: number;
   parent?: string;
   parent_id?: string;
   parentId?: string;
@@ -265,6 +273,9 @@ export function BeadsCard({
             typeof detail.blocked_by === "string" || Array.isArray(detail.blocked_by)
               ? (detail.blocked_by as string[] | string)
               : undefined,
+          dependencies: Array.isArray(detail.dependencies) ? detail.dependencies : undefined,
+          dependency_count:
+            typeof detail.dependency_count === "number" ? detail.dependency_count : undefined,
           epic_id: typeof detail.epic_id === "string" ? detail.epic_id : undefined,
           epic_name: typeof detail.epic_name === "string" ? detail.epic_name : undefined,
           labels: Array.isArray(detail.labels) ? (detail.labels as string[]) : undefined,

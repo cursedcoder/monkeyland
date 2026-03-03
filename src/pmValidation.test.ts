@@ -110,6 +110,75 @@ describe('validateDAG', () => {
     const result = validateDAG(tasks, 'epic-1');
     expect(result.valid).toBe(true);
   });
+
+  it('handles dependencies array format from Beads CLI', () => {
+    const tasks: BeadsTask[] = [
+      {
+        id: 'bd-1',
+        title: 'Task 1',
+        type: 'task',
+        status: 'deferred',
+        parent: 'epic-1',
+        dependencies: [],
+      },
+      {
+        id: 'bd-2',
+        title: 'Task 2',
+        type: 'task',
+        status: 'deferred',
+        parent: 'epic-1',
+        dependencies: [
+          { issue_id: 'bd-2', depends_on_id: 'bd-1', type: 'blocks' },
+          { issue_id: 'bd-2', depends_on_id: 'epic-1', type: 'parent-child' },
+        ],
+      },
+      {
+        id: 'bd-3',
+        title: 'Task 3',
+        type: 'task',
+        status: 'deferred',
+        parent: 'epic-1',
+        dependencies: [
+          { issue_id: 'bd-3', depends_on_id: 'bd-2', type: 'blocks' },
+          { issue_id: 'bd-3', depends_on_id: 'epic-1', type: 'parent-child' },
+        ],
+      },
+    ];
+
+    const result = validateDAG(tasks, 'epic-1');
+    expect(result.valid).toBe(true);
+    expect(result.hasCycles).toBe(false);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('filters out parent-child from dependencies when checking for orphans', () => {
+    const tasks: BeadsTask[] = [
+      {
+        id: 'bd-1',
+        title: 'Task 1',
+        type: 'task',
+        status: 'deferred',
+        parent: 'epic-1',
+        dependencies: [
+          { issue_id: 'bd-1', depends_on_id: 'epic-1', type: 'parent-child' },
+        ],
+      },
+      {
+        id: 'bd-2',
+        title: 'Task 2',
+        type: 'task',
+        status: 'deferred',
+        parent: 'epic-1',
+        dependencies: [
+          { issue_id: 'bd-2', depends_on_id: 'epic-1', type: 'parent-child' },
+        ],
+      },
+    ];
+
+    const result = validateDAG(tasks, 'epic-1');
+    expect(result.orphanTasks.length).toBeGreaterThan(0);
+    expect(result.orphanTasks[0]).toContain('bd-2');
+  });
 });
 
 describe('parseSequencingValidatorResponse', () => {

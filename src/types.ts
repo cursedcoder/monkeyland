@@ -1,3 +1,9 @@
+export interface BeadsDependency {
+  issue_id: string;
+  depends_on_id: string;
+  type: "blocks" | "parent-child" | string;
+}
+
 export interface BeadsTask {
   id: string;
   title: string;
@@ -9,6 +15,8 @@ export interface BeadsTask {
   priority?: number;
   deps?: string[] | string;
   blocked_by?: string[] | string;
+  dependencies?: BeadsDependency[];
+  dependency_count?: number;
   parent?: string;
   parent_id?: string;
   parentId?: string;
