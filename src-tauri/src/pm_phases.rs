@@ -188,7 +188,8 @@ mod tests {
 
     #[test]
     fn exploration_to_task_drafting() {
-        let result = try_pm_phase_transition(PMPhase::Exploration, PMPhaseEvent::ExplorationComplete);
+        let result =
+            try_pm_phase_transition(PMPhase::Exploration, PMPhaseEvent::ExplorationComplete);
         assert_eq!(result.unwrap(), PMPhase::TaskDrafting);
     }
 
@@ -200,13 +201,15 @@ mod tests {
 
     #[test]
     fn dependency_review_to_finalization() {
-        let result = try_pm_phase_transition(PMPhase::DependencyReview, PMPhaseEvent::ReviewComplete);
+        let result =
+            try_pm_phase_transition(PMPhase::DependencyReview, PMPhaseEvent::ReviewComplete);
         assert_eq!(result.unwrap(), PMPhase::Finalization);
     }
 
     #[test]
     fn dependency_review_back_to_drafting() {
-        let result = try_pm_phase_transition(PMPhase::DependencyReview, PMPhaseEvent::NeedsMoreTasks);
+        let result =
+            try_pm_phase_transition(PMPhase::DependencyReview, PMPhaseEvent::NeedsMoreTasks);
         assert_eq!(result.unwrap(), PMPhase::TaskDrafting);
     }
 
@@ -269,7 +272,11 @@ mod tests {
             PMPhase::Revising,
         ] {
             let result = try_pm_phase_transition(phase, PMPhaseEvent::ValidationFailed);
-            assert!(result.is_err(), "ValidationFailed should not work from {:?}", phase);
+            assert!(
+                result.is_err(),
+                "ValidationFailed should not work from {:?}",
+                phase
+            );
         }
     }
 
@@ -313,19 +320,25 @@ mod tests {
 
     #[test]
     fn hard_enforcement_rejects_invalid_tool() {
-        let result = gate_tool_for_pm_phase(PMPhase::Exploration, Tool::BeadsRun, EnforcementMode::Hard);
+        let result =
+            gate_tool_for_pm_phase(PMPhase::Exploration, Tool::BeadsRun, EnforcementMode::Hard);
         assert!(result.is_err());
     }
 
     #[test]
     fn soft_enforcement_allows_invalid_tool() {
-        let result = gate_tool_for_pm_phase(PMPhase::Exploration, Tool::BeadsRun, EnforcementMode::Soft);
+        let result =
+            gate_tool_for_pm_phase(PMPhase::Exploration, Tool::BeadsRun, EnforcementMode::Soft);
         assert!(result.is_ok());
     }
 
     #[test]
     fn passive_enforcement_allows_invalid_tool() {
-        let result = gate_tool_for_pm_phase(PMPhase::Exploration, Tool::BeadsRun, EnforcementMode::Passive);
+        let result = gate_tool_for_pm_phase(
+            PMPhase::Exploration,
+            Tool::BeadsRun,
+            EnforcementMode::Passive,
+        );
         assert!(result.is_ok());
     }
 
@@ -356,7 +369,10 @@ mod tests {
     fn pm_phase_display() {
         assert_eq!(format!("{}", PMPhase::Exploration), "exploration");
         assert_eq!(format!("{}", PMPhase::TaskDrafting), "task_drafting");
-        assert_eq!(format!("{}", PMPhase::DependencyReview), "dependency_review");
+        assert_eq!(
+            format!("{}", PMPhase::DependencyReview),
+            "dependency_review"
+        );
         assert_eq!(format!("{}", PMPhase::Finalization), "finalization");
         assert_eq!(format!("{}", PMPhase::Revising), "revising");
     }

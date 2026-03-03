@@ -314,8 +314,7 @@ impl Project {
             });
         }
 
-        crate::worktree::create(&self.path, agent_id, task_id)
-            .map_err(ProjectError::WorktreeError)
+        crate::worktree::create(&self.path, agent_id, task_id).map_err(ProjectError::WorktreeError)
     }
 
     /// Remove a worktree for an agent.
@@ -346,8 +345,7 @@ impl Project {
 
     /// Get diff of a task branch against the base branch.
     pub fn diff_task(&self, task_id: &str) -> Result<String, ProjectError> {
-        crate::worktree::diff_against_base(&self.path, task_id)
-            .map_err(ProjectError::WorktreeError)
+        crate::worktree::diff_against_base(&self.path, task_id).map_err(ProjectError::WorktreeError)
     }
 
     /// Prune stale worktree entries.

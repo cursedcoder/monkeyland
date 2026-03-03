@@ -867,19 +867,43 @@ mod tests {
         let dir = setup_git_repo();
 
         fs::write(dir.path().join("shared.txt"), "base v1").unwrap();
-        Command::new("git").args(["add", "shared.txt"]).current_dir(dir.path()).output().unwrap();
-        Command::new("git").args(["commit", "-m", "base v1"]).current_dir(dir.path()).output().unwrap();
+        Command::new("git")
+            .args(["add", "shared.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "base v1"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
 
         let wt = create(dir.path(), "agent-r2", "bd-rebase-2").unwrap();
         fs::write(wt.join("shared.txt"), "task content").unwrap();
-        Command::new("git").args(["add", "shared.txt"]).current_dir(&wt).output().unwrap();
-        Command::new("git").args(["commit", "-m", "task change"]).current_dir(&wt).output().unwrap();
+        Command::new("git")
+            .args(["add", "shared.txt"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "task change"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
 
         remove(dir.path(), "agent-r2").unwrap();
 
         fs::write(dir.path().join("shared.txt"), "base v2 conflicting").unwrap();
-        Command::new("git").args(["add", "shared.txt"]).current_dir(dir.path()).output().unwrap();
-        Command::new("git").args(["commit", "-m", "base conflict"]).current_dir(dir.path()).output().unwrap();
+        Command::new("git")
+            .args(["add", "shared.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "base conflict"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
 
         let ok = rebase_onto_base(dir.path(), "bd-rebase-2").unwrap();
         assert!(!ok, "conflicting rebase should return false");
@@ -900,14 +924,25 @@ mod tests {
         let dir = setup_git_repo();
         let wt = create(dir.path(), "agent-d1", "bd-del-1").unwrap();
         fs::write(wt.join("file.txt"), "content").unwrap();
-        Command::new("git").args(["add", "file.txt"]).current_dir(&wt).output().unwrap();
-        Command::new("git").args(["commit", "-m", "commit"]).current_dir(&wt).output().unwrap();
+        Command::new("git")
+            .args(["add", "file.txt"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "commit"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
         remove(dir.path(), "agent-d1").unwrap();
 
         merge_to_base(dir.path(), "bd-del-1").unwrap();
         delete_task_branch(dir.path(), "bd-del-1").unwrap();
 
-        assert!(!branch_exists(dir.path(), "task/bd-del-1"), "branch should be deleted");
+        assert!(
+            !branch_exists(dir.path(), "task/bd-del-1"),
+            "branch should be deleted"
+        );
     }
 
     // --- conflict_diff ---
@@ -918,13 +953,24 @@ mod tests {
         let wt = create(dir.path(), "agent-cd1", "bd-cdiff-1").unwrap();
 
         fs::write(wt.join("changed.txt"), "new stuff").unwrap();
-        Command::new("git").args(["add", "changed.txt"]).current_dir(&wt).output().unwrap();
-        Command::new("git").args(["commit", "-m", "add changed"]).current_dir(&wt).output().unwrap();
+        Command::new("git")
+            .args(["add", "changed.txt"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "add changed"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
 
         remove(dir.path(), "agent-cd1").unwrap();
 
         let diff = conflict_diff(dir.path(), "bd-cdiff-1").unwrap();
-        assert!(diff.contains("changed.txt"), "diff should mention changed file");
+        assert!(
+            diff.contains("changed.txt"),
+            "diff should mention changed file"
+        );
         assert!(diff.contains("new stuff"), "diff should contain content");
     }
 
@@ -935,13 +981,24 @@ mod tests {
 
         let big_content = "x".repeat(10_000);
         fs::write(wt.join("big.txt"), &big_content).unwrap();
-        Command::new("git").args(["add", "big.txt"]).current_dir(&wt).output().unwrap();
-        Command::new("git").args(["commit", "-m", "add big"]).current_dir(&wt).output().unwrap();
+        Command::new("git")
+            .args(["add", "big.txt"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "add big"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
 
         remove(dir.path(), "agent-cd2").unwrap();
 
         let diff = conflict_diff(dir.path(), "bd-cdiff-2").unwrap();
-        assert!(diff.contains("[truncated"), "large diff should be truncated");
+        assert!(
+            diff.contains("[truncated"),
+            "large diff should be truncated"
+        );
     }
 
     // --- prune ---

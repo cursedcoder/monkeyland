@@ -123,9 +123,13 @@ pub fn phase_tools(phase: Phase) -> HashSet<Tool> {
         }
         Phase::Testing => {
             // Testing: read + terminal + browser (no new writes)
-            [Tool::ReadFile, Tool::TerminalExec, Tool::BrowserEnsureStarted]
-                .into_iter()
-                .collect()
+            [
+                Tool::ReadFile,
+                Tool::TerminalExec,
+                Tool::BrowserEnsureStarted,
+            ]
+            .into_iter()
+            .collect()
         }
         Phase::Finalizing => {
             // Finalizing: read-only, preparing for yield
@@ -146,11 +150,7 @@ pub fn phase_tools(phase: Phase) -> HashSet<Tool> {
 ///
 /// Note: This should be called AFTER the role-level check in agent_state_machine.
 /// A tool must pass both checks to be allowed.
-pub fn gate_tool_for_phase(
-    phase: Phase,
-    tool: Tool,
-    mode: EnforcementMode,
-) -> Result<(), String> {
+pub fn gate_tool_for_phase(phase: Phase, tool: Tool, mode: EnforcementMode) -> Result<(), String> {
     let allowed = phase_tools(phase);
 
     if allowed.contains(&tool) {
@@ -298,9 +298,18 @@ mod tests {
     #[test]
     fn validation_failed_only_from_finalizing() {
         // ValidationFailed should only work from Finalizing
-        for phase in [Phase::Planning, Phase::Implementing, Phase::Testing, Phase::Revising] {
+        for phase in [
+            Phase::Planning,
+            Phase::Implementing,
+            Phase::Testing,
+            Phase::Revising,
+        ] {
             let result = try_phase_transition(phase, PhaseEvent::ValidationFailed);
-            assert!(result.is_err(), "ValidationFailed should not work from {:?}", phase);
+            assert!(
+                result.is_err(),
+                "ValidationFailed should not work from {:?}",
+                phase
+            );
         }
     }
 

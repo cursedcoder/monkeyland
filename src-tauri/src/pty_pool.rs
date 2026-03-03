@@ -405,9 +405,17 @@ mod tests {
         let acc = Arc::new(Mutex::new(Vec::new()));
         pty_reader_loop(reader, Arc::clone(&ring), Arc::clone(&acc));
         let ring_data = ring.lock().unwrap().drain();
-        assert_eq!(ring_data.len(), RING_BUFFER_CAP, "ring buffer should cap at RING_BUFFER_CAP");
+        assert_eq!(
+            ring_data.len(),
+            RING_BUFFER_CAP,
+            "ring buffer should cap at RING_BUFFER_CAP"
+        );
         let acc_data = acc.lock().unwrap().clone();
-        assert_eq!(acc_data.len(), RING_BUFFER_CAP * 2, "accumulator should contain all data");
+        assert_eq!(
+            acc_data.len(),
+            RING_BUFFER_CAP * 2,
+            "accumulator should contain all data"
+        );
     }
 
     // --- PtyPool lifecycle tests (require real PTY) ---
@@ -427,7 +435,10 @@ mod tests {
             pool.spawn(&format!("s{i}"), 80, 24, None).unwrap();
         }
         let err = pool.spawn("overflow", 80, 24, None).unwrap_err();
-        assert!(err.contains("pool full"), "error should mention pool full: {err}");
+        assert!(
+            err.contains("pool full"),
+            "error should mention pool full: {err}"
+        );
         for i in 0..MAX_SLOTS {
             let _ = pool.kill(&format!("s{i}"));
         }
@@ -440,7 +451,10 @@ mod tests {
         pool.write("s1", b"echo hello\n").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(500));
         let drained = pool.drain_all().unwrap();
-        assert!(!drained.is_empty(), "should have drained some data after writing to PTY");
+        assert!(
+            !drained.is_empty(),
+            "should have drained some data after writing to PTY"
+        );
         let _ = pool.kill("s1");
     }
 
@@ -449,6 +463,9 @@ mod tests {
         let pool = PtyPool::new();
         pool.spawn("s1", 80, 24, None).unwrap();
         pool.kill("s1").unwrap();
-        assert!(pool.write("s1", b"data").is_err(), "write after kill should fail");
+        assert!(
+            pool.write("s1", b"data").is_err(),
+            "write after kill should fail"
+        );
     }
 }

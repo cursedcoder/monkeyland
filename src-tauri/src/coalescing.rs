@@ -202,9 +202,15 @@ mod tests {
         let bus = CoalescingBus::new();
 
         let payload = bus.tick(&pool, &batcher).unwrap();
-        assert!(!payload.sessions.is_empty(), "tick should return data after PTY write");
+        assert!(
+            !payload.sessions.is_empty(),
+            "tick should return data after PTY write"
+        );
         let batch = payload.sessions.get("s1").unwrap();
-        assert!(batch.terminal_chunk.is_some(), "session batch should have terminal chunk");
+        assert!(
+            batch.terminal_chunk.is_some(),
+            "session batch should have terminal chunk"
+        );
 
         let _ = pool.kill("s1");
     }

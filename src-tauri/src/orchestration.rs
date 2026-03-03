@@ -468,8 +468,8 @@ pub async fn tick(
             let wt_task_id = task.id.clone();
             match tokio::task::spawn_blocking(move || {
                 // Use Project abstraction for proper state validation
-                let mut project = crate::project::Project::open(&wt_path_buf)
-                    .map_err(|e| e.to_string())?;
+                let mut project =
+                    crate::project::Project::open(&wt_path_buf).map_err(|e| e.to_string())?;
 
                 // Ensure project is ready (has commits) before creating worktree
                 project.ensure_ready().map_err(|e| e.to_string())?;
@@ -486,9 +486,7 @@ pub async fn tick(
                     wt
                 }
                 Ok(Err(e)) => {
-                    eprintln!(
-                        "[orch] worktree creation failed for {agent_id}: {e}"
-                    );
+                    eprintln!("[orch] worktree creation failed for {agent_id}: {e}");
                     // Kill the agent rather than falling back to project dir
                     // This ensures isolation is maintained
                     let _ = registry.kill(&agent_id);
@@ -623,10 +621,7 @@ pub async fn tick(
             pm_agent_id, epic_id
         );
         match registry.start_pm_validation(&pm_agent_id, epic_id.clone()) {
-            Ok(_) => eprintln!(
-                "[orch] start_pm_validation succeeded for {}",
-                pm_agent_id
-            ),
+            Ok(_) => eprintln!("[orch] start_pm_validation succeeded for {}", pm_agent_id),
             Err(e) => {
                 eprintln!(
                     "[orch] start_pm_validation FAILED for {}: {}",
@@ -1114,8 +1109,7 @@ async fn handle_merge_conflict(
     let wt_task = task_id.clone();
     let agent_cwd = match tokio::task::spawn_blocking(move || {
         // Use Project abstraction for proper state validation
-        let mut project =
-            crate::project::Project::open(&wt_path).map_err(|e| e.to_string())?;
+        let mut project = crate::project::Project::open(&wt_path).map_err(|e| e.to_string())?;
         project.ensure_ready().map_err(|e| e.to_string())?;
         project
             .create_worktree(&wt_agent, &wt_task)
@@ -1139,7 +1133,9 @@ async fn handle_merge_conflict(
             return;
         }
         Err(join_err) => {
-            eprintln!("[orch] merge agent worktree spawn_blocking panicked for {task_id}: {join_err}");
+            eprintln!(
+                "[orch] merge agent worktree spawn_blocking panicked for {task_id}: {join_err}"
+            );
             let _ = registry.kill(&merge_agent_id);
             metrics.inc_merge_retry();
             let _ = merge_queue.push(MergeEntry {
@@ -3410,10 +3406,16 @@ mod tests {
         // PM yields for review (PMs must yield, like developers)
         // First transition PM through phases to Finalization
         use crate::pm_phases::PMPhaseEvent;
-        registry.transition_pm_phase(&pm_id, PMPhaseEvent::ExplorationComplete).unwrap();
-        registry.transition_pm_phase(&pm_id, PMPhaseEvent::DraftingComplete).unwrap();
-        registry.transition_pm_phase(&pm_id, PMPhaseEvent::ReviewComplete).unwrap();
-        
+        registry
+            .transition_pm_phase(&pm_id, PMPhaseEvent::ExplorationComplete)
+            .unwrap();
+        registry
+            .transition_pm_phase(&pm_id, PMPhaseEvent::DraftingComplete)
+            .unwrap();
+        registry
+            .transition_pm_phase(&pm_id, PMPhaseEvent::ReviewComplete)
+            .unwrap();
+
         let pm_task_id = pm[0]["task_id"].as_str().unwrap();
         let yp = crate::agent_registry::YieldPayload {
             status: "done".to_string(),
@@ -3465,14 +3467,20 @@ mod tests {
             .find(|a| a.role == "project_manager")
             .expect("PM should still exist");
         assert_eq!(pm_agent.state, "InReview", "PM should be in InReview state");
-        
+
         // Check that pm_validation_requested was emitted
         let pm_val_events = env.events_named("pm_validation_requested");
-        assert_eq!(pm_val_events.len(), 1, "pm_validation_requested should be emitted");
-        
+        assert_eq!(
+            pm_val_events.len(),
+            1,
+            "pm_validation_requested should be emitted"
+        );
+
         // Complete PM validation (simulating frontend validation passing)
-        registry.complete_pm_validation(&pm_id, true, true, vec![]).unwrap();
-        
+        registry
+            .complete_pm_validation(&pm_id, true, true, vec![])
+            .unwrap();
+
         // PM should now be Done
         let snap = registry.debug_snapshot().unwrap();
         let live_pms: Vec<_> = snap
@@ -3480,7 +3488,11 @@ mod tests {
             .iter()
             .filter(|a| a.role == "project_manager" && a.state != "Done")
             .collect();
-        assert_eq!(live_pms.len(), 0, "PM should be Done after validation passes");
+        assert_eq!(
+            live_pms.len(),
+            0,
+            "PM should be Done after validation passes"
+        );
 
         let val_events = env.events_named("validation_requested");
         assert_eq!(val_events.len(), 2, "both devs get validation_requested");

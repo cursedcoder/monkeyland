@@ -678,7 +678,8 @@ impl AgentRegistry {
         };
 
         // Transition phase from Finalizing to Revising
-        let new_phase = developer_phases::try_phase_transition(current, PhaseEvent::ValidationFailed)?;
+        let new_phase =
+            developer_phases::try_phase_transition(current, PhaseEvent::ValidationFailed)?;
         entry.execution_phase = Some(new_phase);
         Ok(Some(new_phase))
     }
@@ -687,7 +688,10 @@ impl AgentRegistry {
     /// Returns None if the agent doesn't exist or is not a PM.
     pub fn get_pm_execution_phase(&self, agent_id: &str) -> Result<Option<PMPhase>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
-        Ok(inner.agents.get(agent_id).and_then(|e| e.pm_execution_phase))
+        Ok(inner
+            .agents
+            .get(agent_id)
+            .and_then(|e| e.pm_execution_phase))
     }
 
     /// Transition a PM agent to a new execution phase.
@@ -738,7 +742,8 @@ impl AgentRegistry {
         };
 
         // Transition phase from Finalization to Revising
-        let new_phase = pm_phases::try_pm_phase_transition(current, PMPhaseEvent::ValidationFailed)?;
+        let new_phase =
+            pm_phases::try_pm_phase_transition(current, PMPhaseEvent::ValidationFailed)?;
         entry.pm_execution_phase = Some(new_phase);
         Ok(Some(new_phase))
     }
@@ -765,7 +770,11 @@ impl AgentRegistry {
 
     /// Start PM validation for a yielded PM agent.
     /// Transitions agent from Yielded to InReview and creates the pm_validation tracking entry.
-    pub fn start_pm_validation(&self, pm_agent_id: &str, epic_id: Option<String>) -> Result<(), String> {
+    pub fn start_pm_validation(
+        &self,
+        pm_agent_id: &str,
+        epic_id: Option<String>,
+    ) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = inner
             .agents
@@ -777,7 +786,8 @@ impl AgentRegistry {
         }
 
         // Transition to InReview
-        let new_state = agent_state_machine::try_transition(entry.state, Event::StartReview, &entry.role)?;
+        let new_state =
+            agent_state_machine::try_transition(entry.state, Event::StartReview, &entry.role)?;
         entry.state = new_state;
         entry.state_entered_at = Instant::now();
 
@@ -809,7 +819,7 @@ impl AgentRegistry {
         errors: Vec<String>,
     ) -> Result<bool, String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        
+
         // First, check if agent exists and is a PM
         {
             let entry = inner
@@ -839,25 +849,40 @@ impl AgentRegistry {
 
         if all_passed {
             // Validation passed - transition to Done
-            let new_state = agent_state_machine::try_transition(entry.state, Event::ValidationPass, &entry.role)?;
+            let new_state = agent_state_machine::try_transition(
+                entry.state,
+                Event::ValidationPass,
+                &entry.role,
+            )?;
             entry.state = new_state;
             entry.state_entered_at = Instant::now();
         } else {
             entry.validation_retry_count += 1;
             if entry.validation_retry_count >= 3 {
                 // Max retries exceeded - block
-                let new_state = agent_state_machine::try_transition(entry.state, Event::ValidationBlock, &entry.role)?;
+                let new_state = agent_state_machine::try_transition(
+                    entry.state,
+                    Event::ValidationBlock,
+                    &entry.role,
+                )?;
                 entry.state = new_state;
                 entry.state_entered_at = Instant::now();
             } else {
                 // Retries remaining - back to Running for revision
-                let new_state = agent_state_machine::try_transition(entry.state, Event::ValidationFail, &entry.role)?;
+                let new_state = agent_state_machine::try_transition(
+                    entry.state,
+                    Event::ValidationFail,
+                    &entry.role,
+                )?;
                 entry.state = new_state;
                 entry.state_entered_at = Instant::now();
 
                 // Transition PM phase to Revising
                 if let Some(current_phase) = entry.pm_execution_phase {
-                    if let Ok(new_phase) = pm_phases::try_pm_phase_transition(current_phase, PMPhaseEvent::ValidationFailed) {
+                    if let Ok(new_phase) = pm_phases::try_pm_phase_transition(
+                        current_phase,
+                        PMPhaseEvent::ValidationFailed,
+                    ) {
                         entry.pm_execution_phase = Some(new_phase);
                     }
                 }
@@ -872,7 +897,10 @@ impl AgentRegistry {
     }
 
     /// Get PM validation state for an agent.
-    pub fn get_pm_validation_state(&self, pm_agent_id: &str) -> Result<Option<PMValidationState>, String> {
+    pub fn get_pm_validation_state(
+        &self,
+        pm_agent_id: &str,
+    ) -> Result<Option<PMValidationState>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         Ok(inner.pm_validation.get(pm_agent_id).cloned())
     }
@@ -2657,7 +2685,9 @@ mod tests {
     #[test]
     fn non_pm_has_no_pm_phase() {
         let registry = AgentRegistry::new();
-        let id = registry.spawn("workforce_manager", None, None, None).unwrap();
+        let id = registry
+            .spawn("workforce_manager", None, None, None)
+            .unwrap();
 
         let phase = registry.get_pm_execution_phase(&id).unwrap();
         assert_eq!(phase, None);
@@ -2764,7 +2794,9 @@ mod tests {
             .unwrap();
 
         // Start PM validation
-        registry.start_pm_validation(&id, Some("epic-1".into())).unwrap();
+        registry
+            .start_pm_validation(&id, Some("epic-1".into()))
+            .unwrap();
 
         // Check PM is in InReview state
         let snap = registry.debug_snapshot().unwrap();
@@ -2818,7 +2850,9 @@ mod tests {
             .unwrap();
 
         // Start and fail PM validation
-        registry.start_pm_validation(&id, Some("epic-1".into())).unwrap();
+        registry
+            .start_pm_validation(&id, Some("epic-1".into()))
+            .unwrap();
         let passed = registry
             .complete_pm_validation(&id, false, false, vec!["DAG cycle detected".into()])
             .unwrap();
@@ -2856,7 +2890,9 @@ mod tests {
                     },
                 )
                 .unwrap();
-            registry.start_pm_validation(&id, Some("epic-1".into())).unwrap();
+            registry
+                .start_pm_validation(&id, Some("epic-1".into()))
+                .unwrap();
             let _ = registry.complete_pm_validation(&id, false, false, vec![]);
         }
 

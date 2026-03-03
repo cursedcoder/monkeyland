@@ -2,8 +2,8 @@ use crate::agent_registry::{
     AgentQuota, AgentRegistry, AgentStatusResponse, DebugSnapshot, RestoreAgentInput,
     ValidationOutcome, YieldPayload,
 };
-use crate::developer_phases::{Phase, PhaseEvent};
 use crate::browser_pool::BrowserPool;
+use crate::developer_phases::{Phase, PhaseEvent};
 use crate::orchestration::{
     MergeQueue, OrchestrationMetrics, OrchestrationMetricsSnapshot, OrchestrationState,
 };
@@ -276,9 +276,10 @@ pub async fn beads_init(
     // Initialize beads
     match project.ensure_beads() {
         Ok(()) => Ok("Beads initialized.".to_string()),
-        Err(ProjectError::BeadsError(e)) if e.contains("not found on PATH") => {
-            Ok("bd not found on PATH — Beads skipped. Install with: npm i -g @anthropic-ai/beads".to_string())
-        }
+        Err(ProjectError::BeadsError(e)) if e.contains("not found on PATH") => Ok(
+            "bd not found on PATH — Beads skipped. Install with: npm i -g @anthropic-ai/beads"
+                .to_string(),
+        ),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -2442,7 +2443,7 @@ pub async fn agent_get_phase(
 }
 
 /// Transition a developer agent to a new execution phase.
-/// event should be one of: "plan_complete", "impl_complete", "tests_passed", "tests_failed", 
+/// event should be one of: "plan_complete", "impl_complete", "tests_passed", "tests_failed",
 /// "validation_failed", "revision_complete", "reset".
 /// Returns the new phase name on success.
 #[tauri::command]

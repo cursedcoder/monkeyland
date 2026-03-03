@@ -207,12 +207,12 @@ pub fn run() {
 mod agent_registry;
 mod agent_state_machine;
 mod browser_pool;
-mod developer_phases;
-mod pm_phases;
 mod coalescing;
 mod commands;
+mod developer_phases;
 mod local_proxy;
 mod orchestration;
+mod pm_phases;
 mod project;
 mod pty_pool;
 mod storage;

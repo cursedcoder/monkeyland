@@ -86,7 +86,9 @@ pub fn try_transition(current: State, event: Event, role: &str) -> Result<State,
         (State::Spawned, Event::Start) => Ok(State::Running),
 
         // Developers and PMs must yield; cannot self-complete.
-        (State::Running, Event::Yield) if YIELD_REQUIRED_ROLES.contains(&role) => Ok(State::Yielded),
+        (State::Running, Event::Yield) if YIELD_REQUIRED_ROLES.contains(&role) => {
+            Ok(State::Yielded)
+        }
         (State::Running, Event::Complete) if role == "developer" => {
             Err("Developers cannot self-complete. Use yield_for_review.".into())
         }
@@ -428,14 +430,26 @@ mod tests {
 
     #[test]
     fn from_command_name_maps_all_known_commands() {
-        assert_eq!(Tool::from_command_name("terminal_exec"), Some(Tool::TerminalExec));
+        assert_eq!(
+            Tool::from_command_name("terminal_exec"),
+            Some(Tool::TerminalExec)
+        );
         assert_eq!(Tool::from_command_name("write_file"), Some(Tool::WriteFile));
         assert_eq!(Tool::from_command_name("read_file"), Some(Tool::ReadFile));
-        assert_eq!(Tool::from_command_name("browser_ensure_started"), Some(Tool::BrowserEnsureStarted));
+        assert_eq!(
+            Tool::from_command_name("browser_ensure_started"),
+            Some(Tool::BrowserEnsureStarted)
+        );
         assert_eq!(Tool::from_command_name("beads_init"), Some(Tool::BeadsInit));
         assert_eq!(Tool::from_command_name("beads_run"), Some(Tool::BeadsRun));
-        assert_eq!(Tool::from_command_name("set_beads_project_path"), Some(Tool::SetBeadsProjectPath));
-        assert_eq!(Tool::from_command_name("beads_dolt_start"), Some(Tool::BeadsDoltStart));
+        assert_eq!(
+            Tool::from_command_name("set_beads_project_path"),
+            Some(Tool::SetBeadsProjectPath)
+        );
+        assert_eq!(
+            Tool::from_command_name("beads_dolt_start"),
+            Some(Tool::BeadsDoltStart)
+        );
     }
 
     #[test]
@@ -498,7 +512,9 @@ mod tests {
             Duration::from_secs(900),
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not permitted in planning phase"));
+        assert!(result
+            .unwrap_err()
+            .contains("not permitted in planning phase"));
     }
 
     #[test]
@@ -553,7 +569,9 @@ mod tests {
             Duration::from_secs(900),
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not permitted in PM exploration phase"));
+        assert!(result
+            .unwrap_err()
+            .contains("not permitted in PM exploration phase"));
     }
 
     #[test]

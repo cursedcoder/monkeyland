@@ -38,7 +38,7 @@
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx}": "bash -c 'npm run typecheck'",
-    "src-tauri/**/*.rs": "bash -c 'cd src-tauri && cargo check'"
+    "src-tauri/**/*.rs": "bash -c 'cd src-tauri && cargo fmt -- --check && cargo check'"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
