@@ -2,6 +2,7 @@ use crate::agent_registry::{
     AgentQuota, AgentRegistry, AgentStatusResponse, DebugSnapshot, RestoreAgentInput,
     ValidationOutcome, YieldPayload,
 };
+use crate::developer_phases::{Phase, PhaseEvent};
 use crate::browser_pool::BrowserPool;
 use crate::orchestration::{
     MergeQueue, OrchestrationMetrics, OrchestrationMetricsSnapshot, OrchestrationState,
@@ -2413,6 +2414,42 @@ pub async fn agent_gate_tool(
     tool_name: String,
 ) -> Result<(), String> {
     registry.gate_tool(&agent_id, &tool_name)
+}
+
+/// Get the current execution phase for a developer agent.
+/// Returns null if the agent doesn't exist or is not a developer.
+#[tauri::command]
+pub async fn agent_get_phase(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+) -> Result<Option<String>, String> {
+    let phase = registry.get_execution_phase(&agent_id)?;
+    Ok(phase.map(|p| p.to_string()))
+}
+
+/// Transition a developer agent to a new execution phase.
+/// event should be one of: "plan_complete", "impl_complete", "tests_passed", "tests_failed", 
+/// "validation_failed", "revision_complete", "reset".
+/// Returns the new phase name on success.
+#[tauri::command]
+pub async fn agent_transition_phase(
+    registry: State<'_, AgentRegistry>,
+    agent_id: String,
+    event: String,
+) -> Result<Option<String>, String> {
+    let phase_event = match event.as_str() {
+        "plan_complete" => PhaseEvent::PlanComplete,
+        "impl_complete" => PhaseEvent::ImplComplete,
+        "tests_passed" => PhaseEvent::TestsPassed,
+        "tests_failed" => PhaseEvent::TestsFailed,
+        "validation_failed" => PhaseEvent::ValidationFailed,
+        "revision_complete" => PhaseEvent::RevisionComplete,
+        "reset" => PhaseEvent::Reset,
+        _ => return Err(format!("Unknown phase event: {}", event)),
+    };
+
+    let new_phase = registry.transition_phase(&agent_id, phase_event)?;
+    Ok(new_phase.map(|p| p.to_string()))
 }
 
 fn format_kilo_proxy_url(port: u16) -> String {

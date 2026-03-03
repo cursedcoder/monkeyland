@@ -3,6 +3,7 @@
 //! Every state change and every tool call must go through this module.
 //! If a transition or tool call is not explicitly listed here, it is rejected.
 
+use crate::developer_phases::{self, EnforcementMode, Phase};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -192,9 +193,15 @@ pub fn allowed_tools(role: &str) -> HashSet<Tool> {
 
 /// Check whether an agent is allowed to call a tool right now.
 /// Returns Ok(()) if allowed, Err with reason if not.
+///
+/// The `phase` parameter is optional and only applies to developer agents.
+/// When provided, the tool call will also be checked against phase-specific permissions.
+/// The `enforcement_mode` controls how phase violations are handled (Passive, Soft, Hard).
 pub fn gate_tool_call(
     role: &str,
     state: State,
+    phase: Option<Phase>,
+    enforcement_mode: EnforcementMode,
     tool: Tool,
     token_used: u64,
     token_quota: u64,
@@ -211,6 +218,12 @@ pub fn gate_tool_call(
     // 2. Role permission check.
     if !allowed_tools(role).contains(&tool) {
         return Err(format!("Role {role} is not permitted to use {tool:?}"));
+    }
+
+    // 2.5. Phase permission check (developer agents only).
+    // This is more restrictive than role permissions - a tool must pass both checks.
+    if let Some(p) = phase {
+        developer_phases::gate_tool_for_phase(p, tool, enforcement_mode)?;
     }
 
     // 3. Token quota hard limit.
@@ -302,6 +315,8 @@ mod tests {
         let result = gate_tool_call(
             "developer",
             State::Yielded,
+            None,
+            EnforcementMode::Passive,
             Tool::WriteFile,
             0,
             200_000,
@@ -316,6 +331,8 @@ mod tests {
         let result = gate_tool_call(
             "workforce_manager",
             State::Running,
+            None,
+            EnforcementMode::Passive,
             Tool::WriteFile,
             0,
             500_000,
@@ -330,6 +347,8 @@ mod tests {
         let result = gate_tool_call(
             "developer",
             State::Running,
+            None,
+            EnforcementMode::Passive,
             Tool::WriteFile,
             200_001,
             200_000,
@@ -373,5 +392,204 @@ mod tests {
         let active = HashMap::new();
         assert!(validate_spawn("project_manager", &None, &active).is_err());
         assert!(validate_spawn("project_manager", &Some("bd-3".to_string()), &active).is_ok());
+    }
+
+    // --- Tool::from_command_name ---
+
+    #[test]
+    fn from_command_name_maps_all_known_commands() {
+        assert_eq!(Tool::from_command_name("terminal_exec"), Some(Tool::TerminalExec));
+        assert_eq!(Tool::from_command_name("write_file"), Some(Tool::WriteFile));
+        assert_eq!(Tool::from_command_name("read_file"), Some(Tool::ReadFile));
+        assert_eq!(Tool::from_command_name("browser_ensure_started"), Some(Tool::BrowserEnsureStarted));
+        assert_eq!(Tool::from_command_name("beads_init"), Some(Tool::BeadsInit));
+        assert_eq!(Tool::from_command_name("beads_run"), Some(Tool::BeadsRun));
+        assert_eq!(Tool::from_command_name("set_beads_project_path"), Some(Tool::SetBeadsProjectPath));
+        assert_eq!(Tool::from_command_name("beads_dolt_start"), Some(Tool::BeadsDoltStart));
+    }
+
+    #[test]
+    fn from_command_name_unknown_returns_none() {
+        assert_eq!(Tool::from_command_name("nonexistent"), None);
+        assert_eq!(Tool::from_command_name(""), None);
+        assert_eq!(Tool::from_command_name("WRITE_FILE"), None);
+    }
+
+    // --- gate_tool_call: happy path and TTL expiry ---
+
+    #[test]
+    fn gate_tool_call_allows_valid_call() {
+        let result = gate_tool_call(
+            "developer",
+            State::Running,
+            None,
+            EnforcementMode::Passive,
+            Tool::WriteFile,
+            0,
+            200_000,
+            Instant::now(),
+            Duration::from_secs(900),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn gate_tool_call_rejects_expired_ttl() {
+        let result = gate_tool_call(
+            "developer",
+            State::Running,
+            None,
+            EnforcementMode::Passive,
+            Tool::WriteFile,
+            0,
+            200_000,
+            Instant::now(),
+            Duration::ZERO,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("TTL expired"));
+    }
+
+    #[test]
+    fn gate_tool_call_with_phase_hard_enforcement() {
+        // In Planning phase, write_file should be rejected with Hard enforcement
+        let result = gate_tool_call(
+            "developer",
+            State::Running,
+            Some(Phase::Planning),
+            EnforcementMode::Hard,
+            Tool::WriteFile,
+            0,
+            200_000,
+            Instant::now(),
+            Duration::from_secs(900),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not permitted in planning phase"));
+    }
+
+    #[test]
+    fn gate_tool_call_with_phase_allows_valid_tool() {
+        // In Implementing phase, write_file should be allowed
+        let result = gate_tool_call(
+            "developer",
+            State::Running,
+            Some(Phase::Implementing),
+            EnforcementMode::Hard,
+            Tool::WriteFile,
+            0,
+            200_000,
+            Instant::now(),
+            Duration::from_secs(900),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn gate_tool_call_with_phase_soft_enforcement_allows() {
+        // In Planning phase, write_file should be allowed with Soft enforcement (just logs)
+        let result = gate_tool_call(
+            "developer",
+            State::Running,
+            Some(Phase::Planning),
+            EnforcementMode::Soft,
+            Tool::WriteFile,
+            0,
+            200_000,
+            Instant::now(),
+            Duration::from_secs(900),
+        );
+        assert!(result.is_ok());
+    }
+
+    // --- allowed_tools complete matrix ---
+
+    #[test]
+    fn allowed_tools_developer() {
+        let tools = allowed_tools("developer");
+        assert!(tools.contains(&Tool::WriteFile));
+        assert!(tools.contains(&Tool::ReadFile));
+        assert!(tools.contains(&Tool::TerminalExec));
+        assert!(tools.contains(&Tool::BrowserEnsureStarted));
+        assert!(!tools.contains(&Tool::BeadsRun));
+        assert!(!tools.contains(&Tool::BeadsInit));
+        assert!(!tools.contains(&Tool::SetBeadsProjectPath));
+        assert!(!tools.contains(&Tool::BeadsDoltStart));
+    }
+
+    #[test]
+    fn allowed_tools_workforce_manager() {
+        let tools = allowed_tools("workforce_manager");
+        assert!(tools.contains(&Tool::BeadsInit));
+        assert!(tools.contains(&Tool::BeadsRun));
+        assert!(tools.contains(&Tool::SetBeadsProjectPath));
+        assert!(tools.contains(&Tool::BeadsDoltStart));
+        assert!(!tools.contains(&Tool::WriteFile));
+        assert!(!tools.contains(&Tool::TerminalExec));
+    }
+
+    #[test]
+    fn allowed_tools_project_manager() {
+        let tools = allowed_tools("project_manager");
+        assert!(tools.contains(&Tool::ReadFile));
+        assert!(tools.contains(&Tool::BeadsRun));
+        assert!(!tools.contains(&Tool::WriteFile));
+        assert!(!tools.contains(&Tool::TerminalExec));
+    }
+
+    #[test]
+    fn allowed_tools_worker() {
+        let tools = allowed_tools("worker");
+        assert!(tools.contains(&Tool::WriteFile));
+        assert!(tools.contains(&Tool::ReadFile));
+        assert!(tools.contains(&Tool::TerminalExec));
+        assert!(!tools.contains(&Tool::BrowserEnsureStarted));
+    }
+
+    #[test]
+    fn allowed_tools_merge_agent() {
+        let tools = allowed_tools("merge_agent");
+        assert!(tools.contains(&Tool::WriteFile));
+        assert!(tools.contains(&Tool::ReadFile));
+        assert!(tools.contains(&Tool::TerminalExec));
+        assert!(!tools.contains(&Tool::BrowserEnsureStarted));
+    }
+
+    #[test]
+    fn allowed_tools_validator() {
+        let tools = allowed_tools("validator");
+        assert!(tools.contains(&Tool::BrowserEnsureStarted));
+        assert!(!tools.contains(&Tool::WriteFile));
+        assert!(!tools.contains(&Tool::ReadFile));
+        assert!(!tools.contains(&Tool::TerminalExec));
+    }
+
+    #[test]
+    fn allowed_tools_unknown_role_empty() {
+        assert!(allowed_tools("nobody").is_empty());
+    }
+
+    // --- State Display ---
+
+    #[test]
+    fn state_display_formats() {
+        assert_eq!(format!("{}", State::Spawned), "spawned");
+        assert_eq!(format!("{}", State::Running), "running");
+        assert_eq!(format!("{}", State::Yielded), "yielded");
+        assert_eq!(format!("{}", State::InReview), "in_review");
+        assert_eq!(format!("{}", State::Done), "done");
+        assert_eq!(format!("{}", State::Blocked), "blocked");
+        assert_eq!(format!("{}", State::Stopped), "stopped");
+    }
+
+    #[test]
+    fn terminal_states() {
+        assert!(State::Done.is_terminal());
+        assert!(State::Blocked.is_terminal());
+        assert!(State::Stopped.is_terminal());
+        assert!(!State::Spawned.is_terminal());
+        assert!(!State::Running.is_terminal());
+        assert!(!State::Yielded.is_terminal());
+        assert!(!State::InReview.is_terminal());
     }
 }

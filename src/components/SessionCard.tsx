@@ -54,6 +54,24 @@ const ROLE_LABELS: Record<AgentRole, string> = {
   merge_agent: "Merge",
 };
 
+/** Execution phase labels for developer agents. */
+const PHASE_LABELS: Record<string, string> = {
+  planning: "Planning",
+  implementing: "Implementing",
+  testing: "Testing",
+  finalizing: "Finalizing",
+  revising: "Revising",
+};
+
+/** Phase badge colors. */
+const PHASE_COLORS: Record<string, string> = {
+  planning: "#6366f1",     // indigo
+  implementing: "#f59e0b", // amber
+  testing: "#10b981",      // emerald
+  finalizing: "#8b5cf6",   // violet
+  revising: "#ef4444",     // red
+};
+
 function parseRole(payload: string | undefined): AgentRole | null {
   if (!payload) return null;
   try {
@@ -64,6 +82,43 @@ function parseRole(payload: string | undefined): AgentRole | null {
     /* ignore */
   }
   return null;
+}
+
+function parsePhase(payload: string | undefined): string | null {
+  if (!payload) return null;
+  try {
+    const p = JSON.parse(payload) as { executionPhase?: string };
+    if (p.executionPhase && Object.prototype.hasOwnProperty.call(PHASE_LABELS, p.executionPhase))
+      return p.executionPhase;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function PhaseBadge({ phase }: { phase: string }) {
+  const label = PHASE_LABELS[phase] ?? phase;
+  const color = PHASE_COLORS[phase] ?? "#6b7280";
+  return (
+    <span
+      className="session-card-phase-badge"
+      style={{
+        marginLeft: 6,
+        padding: "1px 6px",
+        borderRadius: 4,
+        fontSize: "0.7em",
+        fontWeight: 500,
+        textTransform: "uppercase",
+        letterSpacing: "0.02em",
+        backgroundColor: color,
+        color: "#fff",
+        opacity: 0.9,
+      }}
+      title={`Execution phase: ${label}`}
+    >
+      {label}
+    </span>
+  );
 }
 
 interface SessionCardProps {
@@ -289,6 +344,10 @@ export function SessionCard({
       >
         <span className="session-card-title">
           {parseRole(layout.payload) ? ROLE_LABELS[parseRole(layout.payload)!] : `Agent ${index + 1}`}
+          {/* Show phase badge for developer agents */}
+          {parseRole(layout.payload) === "developer" && parsePhase(layout.payload) && (
+            <PhaseBadge phase={parsePhase(layout.payload)!} />
+          )}
         </span>
         <div className="session-card-header-actions">
           {(() => {

@@ -12,6 +12,71 @@ export interface LlmUsageData {
   completion_tokens: number;
 }
 
+/** Developer agent execution phases. */
+export type ExecutionPhase = "planning" | "implementing" | "testing" | "finalizing" | "revising";
+
+/** Events that trigger phase transitions. */
+export type PhaseEvent = 
+  | "plan_complete"
+  | "impl_complete"
+  | "tests_passed"
+  | "tests_failed"
+  | "validation_failed"
+  | "revision_complete"
+  | "reset";
+
+/**
+ * Get the current execution phase for a developer agent.
+ * Returns null if the agent doesn't exist or is not a developer.
+ */
+export async function getAgentPhase(agentId: string): Promise<ExecutionPhase | null> {
+  const phase = await invoke<string | null>("agent_get_phase", { agentId });
+  return phase as ExecutionPhase | null;
+}
+
+/**
+ * Transition a developer agent to a new execution phase.
+ * Returns the new phase name on success.
+ */
+export async function transitionAgentPhase(
+  agentId: string,
+  event: PhaseEvent
+): Promise<ExecutionPhase | null> {
+  const newPhase = await invoke<string | null>("agent_transition_phase", { agentId, event });
+  return newPhase as ExecutionPhase | null;
+}
+
+/**
+ * Detect if a tool call should suggest a phase transition.
+ * This is a heuristic for auto-detecting phase changes based on tool usage.
+ */
+export function suggestPhaseTransition(
+  toolName: string,
+  currentPhase: ExecutionPhase | null
+): PhaseEvent | null {
+  if (!currentPhase) return null;
+
+  switch (currentPhase) {
+    case "planning":
+      // If write_file is called in planning, suggest moving to implementing
+      if (toolName === "write_file") {
+        return "plan_complete";
+      }
+      break;
+    case "implementing":
+      // If browser is used in implementing, suggest moving to testing
+      if (toolName === "browser_action" || toolName === "browser_navigate") {
+        return "impl_complete";
+      }
+      // If run_terminal_command looks like a test command, suggest testing
+      break;
+    case "revising":
+      // After revision, if tests are run, could suggest revision_complete
+      break;
+  }
+  return null;
+}
+
 export interface ModelInfo {
   modelName: string;
   inputPricePerM: number;
@@ -25,6 +90,8 @@ export interface AgentRunnerCallbacks {
   onDone: (fullText: string) => void;
   onError: (error: string) => void;
   onStopped: (fullText: string) => void;
+  /** Called when the agent's execution phase changes (developer agents only). */
+  onPhaseChange?: (phase: ExecutionPhase) => void;
 }
 
 export interface Attachment {

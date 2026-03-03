@@ -2,6 +2,7 @@
 //! All state transitions and tool access go through the state machine.
 
 use crate::agent_state_machine::{self, Event, State, Tool};
+use crate::developer_phases::{self, EnforcementMode, Phase, PhaseEvent};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -118,6 +119,9 @@ pub struct AgentEntry {
     /// Isolated worktree directory for this agent (developer agents only).
     /// When set, file operations are sandboxed to this path instead of project_path.
     pub worktree_path: Option<String>,
+    /// Execution phase for developer agents (Planning, Implementing, Testing, Finalizing, Revising).
+    /// None for non-developer roles.
+    pub execution_phase: Option<Phase>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +167,8 @@ pub struct DebugAgentEntry {
     pub project_path: Option<String>,
     pub worktree_path: Option<String>,
     pub yield_summary: Option<String>,
+    /// Execution phase for developer agents (planning, implementing, testing, finalizing, revising).
+    pub execution_phase: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -312,6 +318,14 @@ impl AgentRegistry {
         let initial = agent_state_machine::try_transition(State::Spawned, Event::Start, role)
             .map_err(|e| format!("State machine rejected spawn: {e}"))?;
         let now = Instant::now();
+
+        // Developer agents start in Planning phase; other roles don't use phases.
+        let execution_phase = if role == "developer" {
+            Some(Phase::Planning)
+        } else {
+            None
+        };
+
         let entry = AgentEntry {
             id: id.clone(),
             role: role.to_string(),
@@ -327,6 +341,7 @@ impl AgentRegistry {
             validation_retry_count: 0,
             project_path,
             worktree_path: None,
+            execution_phase,
         };
         inner.agents.insert(id.clone(), entry);
 
@@ -361,6 +376,15 @@ impl AgentRegistry {
             };
 
             let now = Instant::now();
+
+            // Restore developer agents with their execution phase.
+            // If restoring mid-task, default to Implementing since we don't persist phase.
+            let execution_phase = if a.role == "developer" && !state.is_terminal() {
+                Some(Phase::Implementing)
+            } else {
+                None
+            };
+
             inner.agents.insert(
                 a.id.clone(),
                 AgentEntry {
@@ -378,6 +402,7 @@ impl AgentRegistry {
                     validation_retry_count: 0,
                     project_path: a.project_path,
                     worktree_path: a.worktree_path,
+                    execution_phase,
                 },
             );
             restored.push(a.id);
@@ -454,6 +479,7 @@ impl AgentRegistry {
                 project_path: e.project_path.clone(),
                 worktree_path: e.worktree_path.clone(),
                 yield_summary: e.yield_diff_summary.clone(),
+                execution_phase: e.execution_phase.map(|p| p.to_string()),
             })
             .collect();
 
@@ -553,6 +579,66 @@ impl AgentRegistry {
             }
         }
         Ok(())
+    }
+
+    /// Get the current execution phase for a developer agent.
+    /// Returns None if the agent doesn't exist or is not a developer.
+    pub fn get_execution_phase(&self, agent_id: &str) -> Result<Option<Phase>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        Ok(inner.agents.get(agent_id).and_then(|e| e.execution_phase))
+    }
+
+    /// Transition a developer agent to a new execution phase.
+    /// Returns the new phase on success, or an error if the transition is illegal.
+    pub fn transition_phase(
+        &self,
+        agent_id: &str,
+        event: PhaseEvent,
+    ) -> Result<Option<Phase>, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = inner
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("Agent {agent_id} not found"))?;
+
+        // Only developer agents have phases
+        let current = match entry.execution_phase {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // Must be in Running state to transition phases
+        if entry.state != State::Running {
+            return Err(format!(
+                "Agent must be in Running state to transition phases, currently {:?}",
+                entry.state
+            ));
+        }
+
+        let new_phase = developer_phases::try_phase_transition(current, event)?;
+        entry.execution_phase = Some(new_phase);
+        Ok(Some(new_phase))
+    }
+
+    /// Handle validation failure: transitions the developer agent from Finalizing to Revising phase.
+    /// This is called by the orchestration layer when validators reject the work.
+    pub fn handle_validation_failure(&self, agent_id: &str) -> Result<Option<Phase>, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let entry = inner
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("Agent {agent_id} not found"))?;
+
+        // Only developer agents have phases
+        let current = match entry.execution_phase {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // Transition phase from Finalizing to Revising
+        let new_phase = developer_phases::try_phase_transition(current, PhaseEvent::ValidationFailed)?;
+        entry.execution_phase = Some(new_phase);
+        Ok(Some(new_phase))
     }
 
     pub fn yield_for_review(&self, agent_id: &str, payload: YieldPayload) -> Result<(), String> {
@@ -831,9 +917,13 @@ impl AgentRegistry {
             .cloned()
             .unwrap_or_default();
 
+        // Default to Passive enforcement mode during rollout.
+        // This can be changed to Soft or Hard once phase transitions are tuned.
         agent_state_machine::gate_tool_call(
             &entry.role,
             entry.state,
+            entry.execution_phase,
+            EnforcementMode::Passive,
             tool,
             entry.token_used,
             config.token_quota,
@@ -2152,5 +2242,161 @@ mod tests {
             agent.state, "Blocked",
             "agent should be Blocked after max retries"
         );
+    }
+
+    // --- Execution Phase Tests ---
+
+    #[test]
+    fn developer_spawns_with_planning_phase() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("developer", Some("bd-1".into()), None, None)
+            .unwrap();
+
+        let phase = registry.get_execution_phase(&id).unwrap();
+        assert_eq!(phase, Some(Phase::Planning));
+    }
+
+    #[test]
+    fn non_developer_has_no_phase() {
+        let registry = AgentRegistry::new();
+        let id = registry.spawn("operator", None, None, None).unwrap();
+
+        let phase = registry.get_execution_phase(&id).unwrap();
+        assert_eq!(phase, None);
+    }
+
+    #[test]
+    fn transition_phase_planning_to_implementing() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("developer", Some("bd-1".into()), None, None)
+            .unwrap();
+
+        let new_phase = registry
+            .transition_phase(&id, PhaseEvent::PlanComplete)
+            .unwrap();
+        assert_eq!(new_phase, Some(Phase::Implementing));
+
+        let phase = registry.get_execution_phase(&id).unwrap();
+        assert_eq!(phase, Some(Phase::Implementing));
+    }
+
+    #[test]
+    fn transition_phase_full_cycle() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("developer", Some("bd-1".into()), None, None)
+            .unwrap();
+
+        // Planning → Implementing
+        registry
+            .transition_phase(&id, PhaseEvent::PlanComplete)
+            .unwrap();
+        assert_eq!(
+            registry.get_execution_phase(&id).unwrap(),
+            Some(Phase::Implementing)
+        );
+
+        // Implementing → Testing
+        registry
+            .transition_phase(&id, PhaseEvent::ImplComplete)
+            .unwrap();
+        assert_eq!(
+            registry.get_execution_phase(&id).unwrap(),
+            Some(Phase::Testing)
+        );
+
+        // Testing → Finalizing
+        registry
+            .transition_phase(&id, PhaseEvent::TestsPassed)
+            .unwrap();
+        assert_eq!(
+            registry.get_execution_phase(&id).unwrap(),
+            Some(Phase::Finalizing)
+        );
+    }
+
+    #[test]
+    fn transition_phase_illegal_rejected() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("developer", Some("bd-1".into()), None, None)
+            .unwrap();
+
+        // Can't go from Planning directly to TestsPassed
+        let result = registry.transition_phase(&id, PhaseEvent::TestsPassed);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn handle_validation_failure_transitions_to_revising() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("developer", Some("bd-1".into()), None, None)
+            .unwrap();
+
+        // Move to Finalizing phase first
+        registry
+            .transition_phase(&id, PhaseEvent::PlanComplete)
+            .unwrap();
+        registry
+            .transition_phase(&id, PhaseEvent::ImplComplete)
+            .unwrap();
+        registry
+            .transition_phase(&id, PhaseEvent::TestsPassed)
+            .unwrap();
+        assert_eq!(
+            registry.get_execution_phase(&id).unwrap(),
+            Some(Phase::Finalizing)
+        );
+
+        // Now handle validation failure
+        let new_phase = registry.handle_validation_failure(&id).unwrap();
+        assert_eq!(new_phase, Some(Phase::Revising));
+        assert_eq!(
+            registry.get_execution_phase(&id).unwrap(),
+            Some(Phase::Revising)
+        );
+    }
+
+    #[test]
+    fn phase_reset_returns_to_planning() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("developer", Some("bd-1".into()), None, None)
+            .unwrap();
+
+        // Move to Implementing
+        registry
+            .transition_phase(&id, PhaseEvent::PlanComplete)
+            .unwrap();
+
+        // Reset back to Planning
+        registry.transition_phase(&id, PhaseEvent::Reset).unwrap();
+        assert_eq!(
+            registry.get_execution_phase(&id).unwrap(),
+            Some(Phase::Planning)
+        );
+    }
+
+    #[test]
+    fn debug_snapshot_includes_execution_phase() {
+        let registry = AgentRegistry::new();
+        let id = registry
+            .spawn("developer", Some("bd-1".into()), None, None)
+            .unwrap();
+
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.execution_phase, Some("planning".to_string()));
+
+        // Transition and check again
+        registry
+            .transition_phase(&id, PhaseEvent::PlanComplete)
+            .unwrap();
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(agent.execution_phase, Some("implementing".to_string()));
     }
 }

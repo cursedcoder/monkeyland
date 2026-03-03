@@ -51,6 +51,8 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         crate::commands::agent_force_yield,
         crate::commands::agent_set_yield_summary,
         crate::commands::agent_gate_tool,
+        crate::commands::agent_get_phase,
+        crate::commands::agent_transition_phase,
         crate::commands::write_clipboard_text,
         crate::commands::fetch_json,
         crate::commands::get_kilo_proxy_url,
@@ -204,6 +206,7 @@ pub fn run() {
 mod agent_registry;
 mod agent_state_machine;
 mod browser_pool;
+mod developer_phases;
 mod coalescing;
 mod commands;
 mod local_proxy;
