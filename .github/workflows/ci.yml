@@ -65,6 +65,9 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
+      - name: Create frontend dist stub (required by tauri::generate_context)
+        run: mkdir -p dist && echo '<html><body></body></html>' > dist/index.html
+
       - name: Rust format check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
