@@ -6,13 +6,23 @@
  */
 
 import { chromium } from "playwright";
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const PORT = 1421;
+
+function killTree(proc) {
+  if (!proc || proc.killed) return;
+  const pid = proc.pid;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    try { proc.kill("SIGKILL"); } catch { /* already dead */ }
+  }
+}
 
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -48,14 +58,15 @@ async function runValidation() {
     previewProc = spawn("npx", ["vite", "preview", "--port", String(PORT), "--host", "127.0.0.1"], {
       cwd: rootDir,
       stdio: "pipe",
-      shell: true,
+      detached: true,
       env: { ...process.env, FORCE_COLOR: "0" },
     });
+    previewProc.unref();
     await new Promise((r) => setTimeout(r, 1500));
     const ready = await waitForPort(20000);
     if (!ready) {
       errors.push({ kind: "script", text: "Preview server did not become ready" });
-      if (previewProc) previewProc.kill();
+      killTree(previewProc);
       return errors;
     }
 
@@ -89,7 +100,7 @@ async function runValidation() {
   } catch (e) {
     errors.push({ kind: "script", text: e.message });
   } finally {
-    if (previewProc) previewProc.kill();
+    killTree(previewProc);
   }
 
   return errors;
@@ -102,4 +113,5 @@ runValidation().then((errors) => {
     process.exit(1);
   }
   console.log("validate-no-console-errors: no console/page errors.");
+  process.exit(0);
 });
