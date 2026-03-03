@@ -223,6 +223,14 @@ pub fn allowed_tools(role: &str) -> HashSet<Tool> {
 
         "validator" => [Tool::BrowserEnsureStarted].into_iter().collect(),
 
+        "operator" => [
+            Tool::ReadFile,
+            Tool::TerminalExec,
+            Tool::BrowserEnsureStarted,
+        ]
+        .into_iter()
+        .collect(),
+
         _ => HashSet::new(),
     }
 }
