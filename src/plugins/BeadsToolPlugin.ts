@@ -10,18 +10,21 @@ export type UpdateBeadsStatusFn = (nodeId: string, status: BeadsStatus) => void;
  * Creates a Beads status card on the canvas when called.
  */
 export class BeadsToolPlugin extends Plugin {
-  private agentNodeId: string;
+  private canvasNodeId: string;
+  private backendAgentId: string;
   private addBeadsNode: AddBeadsNodeFn;
   private updateStatus: UpdateBeadsStatusFn;
   private beadsNodeId: string | null = null;
 
   constructor(
-    agentNodeId: string,
+    canvasNodeId: string,
+    backendAgentId: string,
     addBeadsNode: AddBeadsNodeFn,
     updateStatus: UpdateBeadsStatusFn,
   ) {
     super();
-    this.agentNodeId = agentNodeId;
+    this.canvasNodeId = canvasNodeId;
+    this.backendAgentId = backendAgentId;
     this.addBeadsNode = addBeadsNode;
     this.updateStatus = updateStatus;
   }
@@ -87,7 +90,7 @@ export class BeadsToolPlugin extends Plugin {
     }
 
     if (!this.beadsNodeId) {
-      this.beadsNodeId = this.addBeadsNode(this.agentNodeId);
+      this.beadsNodeId = this.addBeadsNode(this.canvasNodeId);
     }
 
     const doInit = parameters.init !== false;
@@ -96,16 +99,16 @@ export class BeadsToolPlugin extends Plugin {
 
     try {
       // Dolt server must be running before bd init (Beads v0.56+ requirement)
-      await invoke("beads_dolt_start", { projectPath: path, agentId: this.agentNodeId });
+      await invoke("beads_dolt_start", { projectPath: path, agentId: this.backendAgentId });
       steps.push("Dolt server ready.");
 
-      await invoke("set_beads_project_path", { projectPath: path, agentId: this.agentNodeId });
+      await invoke("set_beads_project_path", { projectPath: path, agentId: this.backendAgentId });
       steps.push("Project path set.");
 
       let initResult = "Project path set.";
 
       if (doInit) {
-        initResult = await invoke<string>("beads_init", { projectPath: path, agentId: this.agentNodeId });
+        initResult = await invoke<string>("beads_init", { projectPath: path, agentId: this.backendAgentId });
         steps.push(initResult);
       }
 

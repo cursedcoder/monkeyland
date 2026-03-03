@@ -486,42 +486,42 @@ export default function App() {
    * Only includes tools the role is permitted to use (per ROLE_TOOLS).
    */
   const buildPlugins = useCallback(
-    (role: AgentRole, agentNodeId: string, taskId: string | null, projectPath?: string | null): Plugin[] => {
+    (role: AgentRole, canvasNodeId: string, backendAgentId: string, taskId: string | null, projectPath?: string | null): Plugin[] => {
       const allowed = new Set<ToolName>(ROLE_TOOLS[role] ?? []);
       const plugins: Plugin[] = [];
 
       if (allowed.has("open_project_with_beads")) {
-        plugins.push(new BeadsToolPlugin(agentNodeId, addBeadsNode, updateBeadsStatus));
+        plugins.push(new BeadsToolPlugin(canvasNodeId, backendAgentId, addBeadsNode, updateBeadsStatus));
       }
       if (allowed.has("create_beads_task")) {
-        plugins.push(new CreateBeadsTaskPlugin(agentNodeId));
+        plugins.push(new CreateBeadsTaskPlugin(backendAgentId));
       }
       if (allowed.has("update_beads_task")) {
-        plugins.push(new UpdateBeadsTaskPlugin(agentNodeId, role));
+        plugins.push(new UpdateBeadsTaskPlugin(backendAgentId, role));
       }
       if (allowed.has("dispatch_agent")) {
-        plugins.push(new DispatchAgentPlugin(agentNodeId, (p) => dispatchAgentRef.current(p)));
+        plugins.push(new DispatchAgentPlugin(backendAgentId, (p) => dispatchAgentRef.current(p)));
       }
       if (allowed.has("run_terminal_command")) {
-        plugins.push(new TerminalToolPlugin(agentNodeId, addTerminalLogNode, updateTerminalLog, projectPath));
+        plugins.push(new TerminalToolPlugin(canvasNodeId, addTerminalLogNode, updateTerminalLog, projectPath));
       }
       if (allowed.has("browser_action")) {
-        plugins.push(new BrowserToolPlugin(agentNodeId, addBrowserNode));
+        plugins.push(new BrowserToolPlugin(canvasNodeId, addBrowserNode));
       }
       if (allowed.has("write_file")) {
-        plugins.push(new WriteFileToolPlugin(agentNodeId));
+        plugins.push(new WriteFileToolPlugin(backendAgentId));
       }
       if (allowed.has("read_file")) {
-        plugins.push(new ReadFileToolPlugin(agentNodeId));
+        plugins.push(new ReadFileToolPlugin(backendAgentId));
       }
       if (allowed.has("yield_for_review") && taskId) {
-        plugins.push(new YieldForReviewPlugin(agentNodeId, taskId));
+        plugins.push(new YieldForReviewPlugin(backendAgentId, taskId));
       }
       if (allowed.has("complete_task") && taskId) {
         // merge_agents must NOT mark the Beads task "done" — the orchestration
         // loop does that after a successful git merge.  Passing null skips the
         // Beads update while still allowing the agent state transition.
-        plugins.push(new CompleteTaskPlugin(agentNodeId, role === "merge_agent" ? null : taskId));
+        plugins.push(new CompleteTaskPlugin(backendAgentId, role === "merge_agent" ? null : taskId));
       }
 
       // Orchestration control plugins (WM only)
@@ -597,7 +597,7 @@ export default function App() {
           await runAgent({
             systemPrompt: getPromptForRole(role),
             userMessage: nudgeMsg,
-            plugins: buildPlugins(role, agentNodeId, taskId, projectPath),
+            plugins: buildPlugins(role, agentNodeId, agentNodeId, taskId, projectPath),
             signal: nudgeController.signal,
             callbacks: {
               onChunk: (c) => {
@@ -790,7 +790,7 @@ export default function App() {
       const controller = new AbortController();
       abortControllers.current.set(agentNodeId, controller);
 
-      const plugins = buildPlugins(role, agentNodeId, taskId, projectPath);
+      const plugins = buildPlugins(role, agentNodeId, agentNodeId, taskId, projectPath);
       let accumulatedText = "";
       const toolCalls: Array<{ name: string; status: string }> = [];
       const mi = { modelName: "unknown", inputPricePerM: 0, outputPricePerM: 0 };
@@ -1012,8 +1012,8 @@ export default function App() {
       setWmConversation([userMsg]);
       setWmIsProcessing(true);
 
-      // Build plugins for WM - use nodeId (canvas session_id) for parent references in child cards
-      const plugins = buildPlugins("workforce_manager", nodeId, null, null);
+      // Build plugins for WM - use nodeId (canvas session_id) for parent references, newWmNodeId (backend) for backend calls
+      const plugins = buildPlugins("workforce_manager", nodeId, newWmNodeId, null, null);
 
       // Run the agent turn
       const controller = new AbortController();
@@ -1172,9 +1172,9 @@ export default function App() {
         }
       }
 
-      // Build plugins for WM - use canvas session_id for parent references in child cards
+      // Build plugins for WM - use canvas session_id for parent references, currentWmNodeId (backend) for backend calls
       const canvasCardId = wmCardSessionId.current ?? currentWmNodeId;
-      const plugins = buildPlugins("workforce_manager", canvasCardId, null, null);
+      const plugins = buildPlugins("workforce_manager", canvasCardId, currentWmNodeId, null, null);
 
       // Run the agent turn
       const controller = new AbortController();

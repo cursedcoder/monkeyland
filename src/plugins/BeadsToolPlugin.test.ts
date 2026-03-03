@@ -19,7 +19,7 @@ describe("BeadsToolPlugin", () => {
   });
 
   it("returns error for empty project_path", async () => {
-    const plugin = new BeadsToolPlugin("agent-1", addBeadsNode, updateStatus);
+    const plugin = new BeadsToolPlugin("agent-1", "agent-1", addBeadsNode, updateStatus);
     const result = await plugin.execute({}, { project_path: "  " });
     expect(result.result).toBe("Error: project_path is required.");
     expect(mockInvoke).not.toHaveBeenCalled();
@@ -31,7 +31,7 @@ describe("BeadsToolPlugin", () => {
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce("Beads initialized.");
-    const plugin = new BeadsToolPlugin("agent-1", addBeadsNode, updateStatus);
+    const plugin = new BeadsToolPlugin("agent-1", "agent-1", addBeadsNode, updateStatus);
     const result = await plugin.execute({}, { project_path: "/tmp/proj" });
 
     expect(mockInvoke).toHaveBeenNthCalledWith(1, "beads_dolt_start", { projectPath: "/tmp/proj", agentId: "agent-1" });
@@ -48,7 +48,7 @@ describe("BeadsToolPlugin", () => {
     mockInvoke
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
-    const plugin = new BeadsToolPlugin("agent-1", addBeadsNode, updateStatus);
+    const plugin = new BeadsToolPlugin("agent-1", "agent-1", addBeadsNode, updateStatus);
     const result = await plugin.execute({}, { project_path: "/tmp/proj", init: false });
 
     expect(mockInvoke).toHaveBeenCalledTimes(2);
@@ -61,14 +61,14 @@ describe("BeadsToolPlugin", () => {
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce("OK");
-    const plugin = new BeadsToolPlugin("agent-1", addBeadsNode, updateStatus);
+    const plugin = new BeadsToolPlugin("agent-1", "agent-1", addBeadsNode, updateStatus);
     await plugin.execute({}, { project_path: "/tmp/proj" });
     expect(mockInvoke).toHaveBeenCalledTimes(3);
   });
 
   it("returns error and updates status when beads_dolt_start throws", async () => {
     mockInvoke.mockRejectedValueOnce(new Error("dolt not found"));
-    const plugin = new BeadsToolPlugin("agent-1", addBeadsNode, updateStatus);
+    const plugin = new BeadsToolPlugin("agent-1", "agent-1", addBeadsNode, updateStatus);
     const result = await plugin.execute({}, { project_path: "/tmp/proj" });
 
     expect(result.result).toBe("Error: dolt not found");
@@ -82,7 +82,7 @@ describe("BeadsToolPlugin", () => {
     mockInvoke
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error("permission denied"));
-    const plugin = new BeadsToolPlugin("agent-1", addBeadsNode, updateStatus);
+    const plugin = new BeadsToolPlugin("agent-1", "agent-1", addBeadsNode, updateStatus);
     const result = await plugin.execute({}, { project_path: "/tmp/proj" });
     expect(result.result).toBe("Error: permission denied");
   });
@@ -92,14 +92,14 @@ describe("BeadsToolPlugin", () => {
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error("init failed"));
-    const plugin = new BeadsToolPlugin("agent-1", addBeadsNode, updateStatus);
+    const plugin = new BeadsToolPlugin("agent-1", "agent-1", addBeadsNode, updateStatus);
     const result = await plugin.execute({}, { project_path: "/tmp/proj" });
     expect(result.result).toBe("Error: init failed");
   });
 
   it("calls addBeadsNode only once across two executions", async () => {
     mockInvoke.mockResolvedValue(undefined);
-    const plugin = new BeadsToolPlugin("agent-1", addBeadsNode, updateStatus);
+    const plugin = new BeadsToolPlugin("agent-1", "agent-1", addBeadsNode, updateStatus);
 
     await plugin.execute({}, { project_path: "/tmp/proj", init: false });
     await plugin.execute({}, { project_path: "/tmp/proj2", init: false });
@@ -111,7 +111,7 @@ describe("BeadsToolPlugin", () => {
     mockInvoke
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
-    const plugin = new BeadsToolPlugin("agent-1", addBeadsNode, updateStatus);
+    const plugin = new BeadsToolPlugin("agent-1", "agent-1", addBeadsNode, updateStatus);
     const result = await plugin.execute({}, { project_path: "/tmp/proj", init: false, start_dolt: true });
     expect(result.result).toBe("Dolt server ready. Project path set.");
   });
