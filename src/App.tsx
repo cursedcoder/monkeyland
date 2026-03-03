@@ -792,6 +792,7 @@ export default function App() {
 
       const plugins = buildPlugins(role, agentNodeId, taskId, projectPath);
       let accumulatedText = "";
+      const toolCalls: Array<{ name: string; status: string }> = [];
       const mi = { modelName: "unknown", inputPricePerM: 0, outputPricePerM: 0 };
 
       // --- Turn watchdog: abort if the turn exceeds max duration ---
@@ -852,7 +853,16 @@ export default function App() {
                 c.state === "running" ? (c.status || `Running ${c.name}… (${elapsed}s)`) :
                 c.state === "preparing" ? `Calling ${c.name}…` :
                 (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
-              if (statusText) updatePayload({ status: "loading", toolActivity: statusText });
+              
+              // Track tool calls for display
+              if (c.state === "running" || c.state === "preparing") {
+                toolCalls.push({ name: c.name ?? "unknown", status: "running" });
+              } else if ((c.state === "done" || c.state === "completed") && c.name) {
+                const tc = toolCalls.find((t) => t.name === c.name && t.status === "running");
+                if (tc) tc.status = "done";
+              }
+              
+              if (statusText) updatePayload({ status: "loading", toolActivity: statusText, toolCalls: [...toolCalls] });
               
               // Poll for execution phase when tool activity happens
               if (role === "developer") {
@@ -883,7 +893,7 @@ export default function App() {
           },
           onDone: async (fullText) => {
             if (role !== "developer") {
-              updatePayload({ status: "done", answer: fullText, toolActivity: "" }, true, true);
+              updatePayload({ status: "done", answer: fullText, toolActivity: "", toolCalls: [] }, true, true);
             }
             if (role === "developer") {
               await developerSelfHeal(
@@ -893,31 +903,35 @@ export default function App() {
                 () => accumulatedText,
               );
             } else {
-              invoke("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => {});
+              const result = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => "error");
+              // PM/Validator can't self-complete - need force yield if they didn't explicitly yield
+              if (result === "already_done" && (role === "project_manager" || role === "validator")) {
+                await invoke("agent_force_yield", { agentId: agentNodeId }).catch(() => {});
+              }
             }
           },
           onError: (msg) => {
-            updatePayload({ status: "error", errorMessage: msg }, true, true);
+            updatePayload({ status: "error", errorMessage: msg, toolCalls: [] }, true, true);
           },
           onStopped: async (fullText) => {
             if (turnTimedOut || backendRevoked) {
               const reason = turnTimedOut ? `turn timed out after ${maxTurnMs / 1000}s` : "backend revoked running state";
               if (role === "developer") {
-                updatePayload({ status: "loading", toolActivity: `Recovering (${reason})…` }, false, true);
+                updatePayload({ status: "loading", toolActivity: `Recovering (${reason})…`, toolCalls: [] }, false, true);
                 try {
                   await invoke("agent_force_yield", { agentId: agentNodeId });
                   const summary = `Auto-submitted: ${reason}. Accumulated text length: ${fullText.length} chars.`;
                   await invoke("agent_set_yield_summary", { agentId: agentNodeId, diffSummary: summary });
-                  updatePayload({ status: "in_review", answer: fullText, toolActivity: `Auto-submitted (${reason})` }, true, true);
+                  updatePayload({ status: "in_review", answer: fullText, toolActivity: `Auto-submitted (${reason})`, toolCalls: [] }, true, true);
                 } catch {
-                  updatePayload({ status: "error", errorMessage: `Agent stuck: ${reason}`, answer: fullText }, true, true);
+                  updatePayload({ status: "error", errorMessage: `Agent stuck: ${reason}`, answer: fullText, toolCalls: [] }, true, true);
                 }
               } else {
-                updatePayload({ status: "error", errorMessage: `Agent aborted: ${reason}`, answer: fullText }, true, true);
+                updatePayload({ status: "error", errorMessage: `Agent aborted: ${reason}`, answer: fullText, toolCalls: [] }, true, true);
                 invoke("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => {});
               }
             } else {
-              updatePayload({ status: "stopped", answer: fullText, toolActivity: "" }, true, true);
+              updatePayload({ status: "stopped", answer: fullText, toolActivity: "", toolCalls: [] }, true, true);
             }
           },
         },

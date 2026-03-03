@@ -527,6 +527,7 @@ export function SessionCard({
                 answer?: string;
                 errorMessage?: string;
                 toolActivity?: string;
+                toolCalls?: Array<{ name: string; status: string }>;
                 turnStartedAt?: number;
               };
               if (p.status === "loading") {
@@ -536,6 +537,15 @@ export function SessionCard({
                       {p.toolActivity || "Thinking\u2026"}
                       {p.turnStartedAt ? <ElapsedBadge startedAt={p.turnStartedAt} /> : null}
                     </p>
+                    {p.toolCalls && p.toolCalls.length > 0 && (
+                      <div className="session-card-tool-badges">
+                        {p.toolCalls.map((tc, i) => (
+                          <span key={i} className={`session-card-tool-badge session-card-tool-badge--${tc.status}`}>
+                            {tc.name}: {tc.status}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     {p.answer ? (
                       <div className="session-card-response-text session-card-markdown">
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
