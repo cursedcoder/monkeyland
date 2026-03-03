@@ -126,53 +126,41 @@ function parsePMPhase(payload: string | undefined): string | null {
   return null;
 }
 
-function PhaseBadge({ phase }: { phase: string }) {
-  const label = PHASE_LABELS[phase] ?? phase;
-  const color = PHASE_COLORS[phase] ?? "#6b7280";
+/** Big colorful footer bar showing execution phase - visible when zoomed out */
+function PhaseFooter({ phase, isPM }: { phase: string; isPM: boolean }) {
+  const label = isPM 
+    ? (PM_PHASE_LABELS[phase] ?? phase)
+    : (PHASE_LABELS[phase] ?? phase);
+  const color = isPM
+    ? (PM_PHASE_COLORS[phase] ?? "#6b7280")
+    : (PHASE_COLORS[phase] ?? "#6b7280");
+  
   return (
-    <span
-      className="session-card-phase-badge"
+    <div
+      className="session-card-phase-footer"
       style={{
-        marginLeft: 6,
-        padding: "1px 6px",
-        borderRadius: 4,
-        fontSize: "0.7em",
-        fontWeight: 500,
-        textTransform: "uppercase",
-        letterSpacing: "0.02em",
+        position: "absolute",
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: 28,
         backgroundColor: color,
         color: "#fff",
-        opacity: 0.9,
-      }}
-      title={`Execution phase: ${label}`}
-    >
-      {label}
-    </span>
-  );
-}
-
-function PMPhaseBadge({ phase }: { phase: string }) {
-  const label = PM_PHASE_LABELS[phase] ?? phase;
-  const color = PM_PHASE_COLORS[phase] ?? "#6b7280";
-  return (
-    <span
-      className="session-card-phase-badge"
-      style={{
-        marginLeft: 6,
-        padding: "1px 6px",
-        borderRadius: 4,
-        fontSize: "0.7em",
-        fontWeight: 500,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontWeight: 600,
+        fontSize: "0.85em",
         textTransform: "uppercase",
-        letterSpacing: "0.02em",
-        backgroundColor: color,
-        color: "#fff",
-        opacity: 0.9,
+        letterSpacing: "0.05em",
+        borderBottomLeftRadius: 8,
+        borderBottomRightRadius: 8,
+        zIndex: 10,
       }}
-      title={`PM phase: ${label}`}
+      title={isPM ? `PM phase: ${label}` : `Execution phase: ${label}`}
     >
       {label}
-    </span>
+    </div>
   );
 }
 
@@ -399,14 +387,6 @@ export function SessionCard({
       >
         <span className="session-card-title">
           {parseRole(layout.payload) ? ROLE_LABELS[parseRole(layout.payload)!] : `Agent ${index + 1}`}
-          {/* Show phase badge for developer agents */}
-          {parseRole(layout.payload) === "developer" && parsePhase(layout.payload) && (
-            <PhaseBadge phase={parsePhase(layout.payload)!} />
-          )}
-          {/* Show phase badge for PM agents */}
-          {parseRole(layout.payload) === "project_manager" && parsePMPhase(layout.payload) && (
-            <PMPhaseBadge phase={parsePMPhase(layout.payload)!} />
-          )}
         </span>
         <div className="session-card-header-actions">
           {(() => {
@@ -608,6 +588,13 @@ export function SessionCard({
             data-resize-handle
             onPointerDown={(e) => handlePointerDownResize(e, "e")}
           />
+          {/* Phase footer for developer and PM agents */}
+          {parseRole(layout.payload) === "developer" && parsePhase(layout.payload) && (
+            <PhaseFooter phase={parsePhase(layout.payload)!} isPM={false} />
+          )}
+          {parseRole(layout.payload) === "project_manager" && parsePMPhase(layout.payload) && (
+            <PhaseFooter phase={parsePMPhase(layout.payload)!} isPM={true} />
+          )}
         </>
       )}
     </div>
