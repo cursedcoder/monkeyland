@@ -18,6 +18,10 @@ pub enum State {
     Spawned,
     /// Actively executing (processing LLM chunks, calling tools).
     Running,
+    /// WM idle, waiting for next human message (workforce_manager only).
+    AwaitingHumanInput,
+    /// WM processing a human message (workforce_manager only).
+    ProcessingHumanInput,
     /// Developer submitted work for validation; waiting for review to start.
     Yielded,
     /// Validators are analyzing the developer's work.
@@ -41,6 +45,8 @@ impl std::fmt::Display for State {
         match self {
             State::Spawned => write!(f, "spawned"),
             State::Running => write!(f, "running"),
+            State::AwaitingHumanInput => write!(f, "awaiting_human_input"),
+            State::ProcessingHumanInput => write!(f, "processing_human_input"),
             State::Yielded => write!(f, "yielded"),
             State::InReview => write!(f, "in_review"),
             State::Done => write!(f, "done"),
@@ -69,6 +75,12 @@ pub enum Event {
     Complete,
     /// Killed by TTL, quota, or user abort (* → Stopped).
     Kill,
+    /// WM finished responding, waiting for next human message (Running → AwaitingHumanInput).
+    WMResponse,
+    /// Human sends a message to the WM (AwaitingHumanInput → ProcessingHumanInput).
+    HumanMessage,
+    /// WM finished processing human message (ProcessingHumanInput → Running).
+    ProcessingComplete,
 }
 
 /// Attempt a state transition. Returns the new state or an error explaining why it's illegal.
@@ -103,6 +115,21 @@ pub fn try_transition(current: State, event: Event, role: &str) -> Result<State,
         (State::InReview, Event::ValidationPass) => Ok(State::Done),
         (State::InReview, Event::ValidationFail) => Ok(State::Running),
         (State::InReview, Event::ValidationBlock) => Ok(State::Blocked),
+
+        // WM conversational states (workforce_manager only)
+        (State::Running, Event::WMResponse) if role == "workforce_manager" => {
+            Ok(State::AwaitingHumanInput)
+        }
+        (State::AwaitingHumanInput, Event::HumanMessage) if role == "workforce_manager" => {
+            Ok(State::ProcessingHumanInput)
+        }
+        (State::ProcessingHumanInput, Event::ProcessingComplete) if role == "workforce_manager" => {
+            Ok(State::Running)
+        }
+        // WM can also complete from AwaitingHumanInput (user ends session)
+        (State::AwaitingHumanInput, Event::Complete) if role == "workforce_manager" => {
+            Ok(State::Done)
+        }
 
         _ => Err(format!(
             "Illegal transition: {current} + {event:?} for role {role}"

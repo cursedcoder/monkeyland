@@ -16,6 +16,14 @@ import { CompleteTaskPlugin } from "./plugins/CompleteTaskPlugin";
 import { WriteFileToolPlugin } from "./plugins/WriteFileToolPlugin";
 import { ReadFileToolPlugin } from "./plugins/ReadFileToolPlugin";
 import { DispatchAgentPlugin } from "./plugins/DispatchAgentPlugin";
+import {
+  PauseOrchestrationPlugin,
+  ResumeOrchestrationPlugin,
+  CancelTaskPlugin,
+  MessageAgentPlugin,
+  GetOrchestrationStatusPlugin,
+  ReprioritizeTaskPlugin,
+} from "./plugins/OrchestrationControlPlugins";
 import { runAgent, type Attachment } from "./agentRunner";
 import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
 import type { ToolName } from "./agentPrompts";
@@ -43,8 +51,11 @@ import {
   BEADS_CARD_DEFAULT_H,
   BEADS_TASK_CARD_DEFAULT_W,
   BEADS_TASK_CARD_DEFAULT_H,
+  WM_CHAT_CARD_DEFAULT_W,
+  WM_CHAT_CARD_DEFAULT_H,
   getDefaultSize,
 } from "./types";
+import type { WMChatMessage, WMPhase } from "./components/WMChatCard";
 import { repositionLayouts, getTerminalDiagnostics, buildDiagnosticNudge } from "./utils/layoutHelpers";
 const STREAM_PAYLOAD_FLUSH_MS = 60;
 const DEBUG_HISTORY_INTERVAL_MS = 15_000;
@@ -105,6 +116,14 @@ export default function App() {
 
   const abortControllers = useRef(new Map<string, AbortController>());
   const activeWmNodeId = useRef<string | null>(null);
+
+  // WM Conversation state
+  const [wmConversation, setWmConversation] = useState<WMChatMessage[]>([]);
+  const [wmNodeId, setWmNodeId] = useState<string | null>(null);
+  const [wmPhase, setWmPhase] = useState<WMPhase>("initial");
+  const [wmIsProcessing, setWmIsProcessing] = useState(false);
+  const [wmTaskProgress, _setWmTaskProgress] = useState({ done: 0, total: 0 });
+  const [wmOrchStatus, setWmOrchStatus] = useState<"running" | "paused" | "idle">("idle");
 
   const persistLayouts = useCallback((next: SessionLayout[]) => {
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
@@ -188,11 +207,54 @@ export default function App() {
       }
       loaded.current = true;
       setLayoutsHydrated(true);
+
+      // Load WM conversation
+      try {
+        const wmPayload = await invoke<{
+          messages: WMChatMessage[];
+          wm_node_id: string | null;
+          wm_phase: string | null;
+        }>("load_wm_conversation");
+        if (!cancelled && wmPayload.messages.length > 0) {
+          setWmConversation(wmPayload.messages);
+          if (wmPayload.wm_node_id) {
+            setWmNodeId(wmPayload.wm_node_id);
+            activeWmNodeId.current = wmPayload.wm_node_id;
+          }
+          if (wmPayload.wm_phase) {
+            setWmPhase(wmPayload.wm_phase as WMPhase);
+          }
+        }
+      } catch (_) {
+        // No saved conversation
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  // Save WM conversation when it changes
+  useEffect(() => {
+    if (!loaded.current || wmConversation.length === 0) return;
+    
+    const saveConversation = async () => {
+      try {
+        await invoke("save_wm_conversation", {
+          payload: {
+            messages: wmConversation,
+            wm_node_id: wmNodeId,
+            wm_phase: wmPhase,
+          },
+        });
+      } catch (e) {
+        console.warn("Failed to save WM conversation:", e);
+      }
+    };
+    
+    const timeout = setTimeout(saveConversation, 500);
+    return () => clearTimeout(timeout);
+  }, [wmConversation, wmNodeId, wmPhase]);
 
   const handleLayoutChange = useCallback((nodeId: string, layout: SessionLayout) => {
     setLayouts((prev) => {
@@ -451,6 +513,26 @@ export default function App() {
         // loop does that after a successful git merge.  Passing null skips the
         // Beads update while still allowing the agent state transition.
         plugins.push(new CompleteTaskPlugin(agentNodeId, role === "merge_agent" ? null : taskId));
+      }
+
+      // Orchestration control plugins (WM only)
+      if (allowed.has("pause_orchestration")) {
+        plugins.push(new PauseOrchestrationPlugin());
+      }
+      if (allowed.has("resume_orchestration")) {
+        plugins.push(new ResumeOrchestrationPlugin());
+      }
+      if (allowed.has("cancel_task")) {
+        plugins.push(new CancelTaskPlugin());
+      }
+      if (allowed.has("message_agent")) {
+        plugins.push(new MessageAgentPlugin());
+      }
+      if (allowed.has("get_orchestration_status")) {
+        plugins.push(new GetOrchestrationStatusPlugin());
+      }
+      if (allowed.has("reprioritize_task")) {
+        plugins.push(new ReprioritizeTaskPlugin());
       }
 
       return plugins;
@@ -858,7 +940,7 @@ export default function App() {
         /* ignore */
       }
 
-      let wmNodeId: string;
+      let newWmNodeId: string;
       try {
         const result = await invoke<{ agent_id: string }>("agent_spawn", {
           payload: {
@@ -867,15 +949,15 @@ export default function App() {
             parent_agent_id: null,
           },
         });
-        wmNodeId = result.agent_id;
+        newWmNodeId = result.agent_id;
       } catch (e) {
         console.error("Failed to spawn workforce manager:", e);
         return;
       }
-      activeWmNodeId.current = wmNodeId;
+      activeWmNodeId.current = newWmNodeId;
 
       await startAgentConversation({
-        agentNodeId: wmNodeId,
+        agentNodeId: newWmNodeId,
         role: "workforce_manager",
         userMessage: promptText,
         taskId: null,
@@ -890,6 +972,253 @@ export default function App() {
     },
     [startAgentConversation],
   );
+
+  /**
+   * Handle sending a message to the WM in the new chat-based interface.
+   * Supports multi-turn conversation - spawns WM if needed, otherwise continues conversation.
+   */
+  const handleWMMessage = useCallback(
+    async (text: string) => {
+      if (!text.trim()) return;
+
+      // Create user message
+      const userMsg: WMChatMessage = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        role: "user",
+        content: text.trim(),
+        timestamp: Date.now(),
+      };
+
+      setWmConversation((prev) => [...prev, userMsg]);
+      setWmIsProcessing(true);
+
+      let currentWmNodeId = wmNodeId;
+
+      // Spawn WM if not already spawned
+      if (!currentWmNodeId) {
+        try {
+          const result = await invoke<{ agent_id: string }>("agent_spawn", {
+            payload: {
+              role: "workforce_manager",
+              task_id: null,
+              parent_agent_id: null,
+            },
+          });
+          currentWmNodeId = result.agent_id;
+          setWmNodeId(currentWmNodeId);
+          activeWmNodeId.current = currentWmNodeId;
+          setWmPhase("project_setup");
+
+          // Create the WM agent card (SessionCard for WM)
+          const size = getDefaultSize("agent");
+          setLayouts((prev) => {
+            const newAgentLayout: SessionLayout = {
+              session_id: currentWmNodeId!,
+              x: 0,
+              y: 0,
+              w: size.w,
+              h: size.h,
+              collapsed: false,
+              node_type: "agent",
+              payload: JSON.stringify({
+                role: "workforce_manager",
+                status: "loading",
+                answer: "",
+                toolActivity: "Connecting…",
+                turnStartedAt: Date.now(),
+              }),
+            };
+            const next = repositionLayouts([...prev, newAgentLayout]);
+            if (loaded.current) persistLayouts(next);
+            return next;
+          });
+
+          // Start orchestration
+          try {
+            await invoke("orch_start");
+            setWmOrchStatus("running");
+          } catch {
+            /* already running or not available */
+          }
+        } catch (e) {
+          console.error("Failed to spawn workforce manager:", e);
+          setWmIsProcessing(false);
+          return;
+        }
+      }
+
+      // Build plugins for WM
+      const plugins = buildPlugins("workforce_manager", currentWmNodeId, null, null);
+
+      // Run the agent turn
+      const controller = new AbortController();
+      abortControllers.current.set(currentWmNodeId, controller);
+
+      let accumulatedText = "";
+      const toolCalls: Array<{ name: string; status: string }> = [];
+
+      const updateAgentPayload = (update: Record<string, unknown>) => {
+        setLayouts((prev) =>
+          prev.map((l) => {
+            if (l.session_id !== currentWmNodeId) return l;
+            try {
+              const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+              return { ...l, payload: JSON.stringify({ ...p, ...update }) };
+            } catch {
+              return l;
+            }
+          })
+        );
+      };
+
+      try {
+        await runAgent({
+          systemPrompt: getPromptForRole("workforce_manager"),
+          userMessage: text.trim(),
+          plugins,
+          signal: controller.signal,
+          callbacks: {
+            onChunk: (c) => {
+              if (c.type === "content" && c.text) {
+                accumulatedText += c.text;
+                updateAgentPayload({ status: "loading", answer: accumulatedText, toolActivity: "Generating…" });
+              }
+              if (c.type === "reasoning" && c.text) {
+                accumulatedText += c.text;
+                updateAgentPayload({ status: "loading", answer: accumulatedText, toolActivity: "Reasoning…" });
+              }
+              if (c.type === "tool") {
+                const statusText =
+                  c.state === "running" ? (c.status || `Running ${c.name}...`) :
+                  c.state === "preparing" ? `Calling ${c.name}...` :
+                  (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
+                if (statusText) {
+                  updateAgentPayload({ status: "loading", toolActivity: statusText });
+                }
+                if ((c.state === "done" || c.state === "completed") && c.name) {
+                  toolCalls.push({ name: c.name, status: "done" });
+                }
+              }
+            },
+            onUsage: (usage) => {
+              costStore.reportUsage(
+                currentWmNodeId!, "workforce_manager", "unknown",
+                usage.prompt_tokens, usage.completion_tokens, 0, 0,
+              );
+              invoke("agent_report_tokens", {
+                agentId: currentWmNodeId,
+                delta: usage.prompt_tokens + usage.completion_tokens,
+              }).catch(() => {});
+            },
+            onDone: (fullText) => {
+              updateAgentPayload({ status: "done", answer: fullText, toolActivity: "" });
+
+              // Add assistant message to conversation
+              const assistantMsg: WMChatMessage = {
+                id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+                role: "assistant",
+                content: fullText,
+                timestamp: Date.now(),
+                toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
+              };
+              setWmConversation((prev) => [...prev, assistantMsg]);
+              setWmIsProcessing(false);
+              setWmPhase("monitoring");
+
+              invoke("agent_turn_ended", { agentId: currentWmNodeId, role: "workforce_manager" }).catch(() => {});
+            },
+            onError: (msg) => {
+              updateAgentPayload({ status: "error", errorMessage: msg });
+              setWmIsProcessing(false);
+            },
+            onStopped: () => {
+              updateAgentPayload({ status: "stopped", answer: accumulatedText, toolActivity: "" });
+              setWmIsProcessing(false);
+            },
+          },
+        });
+      } catch (e) {
+        console.error("WM conversation error:", e);
+        setWmIsProcessing(false);
+      }
+
+      abortControllers.current.delete(currentWmNodeId);
+    },
+    [wmNodeId, buildPlugins, costStore, persistLayouts],
+  );
+
+  /**
+   * Pause orchestration - called from WM chat quick actions
+   */
+  const handleWMPause = useCallback(async () => {
+    try {
+      await invoke("orch_pause");
+      setWmOrchStatus("paused");
+    } catch (e) {
+      console.error("Failed to pause orchestration:", e);
+    }
+  }, []);
+
+  /**
+   * Resume orchestration - called from WM chat quick actions
+   */
+  const handleWMResume = useCallback(async () => {
+    try {
+      await invoke("orch_resume");
+      setWmOrchStatus("running");
+    } catch (e) {
+      console.error("Failed to resume orchestration:", e);
+    }
+  }, []);
+
+  /**
+   * Cancel all agents - called from WM chat quick actions
+   */
+  const handleWMCancelAll = useCallback(async () => {
+    for (const [id, controller] of abortControllers.current) {
+      controller.abort();
+      invoke("agent_kill", { agentId: id }).catch(() => {});
+    }
+    abortControllers.current.clear();
+    setWmOrchStatus("idle");
+    setLayouts((prev) =>
+      prev.map((l) => {
+        if (!["agent", "worker", "validator"].includes(l.node_type ?? "")) return l;
+        try {
+          const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+          if (p.status === "loading") {
+            return { ...l, payload: JSON.stringify({ ...p, status: "stopped", toolActivity: "Cancelled by user" }) };
+          }
+        } catch { /* */ }
+        return l;
+      }),
+    );
+  }, []);
+
+  /**
+   * Add a WM Chat card to the canvas
+   */
+  const handleAddWMChat = useCallback(() => {
+    // Check if a wm_chat card already exists
+    const existing = layoutsRef.current.find((l) => l.node_type === "wm_chat");
+    if (existing) return;
+
+    setLayouts((prev) => {
+      const newLayout: SessionLayout = {
+        session_id: generateNodeId(),
+        x: 0,
+        y: 0,
+        w: WM_CHAT_CARD_DEFAULT_W,
+        h: WM_CHAT_CARD_DEFAULT_H,
+        collapsed: false,
+        node_type: "wm_chat",
+        payload: JSON.stringify({}),
+      };
+      const next = repositionLayouts([...prev, newLayout]);
+      if (loaded.current) persistLayouts(next);
+      return next;
+    });
+  }, [persistLayouts]);
 
   // Auto-remove completed tasks and their children
   const completionTimesRef = useRef<Map<string, number>>(new Map());
@@ -2004,14 +2333,24 @@ export default function App() {
       await invoke("save_canvas_layout", { payload: { layouts: [] } });
     } catch { /* ignore */ }
 
-    // 3. Full backend reset: pause orchestration, kill all agents/PTYs, clear beads path
+    // 3. Clear WM conversation state
+    setWmConversation([]);
+    setWmNodeId(null);
+    setWmPhase("initial");
+    setWmIsProcessing(false);
+    setWmOrchStatus("idle");
+    try {
+      await invoke("clear_wm_conversation");
+    } catch { /* ignore */ }
+
+    // 4. Full backend reset: pause orchestration, kill all agents/PTYs, clear beads path
     try {
       await invoke("full_reset");
     } catch (e) {
       console.warn("full_reset failed", e);
     }
 
-    // 4. Clear cost/usage tracking (including localStorage)
+    // 5. Clear cost/usage tracking (including localStorage)
     costStore.reset();
   }, [costStore]);
 
@@ -2197,7 +2536,15 @@ export default function App() {
           <button
             type="button"
             className="app-add-prompt"
+            onClick={handleAddWMChat}
+          >
+            New Chat
+          </button>
+          <button
+            type="button"
+            className="app-add-prompt"
             onClick={handleAddPrompt}
+            style={{ marginLeft: 8 }}
           >
             Add prompt
           </button>
@@ -2237,8 +2584,17 @@ export default function App() {
           onStopAgent={handleStopAgent}
           onAddTaskCard={handleAddTaskCard}
           onBeadsStatusChange={updateBeadsStatus}
+          wmChatMessages={wmConversation}
+          wmPhase={wmPhase}
+          wmIsProcessing={wmIsProcessing}
+          wmTaskProgress={wmTaskProgress}
+          wmOrchStatus={wmOrchStatus}
+          onWMSendMessage={handleWMMessage}
+          onWMPause={handleWMPause}
+          onWMResume={handleWMResume}
+          onWMCancelAll={handleWMCancelAll}
         />
-        <WorkforceOverlay />
+        <WorkforceOverlay wmPhase={wmPhase} orchStatus={wmOrchStatus} />
         <DebugPanel
           onCopyDebug={handleCopyDebug}
           debugCopied={debugCopied}

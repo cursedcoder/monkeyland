@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useCostStore } from "../costStore";
+import type { WMPhase } from "./WMChatCard";
 import "./WorkforceOverlay.css";
 
 interface AgentStatusResponse {
@@ -10,6 +11,11 @@ interface AgentStatusResponse {
   queue_depth: number;
 }
 
+interface WorkforceOverlayProps {
+  wmPhase?: WMPhase;
+  orchStatus?: "running" | "paused" | "idle";
+}
+
 const ROLE_BADGES: Record<string, string> = {
   workforce_manager: "WM",
   project_manager: "PM",
@@ -17,6 +23,16 @@ const ROLE_BADGES: Record<string, string> = {
   operator: "OP",
   worker: "WRK",
   validator: "VAL",
+};
+
+const WM_PHASE_LABELS: Record<WMPhase, string> = {
+  initial: "Ready",
+  project_setup: "Setting Up",
+  planning: "Planning",
+  executing: "Executing",
+  monitoring: "Monitoring",
+  intervening: "Intervening",
+  concluding: "Wrapping Up",
 };
 
 function badge(role: string): string {
@@ -36,7 +52,7 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-export function WorkforceOverlay() {
+export function WorkforceOverlay({ wmPhase, orchStatus }: WorkforceOverlayProps = {}) {
   const { agents, totalCostUsd } = useCostStore();
   const [status, setStatus] = useState<AgentStatusResponse | null>(null);
 
@@ -90,6 +106,18 @@ export function WorkforceOverlay() {
 
   return (
     <div className="workforce-overlay">
+      {wmPhase && wmPhase !== "initial" && (
+        <div className="workforce-overlay__wm-status">
+          <span className="workforce-overlay__wm-phase">
+            WM: {WM_PHASE_LABELS[wmPhase]}
+          </span>
+          {orchStatus && orchStatus !== "idle" && (
+            <span className={`workforce-overlay__orch-status workforce-overlay__orch-status--${orchStatus}`}>
+              {orchStatus === "running" ? "Running" : "Paused"}
+            </span>
+          )}
+        </div>
+      )}
       <div className="workforce-overlay__header">
         <span>Agents: {activeCount}/{totalSlots}</span>
         {totalTokens > 0 && <span>Tokens: {formatTokens(totalTokens)}</span>}

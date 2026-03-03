@@ -90,6 +90,29 @@ const PM_PHASE_COLORS: Record<string, string> = {
   revising: "#ef4444",         // red
 };
 
+/** WM execution phase labels. */
+const WM_PHASE_LABELS: Record<string, string> = {
+  initial: "Ready",
+  project_setup: "Setting Up",
+  planning: "Planning",
+  executing: "Executing",
+  monitoring: "Monitoring",
+  intervening: "Intervening",
+  concluding: "Wrapping Up",
+};
+
+/** WM phase badge colors. */
+const WM_PHASE_COLORS: Record<string, string> = {
+  initial: "#6b7280",        // gray
+  project_setup: "#3b82f6",  // blue
+  planning: "#f59e0b",       // amber
+  executing: "#10b981",      // emerald
+  monitoring: "#8b5cf6",     // violet
+  intervening: "#ef4444",    // red
+  concluding: "#06b6d4",     // cyan
+};
+
+
 function parseRole(payload: string | undefined): AgentRole | null {
   if (!payload) return null;
   try {
@@ -126,14 +149,38 @@ function parsePMPhase(payload: string | undefined): string | null {
   return null;
 }
 
+function parseWMPhase(payload: string | undefined): string | null {
+  if (!payload) return null;
+  try {
+    const p = JSON.parse(payload) as { wmPhase?: string };
+    if (p.wmPhase && Object.prototype.hasOwnProperty.call(WM_PHASE_LABELS, p.wmPhase))
+      return p.wmPhase;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+
 /** Big colorful footer bar showing execution phase - visible when zoomed out */
-function PhaseFooter({ phase, isPM }: { phase: string; isPM: boolean }) {
-  const label = isPM 
-    ? (PM_PHASE_LABELS[phase] ?? phase)
-    : (PHASE_LABELS[phase] ?? phase);
-  const color = isPM
-    ? (PM_PHASE_COLORS[phase] ?? "#6b7280")
-    : (PHASE_COLORS[phase] ?? "#6b7280");
+function PhaseFooter({ phase, roleType }: { phase: string; roleType: "developer" | "pm" | "wm" }) {
+  let label: string;
+  let color: string;
+  let title: string;
+
+  if (roleType === "pm") {
+    label = PM_PHASE_LABELS[phase] ?? phase;
+    color = PM_PHASE_COLORS[phase] ?? "#6b7280";
+    title = `PM phase: ${label}`;
+  } else if (roleType === "wm") {
+    label = WM_PHASE_LABELS[phase] ?? phase;
+    color = WM_PHASE_COLORS[phase] ?? "#6b7280";
+    title = `WM phase: ${label}`;
+  } else {
+    label = PHASE_LABELS[phase] ?? phase;
+    color = PHASE_COLORS[phase] ?? "#6b7280";
+    title = `Execution phase: ${label}`;
+  }
   
   return (
     <div
@@ -157,7 +204,7 @@ function PhaseFooter({ phase, isPM }: { phase: string; isPM: boolean }) {
         borderBottomRightRadius: 8,
         zIndex: 10,
       }}
-      title={isPM ? `PM phase: ${label}` : `Execution phase: ${label}`}
+      title={title}
     >
       {label}
     </div>
@@ -588,12 +635,15 @@ export function SessionCard({
             data-resize-handle
             onPointerDown={(e) => handlePointerDownResize(e, "e")}
           />
-          {/* Phase footer for developer and PM agents */}
+          {/* Phase footer for developer, PM, and WM agents */}
           {parseRole(layout.payload) === "developer" && parsePhase(layout.payload) && (
-            <PhaseFooter phase={parsePhase(layout.payload)!} isPM={false} />
+            <PhaseFooter phase={parsePhase(layout.payload)!} roleType="developer" />
           )}
           {parseRole(layout.payload) === "project_manager" && parsePMPhase(layout.payload) && (
-            <PhaseFooter phase={parsePMPhase(layout.payload)!} isPM={true} />
+            <PhaseFooter phase={parsePMPhase(layout.payload)!} roleType="pm" />
+          )}
+          {parseRole(layout.payload) === "workforce_manager" && parseWMPhase(layout.payload) && (
+            <PhaseFooter phase={parseWMPhase(layout.payload)!} roleType="wm" />
           )}
         </>
       )}

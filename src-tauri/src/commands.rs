@@ -588,6 +588,54 @@ pub async fn orch_pause(state: State<'_, OrchestrationState>) -> Result<(), Stri
     Ok(())
 }
 
+#[tauri::command]
+pub async fn orch_resume(state: State<'_, OrchestrationState>) -> Result<(), String> {
+    state.set_running();
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrchStatusResponse {
+    pub state: String,
+    pub is_running: bool,
+    pub is_paused: bool,
+}
+
+#[tauri::command]
+pub async fn orch_get_status(
+    state: State<'_, OrchestrationState>,
+) -> Result<OrchStatusResponse, String> {
+    let raw = state.get();
+    let (state_name, is_running, is_paused) = match raw {
+        0 => ("idle", false, false),
+        1 => ("running", true, false),
+        2 => ("paused", false, true),
+        _ => ("unknown", false, false),
+    };
+    Ok(OrchStatusResponse {
+        state: state_name.to_string(),
+        is_running,
+        is_paused,
+    })
+}
+
+#[tauri::command]
+pub async fn orch_inject_directive(
+    registry: State<'_, AgentRegistry>,
+    target_agent_id: String,
+    directive: String,
+) -> Result<bool, String> {
+    registry.message("workforce_manager", &target_agent_id, directive)
+}
+
+#[tauri::command]
+pub async fn orch_cancel_task(
+    registry: State<'_, AgentRegistry>,
+    task_id: String,
+) -> Result<Vec<String>, String> {
+    registry.cancel_task(&task_id)
+}
+
 /// Full reset: pause orchestration, clear all agents, remove worktrees, clear beads project path.
 #[tauri::command]
 pub async fn full_reset(
@@ -2555,4 +2603,65 @@ pub async fn worktree_diff(project_path: String, task_id: String) -> Result<Stri
     tokio::task::spawn_blocking(move || crate::worktree::diff_against_base(&path, &task_id))
         .await
         .map_err(|e| e.to_string())?
+}
+
+// --- WM Conversation Persistence ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WMChatMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub timestamp: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<WMToolCall>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WMToolCall {
+    pub name: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WMConversationPayload {
+    pub messages: Vec<WMChatMessage>,
+    pub wm_node_id: Option<String>,
+    pub wm_phase: Option<String>,
+}
+
+#[tauri::command]
+pub async fn save_wm_conversation(
+    meta_db: State<'_, MetaDb>,
+    payload: WMConversationPayload,
+) -> Result<(), String> {
+    let json = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    meta_db.set_setting("wm_conversation", &json)
+}
+
+#[tauri::command]
+pub async fn load_wm_conversation(
+    meta_db: State<'_, MetaDb>,
+) -> Result<WMConversationPayload, String> {
+    match meta_db.get_setting("wm_conversation")? {
+        Some(json) => {
+            serde_json::from_str(&json).map_err(|e| format!("Failed to parse conversation: {}", e))
+        }
+        None => Ok(WMConversationPayload {
+            messages: vec![],
+            wm_node_id: None,
+            wm_phase: None,
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn clear_wm_conversation(meta_db: State<'_, MetaDb>) -> Result<(), String> {
+    let empty = WMConversationPayload {
+        messages: vec![],
+        wm_node_id: None,
+        wm_phase: None,
+    };
+    let json = serde_json::to_string(&empty).map_err(|e| e.to_string())?;
+    meta_db.set_setting("wm_conversation", &json)
 }

@@ -9,6 +9,7 @@ import { BeadsCard } from "./BeadsCard";
 import { BeadsTaskCard } from "./BeadsTaskCard";
 import { TerminalLogCard } from "./TerminalLogCard";
 import { ValidatorCard } from "./ValidatorCard";
+import { WMChatCard, type WMChatMessage, type WMPhase } from "./WMChatCard";
 import type { SessionLayout } from "../types";
 import { CULL_MARGIN } from "../types";
 
@@ -22,6 +23,15 @@ interface CanvasProps {
   onStopAgent?: (nodeId: string) => void;
   onAddTaskCard?: (parentBeadsId: string, task: import("../types").BeadsTask) => void;
   onBeadsStatusChange?: (nodeId: string, status: import("./BeadsCard").BeadsStatus) => void;
+  wmChatMessages?: WMChatMessage[];
+  wmPhase?: WMPhase;
+  wmIsProcessing?: boolean;
+  wmTaskProgress?: { done: number; total: number };
+  wmOrchStatus?: "running" | "paused" | "idle";
+  onWMSendMessage?: (text: string) => void;
+  onWMPause?: () => void;
+  onWMResume?: () => void;
+  onWMCancelAll?: () => void;
 }
 
 function parsePromptPayload(payload?: string): string {
@@ -64,6 +74,15 @@ export function Canvas({
   onStopAgent,
   onAddTaskCard,
   onBeadsStatusChange,
+  wmChatMessages = [],
+  wmPhase = "initial",
+  wmIsProcessing = false,
+  wmTaskProgress = { done: 0, total: 0 },
+  wmOrchStatus = "idle",
+  onWMSendMessage,
+  onWMPause,
+  onWMResume,
+  onWMCancelAll,
 }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const {
@@ -319,6 +338,28 @@ export function Canvas({
         {layouts.map((layout) => {
           if (!visibleIds.has(layout.session_id)) return null;
           const nodeType = layout.node_type ?? "agent";
+
+          if (nodeType === "wm_chat") {
+            return (
+              <WMChatCard
+                key={layout.session_id}
+                layout={layout}
+                messages={wmChatMessages}
+                wmPhase={wmPhase}
+                isProcessing={wmIsProcessing}
+                taskProgress={wmTaskProgress}
+                orchStatus={wmOrchStatus}
+                onSendMessage={onWMSendMessage ?? (() => {})}
+                onPause={onWMPause ?? (() => {})}
+                onResume={onWMResume ?? (() => {})}
+                onCancelAll={onWMCancelAll ?? (() => {})}
+                onLayoutChange={handleCardLayoutChange(layout.session_id)}
+                onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
+                onDragStart={handleDragStart}
+                scale={viewport.scale}
+              />
+            );
+          }
 
           if (nodeType === "prompt") {
             return (

@@ -20,7 +20,7 @@ export interface BeadsTask {
   updated_at?: string;
 }
 
-export type CanvasNodeType = "prompt" | "agent" | "terminal" | "terminal_log" | "browser" | "worker" | "validator" | "beads" | "beads_task";
+export type CanvasNodeType = "prompt" | "agent" | "terminal" | "terminal_log" | "browser" | "worker" | "validator" | "beads" | "beads_task" | "wm_chat";
 
 
 /** Agent roles from orchestration (plan §1.2). Used in layout payload for hierarchy and sizing. */
@@ -88,6 +88,10 @@ export const BEADS_TASK_CARD_DEFAULT_W = 380;
 export const BEADS_TASK_CARD_DEFAULT_H = 280;
 export const BEADS_TASK_CARD_MIN_W = 320;
 export const BEADS_TASK_CARD_MIN_H = 220;
+export const WM_CHAT_CARD_DEFAULT_W = 480;
+export const WM_CHAT_CARD_DEFAULT_H = 480;
+export const WM_CHAT_CARD_MIN_W = 400;
+export const WM_CHAT_CARD_MIN_H = 360;
 export const GRID_STEP = 40;
 export const CULL_MARGIN = 100;
 
@@ -105,6 +109,8 @@ export function getDefaultSize(nodeType: CanvasNodeType): { w: number; h: number
       return { w: BEADS_TASK_CARD_DEFAULT_W, h: BEADS_TASK_CARD_DEFAULT_H };
     case "terminal_log":
       return { w: TERMINAL_LOG_DEFAULT_W, h: TERMINAL_LOG_DEFAULT_H };
+    case "wm_chat":
+      return { w: WM_CHAT_CARD_DEFAULT_W, h: WM_CHAT_CARD_DEFAULT_H };
     default:
       return { w: SESSION_CARD_DEFAULT_W, h: SESSION_CARD_DEFAULT_H };
   }
@@ -124,6 +130,8 @@ export function getMinSize(nodeType: CanvasNodeType): { w: number; h: number } {
       return { w: BEADS_TASK_CARD_MIN_W, h: BEADS_TASK_CARD_MIN_H };
     case "terminal_log":
       return { w: TERMINAL_LOG_MIN_W, h: TERMINAL_LOG_MIN_H };
+    case "wm_chat":
+      return { w: WM_CHAT_CARD_MIN_W, h: WM_CHAT_CARD_MIN_H };
     default:
       return { w: SESSION_CARD_MIN_W, h: SESSION_CARD_MIN_H };
   }

@@ -101,7 +101,10 @@ export interface Attachment {
 
 export interface AgentRunnerParams {
   systemPrompt: string;
-  userMessage: string;
+  /** Single user message (for one-shot turns). Ignored if `messages` is provided. */
+  userMessage?: string;
+  /** Full conversation history for multi-turn support. If provided, takes precedence over userMessage. */
+  messages?: ModelMessage[];
   plugins: Plugin[];
   signal: AbortSignal;
   callbacks: AgentRunnerCallbacks;
@@ -292,9 +295,12 @@ async function loadLlmModel(): Promise<LoadedModel> {
 /**
  * Run a single LLM agent conversation to completion.
  * This is the core bridge that all agent roles use -- orchestrator, developer, worker, validator.
+ * 
+ * For multi-turn conversations, pass the full conversation history via `messages`.
+ * For single-turn (one-shot), pass `userMessage` which will be wrapped with the system prompt.
  */
 export async function runAgent(params: AgentRunnerParams): Promise<void> {
-  const { systemPrompt, userMessage, plugins, signal, callbacks, attachment } = params;
+  const { systemPrompt, userMessage, messages: inputMessages, plugins, signal, callbacks, attachment } = params;
 
   let fullText = "";
   let terminalState: "none" | "done" | "error" | "stopped" = "none";
@@ -329,31 +335,44 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
       }
     }
 
-    const messages: ModelMessage[] = [
-      { role: "system", content: systemPrompt }
-    ];
-
-    if (attachment) {
-      messages.push({
-        role: "user",
-        content: [
-          { type: "text", text: userMessage },
-          { 
-            type: "image", 
-            image: attachment.data,
-            mediaType: attachment.mimeType
-          }
-        ]
-      });
+    // Build messages array: either from provided conversation history or single userMessage
+    let messages: ModelMessage[];
+    
+    if (inputMessages && inputMessages.length > 0) {
+      // Multi-turn: prepend system prompt to provided conversation history
+      messages = [
+        { role: "system", content: systemPrompt },
+        ...inputMessages.filter((m) => m.role !== "system"),
+      ];
     } else {
-      messages.push({ role: "user", content: userMessage });
+      // Single-turn: build from userMessage
+      const msg = userMessage ?? "";
+      messages = [
+        { role: "system", content: systemPrompt }
+      ];
+
+      if (attachment) {
+        messages.push({
+          role: "user",
+          content: [
+            { type: "text", text: msg },
+            { 
+              type: "image", 
+              image: attachment.data,
+              mediaType: attachment.mimeType
+            }
+          ]
+        });
+      } else {
+        messages.push({ role: "user", content: msg });
+      }
     }
 
     const result = streamText({
       model: loaded.model,
       messages,
       tools: Object.keys(tools).length > 0 ? tools : undefined,
-      stopWhen: stepCountIs(10), // Allow the model to call tools and continue
+      stopWhen: stepCountIs(10),
       abortSignal: signal,
       onStepFinish: (event) => {
         if (event.usage) {

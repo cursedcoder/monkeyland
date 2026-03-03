@@ -40,6 +40,10 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         crate::commands::set_safety_mode,
         crate::commands::orch_start,
         crate::commands::orch_pause,
+        crate::commands::orch_resume,
+        crate::commands::orch_get_status,
+        crate::commands::orch_inject_directive,
+        crate::commands::orch_cancel_task,
         crate::commands::agent_quota,
         crate::commands::agent_report_tokens,
         crate::commands::agent_yield,
@@ -62,6 +66,9 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         crate::commands::worktree_create,
         crate::commands::worktree_remove,
         crate::commands::worktree_diff,
+        crate::commands::save_wm_conversation,
+        crate::commands::load_wm_conversation,
+        crate::commands::clear_wm_conversation,
     ]
 }
 
@@ -217,6 +224,7 @@ mod pm_phases;
 mod project;
 mod pty_pool;
 mod storage;
+mod wm_phases;
 mod worktree;
 
 #[cfg(test)]
@@ -325,6 +333,10 @@ mod tests {
             crate::commands::set_safety_mode,
             crate::commands::orch_start,
             crate::commands::orch_pause,
+            crate::commands::orch_resume,
+            crate::commands::orch_get_status,
+            crate::commands::orch_inject_directive,
+            crate::commands::orch_cancel_task,
             crate::commands::agent_quota,
             crate::commands::agent_report_tokens,
             crate::commands::agent_yield,
@@ -338,6 +350,9 @@ mod tests {
             crate::commands::agent_gate_tool,
             crate::commands::get_kilo_proxy_url,
             crate::commands::full_reset,
+            crate::commands::save_wm_conversation,
+            crate::commands::load_wm_conversation,
+            crate::commands::clear_wm_conversation,
         ]
     }
 }

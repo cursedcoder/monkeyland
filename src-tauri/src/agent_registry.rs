@@ -490,6 +490,41 @@ impl AgentRegistry {
         Ok(true)
     }
 
+    /// Cancel all agents working on a specific task. Returns the IDs of canceled agents.
+    pub fn cancel_task(&self, task_id: &str) -> Result<Vec<String>, String> {
+        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let agents_to_cancel: Vec<String> = inner
+            .agents
+            .iter()
+            .filter(|(_, e)| e.task_id.as_deref() == Some(task_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        let mut canceled = Vec::new();
+        for agent_id in agents_to_cancel {
+            if let Some(entry) = inner.agents.get_mut(&agent_id) {
+                if !entry.state.is_terminal() {
+                    match agent_state_machine::try_transition(entry.state, Event::Kill, &entry.role)
+                    {
+                        Ok(new_state) => entry.state = new_state,
+                        Err(_) => entry.state = State::Stopped,
+                    }
+                }
+                if let Some(removed) = inner.agents.remove(&agent_id) {
+                    if let Some(pid) = &removed.parent_id {
+                        if let Some(p) = inner.agents.get_mut(pid) {
+                            p.children_count = p.children_count.saturating_sub(1);
+                        }
+                    }
+                    inner.inbox.remove(&agent_id);
+                    inner.validation.remove(&agent_id);
+                    canceled.push(agent_id);
+                }
+            }
+        }
+        Ok(canceled)
+    }
+
     /// Remove all agents, inboxes, and validation state. Used by "clear canvas".
     pub fn clear_all(&self) -> Result<Vec<String>, String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
@@ -1373,6 +1408,8 @@ impl AgentRegistry {
                 );
                 Ok(())
             }
+            // WM states - these agents don't yield for review
+            State::AwaitingHumanInput | State::ProcessingHumanInput => Ok(()),
         }
     }
 
