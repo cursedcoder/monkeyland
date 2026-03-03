@@ -1171,14 +1171,41 @@ impl AgentRegistry {
 
     /// Gate a tool call: checks that the agent exists, is Running, has permission, and is within quota/TTL.
     /// Every Tauri command that an LLM agent can invoke must call this first.
+    ///
+    /// For PM agents, this will auto-transition phases if the tool being used suggests a later phase.
     pub fn gate_tool(&self, agent_id: &str, command_name: &str) -> Result<(), String> {
+        let tool = Tool::from_command_name(command_name)
+            .ok_or_else(|| format!("Unknown tool command: {command_name}"))?;
+
+        // First, check if we need to auto-transition PM phase based on tool usage
+        {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if let Some(entry) = inner.agents.get(agent_id) {
+                if entry.role == "project_manager" {
+                    if let Some(current_phase) = entry.pm_execution_phase {
+                        if let Some(event) =
+                            pm_phases::suggest_pm_phase_from_tool(tool, current_phase)
+                        {
+                            // Need to transition - drop the lock and call transition_pm_phase
+                            drop(inner);
+                            if let Ok(Some(new_phase)) = self.transition_pm_phase(agent_id, event) {
+                                eprintln!(
+                                    "[pm-phase-auto] Auto-transitioned PM {} from {:?} to {:?} due to {:?} tool use",
+                                    agent_id, current_phase, new_phase, tool
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Now do the actual gating check with fresh state
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = match inner.agents.get(agent_id) {
             Some(e) => e,
             None => return Err(format!("Unknown agent ID: {agent_id}")),
         };
-        let tool = Tool::from_command_name(command_name)
-            .ok_or_else(|| format!("Unknown tool command: {command_name}"))?;
         let config = inner
             .role_config
             .get(&entry.role)
