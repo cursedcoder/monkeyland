@@ -3,9 +3,9 @@ import type { SessionLayout } from "../types";
 import {
   BROWSER_CARD_MIN_W,
   BROWSER_CARD_MIN_H,
-  GRID_STEP,
 } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
+import { snap } from "../utils/layoutHelpers";
 
 interface BrowserCardProps {
   layout: SessionLayout;
@@ -13,10 +13,6 @@ interface BrowserCardProps {
   onLayoutCommit: (layout: SessionLayout) => void;
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
   scale?: number;
-}
-
-function snap(v: number) {
-  return Math.round(v / GRID_STEP) * GRID_STEP;
 }
 
 function parseBrowserPayload(payload?: string): {

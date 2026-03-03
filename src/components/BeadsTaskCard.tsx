@@ -1,11 +1,11 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { SessionLayout, BeadsTask } from "../types";
 import {
-  GRID_STEP,
   BEADS_TASK_CARD_MIN_W,
   BEADS_TASK_CARD_MIN_H,
 } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
+import { snap } from "../utils/layoutHelpers";
 
 interface BeadsTaskCardProps {
   layout: SessionLayout;
@@ -14,10 +14,6 @@ interface BeadsTaskCardProps {
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
   onClose?: () => void;
   scale?: number;
-}
-
-function snap(v: number) {
-  return Math.round(v / GRID_STEP) * GRID_STEP;
 }
 
 const STATUS_LABELS: Record<string, string> = {

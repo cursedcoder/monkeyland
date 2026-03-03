@@ -9,6 +9,7 @@ import {
   GRID_STEP,
 } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
+import { snap } from "../utils/layoutHelpers";
 
 export interface BeadsStatus {
   projectPath: string;
@@ -48,10 +49,6 @@ interface BeadsCardProps {
   onAddTaskCard?: (task: BeadsTask) => void;
   onClose?: () => void;
   scale?: number;
-}
-
-function snap(v: number) {
-  return Math.round(v / GRID_STEP) * GRID_STEP;
 }
 
 function parseStatus(payload?: string): BeadsStatus | null {

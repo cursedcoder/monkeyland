@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useCostStore } from "../costStore";
-import type { WMPhase } from "./WMChatCard";
+import { WM_PHASE_LABELS, type WMPhase } from "../constants/phases";
 import "./WorkforceOverlay.css";
 
 interface AgentStatusResponse {
@@ -23,16 +23,6 @@ const ROLE_BADGES: Record<string, string> = {
   operator: "OP",
   worker: "WRK",
   validator: "VAL",
-};
-
-const WM_PHASE_LABELS: Record<WMPhase, string> = {
-  initial: "Ready",
-  project_setup: "Setting Up",
-  planning: "Planning",
-  executing: "Executing",
-  monitoring: "Monitoring",
-  intervening: "Intervening",
-  concluding: "Wrapping Up",
 };
 
 function badge(role: string): string {

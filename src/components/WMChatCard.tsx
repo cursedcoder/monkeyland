@@ -1,39 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { SessionLayout } from "../types";
-import { GRID_STEP } from "../types";
+import type { SessionLayout, AgentRole } from "../types";
+import {
+  PROMPT_CARD_MIN_W,
+  PROMPT_CARD_MIN_H,
+  WM_CHAT_CARD_MIN_W,
+  WM_CHAT_CARD_MIN_H,
+} from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
+import { snap } from "../utils/layoutHelpers";
+import {
+  WM_PHASE_LABELS,
+  WM_PHASE_COLORS,
+  ROLE_LABELS,
+  AGENT_STATUS_LABELS,
+  type WMPhase,
+} from "../constants/phases";
 
-/** WM conversation phases */
-export type WMPhase =
-  | "initial"
-  | "project_setup"
-  | "planning"
-  | "executing"
-  | "monitoring"
-  | "intervening"
-  | "concluding";
-
-const WM_PHASE_LABELS: Record<WMPhase, string> = {
-  initial: "Ready",
-  project_setup: "Setting Up",
-  planning: "Planning",
-  executing: "Executing",
-  monitoring: "Monitoring",
-  intervening: "Intervening",
-  concluding: "Wrapping Up",
-};
-
-const WM_PHASE_COLORS: Record<WMPhase, string> = {
-  initial: "#6b7280",
-  project_setup: "#3b82f6",
-  planning: "#f59e0b",
-  executing: "#10b981",
-  monitoring: "#8b5cf6",
-  intervening: "#ef4444",
-  concluding: "#06b6d4",
-};
+export type { WMPhase };
 
 export interface WMChatMessage {
   id: string;
@@ -43,45 +28,68 @@ export interface WMChatMessage {
   toolCalls?: Array<{ name: string; status: string }>;
 }
 
-function snap(v: number) {
-  return Math.round(v / GRID_STEP) * GRID_STEP;
+export interface AgentActivityInfo {
+  id: string;
+  role: AgentRole;
+  status: "loading" | "done" | "error" | "stopped" | "in_review";
+  toolActivity?: string;
+  answer?: string;
+  taskTitle?: string;
+  turnStartedAt?: number;
 }
-
-const WM_CHAT_CARD_MIN_W = 400;
-const WM_CHAT_CARD_MIN_H = 360;
 
 interface WMChatCardProps {
   layout: SessionLayout;
-  messages: WMChatMessage[];
-  wmPhase: WMPhase;
-  isProcessing: boolean;
-  taskProgress: { done: number; total: number };
-  orchStatus: "running" | "paused" | "idle";
-  onSendMessage: (text: string) => void;
-  onPause: () => void;
-  onResume: () => void;
-  onCancelAll: () => void;
   onLayoutChange: (layout: SessionLayout) => void;
   onLayoutCommit: (layout: SessionLayout) => void;
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
   scale?: number;
+
+  /** Card mode: "prompt" for initial input, "chat" for WM conversation */
+  mode: "prompt" | "chat";
+
+  /** Prompt mode props */
+  promptText?: string;
+  onPromptChange?: (text: string) => void;
+  onLaunch?: () => void;
+
+  /** Chat mode props */
+  messages?: WMChatMessage[];
+  wmPhase?: WMPhase;
+  isProcessing?: boolean;
+  taskProgress?: { done: number; total: number };
+  orchStatus?: "running" | "paused" | "idle";
+  onSendMessage?: (text: string) => void;
+  onPause?: () => void;
+  onResume?: () => void;
+  onCancelAll?: () => void;
+
+  /** Agent activity display */
+  agentActivities?: AgentActivityInfo[];
+  onStopAgent?: (agentId: string) => void;
 }
 
 export function WMChatCard({
   layout,
-  messages,
-  wmPhase,
-  isProcessing,
-  taskProgress,
-  orchStatus,
-  onSendMessage,
-  onPause,
-  onResume,
-  onCancelAll,
   onLayoutChange,
   onLayoutCommit,
   onDragStart,
   scale = 1,
+  mode,
+  promptText = "",
+  onPromptChange,
+  onLaunch,
+  messages = [],
+  wmPhase = "initial",
+  isProcessing = false,
+  taskProgress = { done: 0, total: 0 },
+  orchStatus = "idle",
+  onSendMessage,
+  onPause,
+  onResume,
+  onCancelAll,
+  agentActivities = [],
+  onStopAgent,
 }: WMChatCardProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
@@ -89,6 +97,10 @@ export function WMChatCard({
   const [inputText, setInputText] = useState("");
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [showConfirmDialog, setShowConfirmDialog] = useState<"cancel_all" | null>(null);
+  const [agentsPanelExpanded, setAgentsPanelExpanded] = useState(true);
+
+  const minW = mode === "prompt" ? PROMPT_CARD_MIN_W : WM_CHAT_CARD_MIN_W;
+  const minH = mode === "prompt" ? PROMPT_CARD_MIN_H : WM_CHAT_CARD_MIN_H;
 
   const cardRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -172,10 +184,10 @@ export function WMChatCard({
         const dy = (e.clientY - resizeStart.current.y) / s;
         let { w, h } = resizeStart.current;
         const edge = resizeStart.current.edge;
-        if (edge.includes("e")) w = Math.max(WM_CHAT_CARD_MIN_W, w + dx);
-        if (edge.includes("w")) w = Math.max(WM_CHAT_CARD_MIN_W, w - dx);
-        if (edge.includes("s")) h = Math.max(WM_CHAT_CARD_MIN_H, h + dy);
-        if (edge.includes("n")) h = Math.max(WM_CHAT_CARD_MIN_H, h - dy);
+        if (edge.includes("e")) w = Math.max(minW, w + dx);
+        if (edge.includes("w")) w = Math.max(minW, w - dx);
+        if (edge.includes("s")) h = Math.max(minH, h + dy);
+        if (edge.includes("n")) h = Math.max(minH, h - dy);
         const next = { ...currentLayout, w: snap(w), h: snap(h) };
         lastEmittedLayout.current = next;
         setLiveLayoutRef.current(next);
@@ -199,7 +211,7 @@ export function WMChatCard({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [isDragging, isResizing, scale]);
+  }, [isDragging, isResizing, scale, minW, minH]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -227,7 +239,7 @@ export function WMChatCard({
 
   const handleSend = useCallback(() => {
     const text = inputText.trim();
-    if (!text || isProcessing) return;
+    if (!text || isProcessing || !onSendMessage) return;
     onSendMessage(text);
     setInputText("");
   }, [inputText, isProcessing, onSendMessage]);
@@ -247,7 +259,7 @@ export function WMChatCard({
   }, []);
 
   const handleConfirmCancelAll = useCallback(() => {
-    onCancelAll();
+    onCancelAll?.();
     setShowConfirmDialog(null);
   }, [onCancelAll]);
 
@@ -255,10 +267,73 @@ export function WMChatCard({
     setShowConfirmDialog(null);
   }, []);
 
+  // Prompt mode: simple input + launch
+  if (mode === "prompt") {
+    return (
+      <div
+        ref={cardRef}
+        className="wm-chat-card wm-chat-card--prompt"
+        style={{
+          position: "absolute",
+          left: displayLayout.x,
+          top: displayLayout.y,
+          width: displayLayout.w,
+          height: displayLayout.h,
+          cursor: isDragging ? "grabbing" : "default",
+          userSelect: isDragging ? "none" : "auto",
+          ["--card-accent" as string]: cardColors.primary,
+          ["--card-accent-muted" as string]: cardColors.secondary,
+        }}
+      >
+        <div
+          className="wm-chat-card-header"
+          style={{ cursor: isDragging ? "grabbing" : "grab" }}
+          onPointerDown={handlePointerDownDrag}
+        >
+          <span className="wm-chat-card-title">Prompt</span>
+        </div>
+        <div className="wm-chat-card-prompt-body" onPointerDown={(e) => e.stopPropagation()}>
+          <textarea
+            className="wm-chat-card-prompt-input"
+            placeholder="Describe what you want the agent to do…"
+            value={promptText}
+            onChange={(e) => onPromptChange?.(e.target.value)}
+          />
+          <button
+            type="button"
+            className="wm-chat-card-launch-btn"
+            onClick={() => onLaunch?.()}
+            disabled={!promptText?.trim()}
+          >
+            Launch
+          </button>
+        </div>
+        <div
+          className="wm-chat-card-resize-handle se"
+          data-resize-handle
+          onPointerDown={(e) => handlePointerDownResize(e, "se")}
+          title="Drag to resize"
+          aria-label="Resize card"
+        />
+        <div
+          className="wm-chat-card-resize-handle s"
+          data-resize-handle
+          onPointerDown={(e) => handlePointerDownResize(e, "s")}
+        />
+        <div
+          className="wm-chat-card-resize-handle e"
+          data-resize-handle
+          onPointerDown={(e) => handlePointerDownResize(e, "e")}
+        />
+      </div>
+    );
+  }
+
+  // Chat mode: full WM interface with agent activity
   return (
     <div
       ref={cardRef}
-      className="wm-chat-card"
+      className="wm-chat-card wm-chat-card--chat"
       style={{
         position: "absolute",
         left: displayLayout.x,
@@ -362,6 +437,56 @@ export function WMChatCard({
           </button>
         )}
       </div>
+
+      {/* Agent Activity Panel */}
+      {agentActivities.length > 0 && (
+        <div className="wm-chat-card-agents" onPointerDown={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            className="wm-chat-card-agents-toggle"
+            onClick={() => setAgentsPanelExpanded(!agentsPanelExpanded)}
+          >
+            <span>Agents ({agentActivities.length})</span>
+            <span>{agentsPanelExpanded ? "▼" : "▶"}</span>
+          </button>
+          {agentsPanelExpanded && (
+            <div className="wm-chat-card-agents-list">
+              {agentActivities.map((agent) => (
+                <div key={agent.id} className={`wm-chat-card-agent wm-chat-card-agent--${agent.status}`}>
+                  <div className="wm-chat-card-agent-header">
+                    <span className="wm-chat-card-agent-role">{ROLE_LABELS[agent.role]}</span>
+                    <span className={`wm-chat-card-agent-status wm-chat-card-agent-status--${agent.status}`}>
+                      {AGENT_STATUS_LABELS[agent.status] || agent.status}
+                    </span>
+                    {agent.status === "loading" && onStopAgent && (
+                      <button
+                        type="button"
+                        className="wm-chat-card-agent-stop"
+                        onClick={() => onStopAgent(agent.id)}
+                      >
+                        Stop
+                      </button>
+                    )}
+                  </div>
+                  {agent.taskTitle && (
+                    <div className="wm-chat-card-agent-task">{agent.taskTitle}</div>
+                  )}
+                  {agent.toolActivity && agent.status === "loading" && (
+                    <div className="wm-chat-card-agent-activity">{agent.toolActivity}</div>
+                  )}
+                  {agent.answer && (
+                    <div className="wm-chat-card-agent-answer">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {agent.answer.length > 300 ? agent.answer.slice(0, 300) + "..." : agent.answer}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Quick Actions */}
       <div className="wm-chat-card-actions" onPointerDown={(e) => e.stopPropagation()}>

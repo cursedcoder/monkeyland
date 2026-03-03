@@ -3,9 +3,9 @@ import type { SessionLayout } from "../types";
 import {
   TERMINAL_LOG_MIN_W,
   TERMINAL_LOG_MIN_H,
-  GRID_STEP,
 } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
+import { snap } from "../utils/layoutHelpers";
 
 /** Only auto-scroll when user is within this many px of the bottom. */
 const AUTO_SCROLL_THRESHOLD_PX = 80;
@@ -25,10 +25,6 @@ interface TerminalLogCardProps {
   onLayoutCommit: (layout: SessionLayout) => void;
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
   scale?: number;
-}
-
-function snap(v: number) {
-  return Math.round(v / GRID_STEP) * GRID_STEP;
 }
 
 function parseEntries(payload?: string): TerminalLogEntry[] {

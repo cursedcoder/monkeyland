@@ -940,6 +940,9 @@ export default function App() {
         /* ignore */
       }
 
+      if (!promptText) return;
+
+      // Spawn WM agent in the backend
       let newWmNodeId: string;
       try {
         const result = await invoke<{ agent_id: string }>("agent_spawn", {
@@ -954,23 +957,114 @@ export default function App() {
         console.error("Failed to spawn workforce manager:", e);
         return;
       }
+      
       activeWmNodeId.current = newWmNodeId;
+      setWmNodeId(newWmNodeId);
+      setWmPhase("project_setup");
 
-      await startAgentConversation({
-        agentNodeId: newWmNodeId,
-        role: "workforce_manager",
-        userMessage: promptText,
-        taskId: null,
-        sourcePromptId: nodeId,
+      // Transform the prompt card into a wm_chat card
+      setLayouts((prev) => {
+        const next = prev.map((l) => {
+          if (l.session_id !== nodeId) return l;
+          return {
+            ...l,
+            node_type: "wm_chat" as CanvasNodeType,
+            w: Math.max(l.w, WM_CHAT_CARD_DEFAULT_W),
+            h: Math.max(l.h, WM_CHAT_CARD_DEFAULT_H),
+            payload: JSON.stringify({ promptText }),
+          };
+        });
+        if (loaded.current) persistLayouts(next);
+        return next;
       });
-      // Start orchestration so the loop can pick up tasks from Beads and spawn developer agents.
+
+      // Add user's prompt as first message
+      const userMsg: WMChatMessage = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        role: "user",
+        content: promptText,
+        timestamp: Date.now(),
+      };
+      setWmConversation([userMsg]);
+      setWmIsProcessing(true);
+
+      // Build plugins for WM
+      const plugins = buildPlugins("workforce_manager", newWmNodeId, null, null);
+
+      // Run the agent turn
+      const controller = new AbortController();
+      abortControllers.current.set(newWmNodeId, controller);
+
+      let accumulatedText = "";
+      const toolCalls: Array<{ name: string; status: string }> = [];
+
+      try {
+        await runAgent({
+          systemPrompt: getPromptForRole("workforce_manager"),
+          userMessage: promptText,
+          plugins,
+          signal: controller.signal,
+          callbacks: {
+            onChunk: (c) => {
+              if (c.type === "content" && c.text) {
+                accumulatedText += c.text;
+              }
+              if (c.type === "reasoning" && c.text) {
+                accumulatedText += c.text;
+              }
+              if (c.type === "tool") {
+                if (c.state === "running" || c.state === "preparing") {
+                  toolCalls.push({ name: c.name ?? "unknown", status: "running" });
+                } else if ((c.state === "done" || c.state === "completed") && c.name) {
+                  const tc = toolCalls.find((t) => t.name === c.name && t.status === "running");
+                  if (tc) tc.status = "done";
+                }
+              }
+            },
+            onUsage: (usage) => {
+              costStore.reportUsage(
+                newWmNodeId, "workforce_manager", "unknown",
+                usage.prompt_tokens, usage.completion_tokens, 0, 0,
+              );
+            },
+            onDone: () => {},
+            onError: () => {},
+            onStopped: () => {},
+          },
+        });
+
+        // Add assistant response
+        const assistantMsg: WMChatMessage = {
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          role: "assistant",
+          content: accumulatedText,
+          timestamp: Date.now(),
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        };
+        setWmConversation((prev) => [...prev, assistantMsg]);
+      } catch (e) {
+        console.error("WM agent error:", e);
+        const errorMsg: WMChatMessage = {
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          role: "assistant",
+          content: `Error: ${e instanceof Error ? e.message : String(e)}`,
+          timestamp: Date.now(),
+        };
+        setWmConversation((prev) => [...prev, errorMsg]);
+      } finally {
+        setWmIsProcessing(false);
+        setWmOrchStatus("running");
+        abortControllers.current.delete(newWmNodeId);
+      }
+
+      // Start orchestration
       try {
         await invoke("orch_start");
       } catch {
         /* already running or not available */
       }
     },
-    [startAgentConversation],
+    [buildPlugins, persistLayouts],
   );
 
   /**
@@ -1009,7 +1103,7 @@ export default function App() {
           activeWmNodeId.current = currentWmNodeId;
           setWmPhase("project_setup");
 
-          // Create the WM agent card (SessionCard for WM)
+          // Create the WM agent layout for tracking
           const size = getDefaultSize("agent");
           setLayouts((prev) => {
             const newAgentLayout: SessionLayout = {

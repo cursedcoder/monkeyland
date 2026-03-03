@@ -3,10 +3,10 @@ import type { SessionLayout } from "../types";
 import {
   TERMINAL_CARD_MIN_W,
   TERMINAL_CARD_MIN_H,
-  GRID_STEP,
 } from "../types";
 import { Terminal } from "./Terminal";
 import { cardColorsFromId } from "../utils/cardColors";
+import { snap } from "../utils/layoutHelpers";
 
 interface TerminalCardProps {
   layout: SessionLayout;
@@ -14,10 +14,6 @@ interface TerminalCardProps {
   onLayoutCommit: (layout: SessionLayout) => void;
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
   scale?: number;
-}
-
-function snap(v: number) {
-  return Math.round(v / GRID_STEP) * GRID_STEP;
 }
 
 export function TerminalCard({

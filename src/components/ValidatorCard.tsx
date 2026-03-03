@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { SessionLayout } from "../types";
-import { GRID_STEP } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
+import { snap } from "../utils/layoutHelpers";
 
 interface CheckResult {
   status: "pending" | "pass" | "fail";
@@ -30,10 +30,6 @@ interface ValidatorCardProps {
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
   onStop?: () => void;
   scale?: number;
-}
-
-function snap(v: number) {
-  return Math.round(v / GRID_STEP) * GRID_STEP;
 }
 
 const CHECK_LABELS: Record<string, string> = {

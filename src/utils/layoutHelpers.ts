@@ -3,6 +3,11 @@ import { GRID_STEP } from "../types";
 
 export const REPOSITION_ORIGIN = { x: 80, y: 80 };
 
+/** Snap a value to the nearest grid step. */
+export function snap(v: number): number {
+  return Math.round(v / GRID_STEP) * GRID_STEP;
+}
+
 /** Returns new layouts organized in a tree structure based on parent-child relationships. */
 export function repositionLayouts(layouts: SessionLayout[]): SessionLayout[] {
   const childrenMap = new Map<string, string[]>();
