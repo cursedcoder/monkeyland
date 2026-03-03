@@ -2506,6 +2506,14 @@
   flex-direction: column;
   gap: 12px;
   position: relative;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text;
+}
+
+.wm-chat-card-messages * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
 }
 
 .wm-chat-card-empty {
