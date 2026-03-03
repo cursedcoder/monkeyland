@@ -17,7 +17,8 @@
     "tauri": "tauri",
     "tauri:icon": "tauri icon public/favicon.svg",
     "validate:no-errors": "node scripts/validate-no-console-errors.mjs",
-    "beads:install": "npm install -g @beads/bd"
+    "beads:install": "npm install -g @beads/bd",
+    "prepare": "husky"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.50",
@@ -35,6 +36,10 @@
     "remark-gfm": "^4.0.1",
     "zod": "^4.3.6"
   },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": "bash -c 'npm run typecheck'",
+    "src-tauri/**/*.rs": "bash -c 'cd src-tauri && cargo check'"
+  },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@testing-library/dom": "^10.4.1",
@@ -43,7 +48,9 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
     "@vitest/coverage-v8": "^3.2.4",
+    "husky": "^9.1.7",
     "jsdom": "^27.0.1",
+    "lint-staged": "^16.3.1",
     "playwright": "^1.58.2",
     "typescript": "~5.6.2",
     "vite": "^5.4.10",
