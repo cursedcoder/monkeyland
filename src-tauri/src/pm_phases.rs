@@ -157,7 +157,23 @@ pub fn suggest_pm_phase_from_tool(tool: Tool, current_phase: PMPhase) -> Option<
         // If in Exploration and BeadsRun is called (creating a task), suggest transitioning
         (PMPhase::Exploration, Tool::BeadsRun) => Some(PMPhaseEvent::ExplorationComplete),
 
+        // If in TaskDrafting and ReadFile is called (reviewing), suggest moving to DependencyReview
+        // This assumes PM reads files to review the tasks it created
+        (PMPhase::TaskDrafting, Tool::ReadFile) => Some(PMPhaseEvent::DraftingComplete),
+
         _ => None,
+    }
+}
+
+/// Suggested PM phase transition when yield_for_review is called.
+/// Returns the event needed to advance towards Finalization, or None if already in Finalization.
+pub fn suggest_pm_phase_for_yield(current_phase: PMPhase) -> Option<PMPhaseEvent> {
+    match current_phase {
+        PMPhase::Exploration => Some(PMPhaseEvent::ExplorationComplete),
+        PMPhase::TaskDrafting => Some(PMPhaseEvent::DraftingComplete),
+        PMPhase::DependencyReview => Some(PMPhaseEvent::ReviewComplete),
+        PMPhase::Revising => Some(PMPhaseEvent::RevisionComplete),
+        PMPhase::Finalization => None, // Already in Finalization, can yield
     }
 }
 

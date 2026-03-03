@@ -906,6 +906,46 @@ impl AgentRegistry {
     }
 
     pub fn yield_for_review(&self, agent_id: &str, payload: YieldPayload) -> Result<(), String> {
+        // For PM agents, auto-transition to Finalization before yielding
+        {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if let Some(entry) = inner.agents.get(agent_id) {
+                if entry.role == "project_manager" {
+                    if let Some(current_phase) = entry.pm_execution_phase {
+                        drop(inner); // Release lock before calling transition methods
+
+                        // Auto-transition through phases until we reach Finalization
+                        const MAX_TRANSITIONS: usize = 5;
+                        for _ in 0..MAX_TRANSITIONS {
+                            let phase = self.get_pm_execution_phase(agent_id)?;
+                            if let Some(current) = phase {
+                                if let Some(event) = pm_phases::suggest_pm_phase_for_yield(current)
+                                {
+                                    if let Ok(Some(new_phase)) =
+                                        self.transition_pm_phase(agent_id, event)
+                                    {
+                                        eprintln!(
+                                            "[pm-phase-auto] Auto-transitioned PM {} from {:?} to {:?} for yield",
+                                            agent_id, current, new_phase
+                                        );
+                                        if new_phase == PMPhase::Finalization {
+                                            break;
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                } else {
+                                    break; // Already in Finalization
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         let e = inner
             .agents
@@ -1177,7 +1217,7 @@ impl AgentRegistry {
         let tool = Tool::from_command_name(command_name)
             .ok_or_else(|| format!("Unknown tool command: {command_name}"))?;
 
-        // First, check if we need to auto-transition PM phase based on tool usage
+        // Check if we need to auto-transition PM phase based on tool usage
         {
             let inner = self.inner.lock().map_err(|e| e.to_string())?;
             if let Some(entry) = inner.agents.get(agent_id) {
