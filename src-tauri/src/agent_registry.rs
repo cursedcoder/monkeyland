@@ -946,7 +946,7 @@ impl AgentRegistry {
             let inner = self.inner.lock().map_err(|e| e.to_string())?;
             if let Some(entry) = inner.agents.get(agent_id) {
                 if entry.role == "project_manager" {
-                    if let Some(current_phase) = entry.pm_execution_phase {
+                    if let Some(_current_phase) = entry.pm_execution_phase {
                         drop(inner); // Release lock before calling transition methods
 
                         // Auto-transition through phases until we reach Finalization

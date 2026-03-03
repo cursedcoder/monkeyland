@@ -595,15 +595,28 @@ pub async fn orch_resume(state: State<'_, OrchestrationState>) -> Result<(), Str
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveAgentInfo {
+    pub id: String,
+    pub role: String,
+    pub state: String,
+    pub task_id: Option<String>,
+    pub phase: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchStatusResponse {
     pub state: String,
     pub is_running: bool,
     pub is_paused: bool,
+    pub active_agents: Vec<ActiveAgentInfo>,
+    pub project_path: Option<String>,
 }
 
 #[tauri::command]
 pub async fn orch_get_status(
     state: State<'_, OrchestrationState>,
+    registry: State<'_, AgentRegistry>,
+    meta_db: State<'_, MetaDb>,
 ) -> Result<OrchStatusResponse, String> {
     let raw = state.get();
     let (state_name, is_running, is_paused) = match raw {
@@ -612,10 +625,35 @@ pub async fn orch_get_status(
         2 => ("paused", false, true),
         _ => ("unknown", false, false),
     };
+
+    // Get active agents from registry
+    let snapshot = registry.debug_snapshot()?;
+    let active_agents: Vec<ActiveAgentInfo> = snapshot
+        .agents
+        .into_iter()
+        .filter(|a| a.state != "Completed" && a.state != "Failed" && a.state != "Cancelled")
+        .map(|a| ActiveAgentInfo {
+            id: a.id,
+            role: a.role,
+            state: a.state,
+            task_id: a.task_id,
+            phase: a.execution_phase.or(a.pm_execution_phase),
+        })
+        .collect();
+
+    // Get current project path
+    let project_path = meta_db
+        .get_setting("beads_project_path")
+        .ok()
+        .flatten()
+        .filter(|p| !p.is_empty());
+
     Ok(OrchStatusResponse {
         state: state_name.to_string(),
         is_running,
         is_paused,
+        active_agents,
+        project_path,
     })
 }
 

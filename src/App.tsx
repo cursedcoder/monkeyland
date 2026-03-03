@@ -2562,15 +2562,17 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
           }
           console.log(`[PM Validation] Promoted ${promotedCount}/${tasks.length} tasks`);
 
-          // Update the PM card UI to show "done" status
+          // Update the PM card UI to show "done" status and clear pmExecutionPhase
           setLayouts((prev) => {
             const next = prev.map((layout) => {
               if (layout.session_id === pm_agent_id && layout.node_type === "agent") {
                 try {
                   const payload = JSON.parse(layout.payload || "{}");
+                  // Clear pmExecutionPhase so the phase footer doesn't show
+                  const { pmExecutionPhase: _, ...rest } = payload;
                   return {
                     ...layout,
-                    payload: JSON.stringify({ ...payload, status: "done" }),
+                    payload: JSON.stringify({ ...rest, status: "done" }),
                   };
                 } catch {
                   return layout;

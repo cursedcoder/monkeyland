@@ -177,10 +177,20 @@ export class MessageAgentPlugin extends Plugin {
   }
 }
 
+export interface ActiveAgentInfo {
+  id: string;
+  role: string;
+  state: string;
+  task_id: string | null;
+  phase: string | null;
+}
+
 export interface OrchStatusResult {
   state: string;
   is_running: boolean;
   is_paused: boolean;
+  active_agents: ActiveAgentInfo[];
+  project_path: string | null;
 }
 
 export class GetOrchestrationStatusPlugin extends Plugin {
@@ -189,7 +199,7 @@ export class GetOrchestrationStatusPlugin extends Plugin {
   }
 
   getDescription(): string {
-    return "Get the current status of the orchestration system, including whether it is running, paused, or idle.";
+    return "Get the current status of the orchestration system, including active agents, their tasks, and project info.";
   }
 
   getRunningDescription(): string {
@@ -206,9 +216,26 @@ export class GetOrchestrationStatusPlugin extends Plugin {
   ): Promise<{ result: string }> {
     try {
       const status = await invoke<OrchStatusResult>("orch_get_status");
-      return {
-        result: `Orchestration status: ${status.state} (running: ${status.is_running}, paused: ${status.is_paused})`,
-      };
+
+      const lines: string[] = [];
+      lines.push(`Orchestration: ${status.state} (running: ${status.is_running}, paused: ${status.is_paused})`);
+
+      if (status.project_path) {
+        lines.push(`Project: ${status.project_path}`);
+      }
+
+      if (status.active_agents.length === 0) {
+        lines.push("Active agents: none");
+      } else {
+        lines.push(`Active agents (${status.active_agents.length}):`);
+        for (const agent of status.active_agents) {
+          const taskPart = agent.task_id ? ` [task: ${agent.task_id}]` : "";
+          const phasePart = agent.phase ? ` (${agent.phase})` : "";
+          lines.push(`  - ${agent.role}: ${agent.state}${phasePart}${taskPart}`);
+        }
+      }
+
+      return { result: lines.join("\n") };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       return { result: `Error getting status: ${msg}` };

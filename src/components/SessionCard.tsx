@@ -149,6 +149,16 @@ function parsePMPhase(payload: string | undefined): string | null {
   return null;
 }
 
+function parseStatus(payload: string | undefined): string | null {
+  if (!payload) return null;
+  try {
+    const p = JSON.parse(payload) as { status?: string };
+    return p.status ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function parseWMPhase(payload: string | undefined): string | null {
   if (!payload) return null;
   try {
@@ -645,14 +655,14 @@ export function SessionCard({
             data-resize-handle
             onPointerDown={(e) => handlePointerDownResize(e, "e")}
           />
-          {/* Phase footer for developer, PM, and WM agents */}
-          {parseRole(layout.payload) === "developer" && parsePhase(layout.payload) && (
+          {/* Phase footer for developer, PM, and WM agents (hidden when done) */}
+          {parseRole(layout.payload) === "developer" && parsePhase(layout.payload) && parseStatus(layout.payload) !== "done" && (
             <PhaseFooter phase={parsePhase(layout.payload)!} roleType="developer" />
           )}
-          {parseRole(layout.payload) === "project_manager" && parsePMPhase(layout.payload) && (
+          {parseRole(layout.payload) === "project_manager" && parsePMPhase(layout.payload) && parseStatus(layout.payload) !== "done" && (
             <PhaseFooter phase={parsePMPhase(layout.payload)!} roleType="pm" />
           )}
-          {parseRole(layout.payload) === "workforce_manager" && parseWMPhase(layout.payload) && (
+          {parseRole(layout.payload) === "workforce_manager" && parseWMPhase(layout.payload) && parseStatus(layout.payload) !== "done" && (
             <PhaseFooter phase={parseWMPhase(layout.payload)!} roleType="wm" />
           )}
         </>
