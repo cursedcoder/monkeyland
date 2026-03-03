@@ -29,6 +29,7 @@ export interface BeadsTask {
   priority?: number;
   deps?: string[] | string;
   blocked_by?: string[] | string;
+  parent?: string;
   parent_id?: string;
   parentId?: string;
   epic_id?: string;
@@ -236,18 +237,30 @@ export function BeadsCard({
             typeof detail.deps === "string" || Array.isArray(detail.deps)
               ? (detail.deps as string[] | string)
               : undefined,
+          parent:
+            typeof detail.parent === "string"
+              ? detail.parent
+              : typeof detail.parent_id === "string"
+                ? detail.parent_id
+                : typeof detail.parentId === "string"
+                  ? detail.parentId
+                  : undefined,
           parent_id:
             typeof detail.parent_id === "string"
               ? detail.parent_id
-              : typeof detail.parentId === "string"
-                ? detail.parentId
-                : undefined,
+              : typeof detail.parent === "string"
+                ? detail.parent
+                : typeof detail.parentId === "string"
+                  ? detail.parentId
+                  : undefined,
           parentId:
             typeof detail.parentId === "string"
               ? detail.parentId
-              : typeof detail.parent_id === "string"
-                ? detail.parent_id
-                : undefined,
+              : typeof detail.parent === "string"
+                ? detail.parent
+                : typeof detail.parent_id === "string"
+                  ? detail.parent_id
+                  : undefined,
           blocked_by:
             typeof detail.blocked_by === "string" || Array.isArray(detail.blocked_by)
               ? (detail.blocked_by as string[] | string)

@@ -9,6 +9,7 @@ export interface BeadsTask {
   priority?: number;
   deps?: string[] | string;
   blocked_by?: string[] | string;
+  parent?: string;
   parent_id?: string;
   parentId?: string;
   epic_id?: string;

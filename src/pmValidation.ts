@@ -132,11 +132,12 @@ function findOrphanTasks(tasks: BeadsTask[], _epicId: string | undefined): strin
 
 function findMissingParentId(tasks: BeadsTask[], epicId: string | undefined): string[] {
   if (!epicId) return [];
-  
+
   const missing: string[] = [];
-  
+
   for (const task of tasks) {
-    const parentId = task.parent_id ?? task.parentId;
+    // Beads CLI may return 'parent', 'parent_id', or 'parentId' depending on version
+    const parentId = task.parent ?? task.parent_id ?? task.parentId;
     if (!parentId) {
       missing.push(`Task ${task.id} is missing parent_id. Should be set to epic ID: ${epicId}`);
     } else if (parentId !== epicId) {
