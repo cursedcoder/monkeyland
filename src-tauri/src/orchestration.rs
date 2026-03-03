@@ -675,6 +675,23 @@ pub async fn tick(
         let _ = registry.force_block_validation(&agent_id);
     }
 
+    // 4d. SAFETY NET: Force-yield PMs stuck in Running state for > 5 minutes.
+    // PMs should create subtasks and yield for validation. If the frontend nudge mechanism
+    // fails or the PM gets stuck, this ensures they eventually enter the yield queue.
+    let stuck_pms = registry.stuck_running_pms(300)?;
+    for agent_id in &stuck_pms {
+        eprintln!(
+            "[orch] SAFETY NET: Force-yielding PM {} stuck in Running for >5min",
+            agent_id
+        );
+        let _ = registry.force_yield(agent_id);
+        let _ = env_emit(
+            env,
+            "agent_force_yielded",
+            &serde_json::json!({ "agent_id": agent_id, "reason": "pm_stuck_running_timeout" }),
+        );
+    }
+
     // 5. Enqueue done agents for merge (or kill non-merging roles immediately).
     //    Developer agents get their worktree removed and pushed onto the merge queue,
     //    then killed so they aren't re-processed on the next tick.
@@ -2549,6 +2566,164 @@ mod tests {
             agent_b.state, "InReview",
             "agent should be in InReview state after yield_queue processes it (tick B)"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // PM Safety Net: Force-yield PMs stuck in Running state for > 5 minutes.
+    // This catches cases where frontend nudging fails or PM gets stuck.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn pm_stuck_running_safety_net_force_yields() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        // Spawn PM via bd ready (epic task)
+        env.set_ready_tasks(r#"[{"id":"epic-stuck","issue_type":"epic","priority":1}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let pm_id = env.events_named("agent_spawned")[0]["agent_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Verify PM is in Running state
+        let snap = registry.debug_snapshot().unwrap();
+        let pm = snap.agents.iter().find(|a| a.id == pm_id).unwrap();
+        assert_eq!(pm.state, "Running", "PM should start in Running state");
+        assert_eq!(pm.role, "project_manager");
+
+        // PM is NOT stuck yet (< 5 minutes)
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let snap = registry.debug_snapshot().unwrap();
+        let pm = snap.agents.iter().find(|a| a.id == pm_id).unwrap();
+        assert_eq!(
+            pm.state, "Running",
+            "PM should still be Running (not stuck yet)"
+        );
+
+        // Backdate PM to > 5 minutes in Running state
+        registry.test_backdate_state_entered(&pm_id, std::time::Duration::from_secs(301));
+
+        // Safety net should fire on this tick
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        // PM should be force-yielded
+        let snap = registry.debug_snapshot().unwrap();
+        let pm = snap.agents.iter().find(|a| a.id == pm_id).unwrap();
+        assert_eq!(
+            pm.state, "Yielded",
+            "PM should be force-yielded after stuck running timeout"
+        );
+
+        // Check that agent_force_yielded event was emitted with PM-specific reason
+        let force_yield_events = env.events_named("agent_force_yielded");
+        assert_eq!(
+            force_yield_events.len(),
+            1,
+            "agent_force_yielded should be emitted"
+        );
+        assert_eq!(
+            force_yield_events[0]["reason"].as_str().unwrap(),
+            "pm_stuck_running_timeout",
+            "reason should indicate PM stuck running"
+        );
+
+        // Next tick should process PM in yield queue
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let snap = registry.debug_snapshot().unwrap();
+        let pm = snap.agents.iter().find(|a| a.id == pm_id).unwrap();
+        assert_eq!(
+            pm.state, "InReview",
+            "PM should move to InReview after yield_queue processes it"
+        );
+
+        // pm_validation_requested should be emitted
+        let pm_val_events = env.events_named("pm_validation_requested");
+        assert_eq!(
+            pm_val_events.len(),
+            1,
+            "pm_validation_requested should be emitted for force-yielded PM"
+        );
+    }
+
+    #[tokio::test]
+    async fn pm_safety_net_does_not_fire_for_yielded_pm() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        // Spawn PM
+        env.set_ready_tasks(r#"[{"id":"epic-yielded","issue_type":"epic","priority":1}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let pm_id = env.events_named("agent_spawned")[0]["agent_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // PM properly yields for review
+        use crate::pm_phases::PMPhaseEvent;
+        registry
+            .transition_pm_phase(&pm_id, PMPhaseEvent::ExplorationComplete)
+            .unwrap();
+        registry
+            .transition_pm_phase(&pm_id, PMPhaseEvent::DraftingComplete)
+            .unwrap();
+        registry
+            .transition_pm_phase(&pm_id, PMPhaseEvent::ReviewComplete)
+            .unwrap();
+
+        let yp = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some("task/epic-yielded".to_string()),
+        };
+        registry.yield_for_review(&pm_id, yp).unwrap();
+
+        // Backdate to simulate long wait
+        registry.test_backdate_state_entered(&pm_id, std::time::Duration::from_secs(301));
+
+        // Safety net should NOT fire (PM is Yielded, not Running)
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        // No extra force_yield events
+        let force_yield_events = env.events_named("agent_force_yielded");
+        assert_eq!(
+            force_yield_events.len(),
+            0,
+            "safety net should NOT fire for Yielded PM"
+        );
+
+        // PM should move to InReview normally
+        let snap = registry.debug_snapshot().unwrap();
+        let pm = snap.agents.iter().find(|a| a.id == pm_id).unwrap();
+        assert_eq!(pm.state, "InReview", "PM should be in InReview");
     }
 
     // -----------------------------------------------------------------------

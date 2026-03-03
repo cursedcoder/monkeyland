@@ -27,6 +27,7 @@ export interface BeadsTask {
   reporter?: string;
   created_at?: string;
   updated_at?: string;
+  defer_until?: string;
 }
 
 export type CanvasNodeType = "prompt" | "agent" | "terminal" | "terminal_log" | "browser" | "worker" | "validator" | "beads" | "beads_task" | "wm_chat";

@@ -1347,8 +1347,9 @@ impl AgentRegistry {
 
     /// Handle an agent's LLM turn ending without explicit completion/yield.
     /// For developers still in Running: returns "needs_nudge" so frontend can prompt them.
+    /// For PM/Validator in Running: returns "needs_yield" (they must explicitly yield_for_review).
     /// For other roles in Running: auto-complete.
-    /// Returns: "needs_nudge", "completed", "already_done", or "not_found".
+    /// Returns: "needs_nudge", "needs_yield", "completed", "already_done", or "not_found".
     pub fn handle_turn_ended(&self, agent_id: &str, role: &str) -> Result<String, String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         let entry = match inner.agents.get_mut(agent_id) {
@@ -1372,8 +1373,12 @@ impl AgentRegistry {
         if role == "developer" {
             // Developers need a nudge to call yield_for_review
             Ok("needs_nudge".to_string())
+        } else if role == "project_manager" || role == "validator" {
+            // PM and Validator cannot self-complete - they must explicitly yield_for_review.
+            // Return "needs_yield" so frontend knows to continue the conversation (not force-yield).
+            Ok("needs_yield".to_string())
         } else {
-            // Non-developers get auto-completed
+            // Other non-developers (operator, etc.) get auto-completed
             match agent_state_machine::try_transition(entry.state, Event::Complete, &entry.role) {
                 Ok(new_state) => {
                     entry.state = new_state;
@@ -1449,6 +1454,23 @@ impl AgentRegistry {
         let mut out = Vec::new();
         for (id, entry) in inner.agents.iter() {
             if entry.role != "developer" || entry.state != State::InReview {
+                continue;
+            }
+            if entry.state_entered_at.elapsed() > cutoff {
+                out.push(id.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    /// Returns project_manager agents stuck in Running state longer than `max_running_secs`.
+    /// PMs should create subtasks and yield for validation; if stuck, they need to be force-yielded.
+    pub fn stuck_running_pms(&self, max_running_secs: u64) -> Result<Vec<String>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        let cutoff = Duration::from_secs(max_running_secs);
+        let mut out = Vec::new();
+        for (id, entry) in inner.agents.iter() {
+            if entry.role != "project_manager" || entry.state != State::Running {
                 continue;
             }
             if entry.state_entered_at.elapsed() > cutoff {
@@ -2257,6 +2279,20 @@ mod tests {
         let stuck = registry.stuck_running_developers(60).unwrap();
         assert_eq!(stuck.len(), 1);
         assert_eq!(stuck[0], dev);
+    }
+
+    #[test]
+    fn stuck_running_pms_detected() {
+        let registry = AgentRegistry::new();
+        let pm = registry
+            .spawn("project_manager", Some("epic-1".into()), None, None)
+            .unwrap();
+        assert!(registry.stuck_running_pms(60).unwrap().is_empty());
+
+        registry.test_backdate_state_entered(&pm, std::time::Duration::from_secs(120));
+        let stuck = registry.stuck_running_pms(60).unwrap();
+        assert_eq!(stuck.len(), 1);
+        assert_eq!(stuck[0], pm);
     }
 
     // --- Clear all tests ---

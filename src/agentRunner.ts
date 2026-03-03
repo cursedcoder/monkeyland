@@ -87,9 +87,9 @@ export interface AgentRunnerCallbacks {
   onChunk: (chunk: { type: string; text?: string; name?: string; state?: string; status?: string }) => void;
   onUsage?: (usage: LlmUsageData) => void;
   onModelLoaded?: (info: ModelInfo) => void;
-  onDone: (fullText: string) => void;
-  onError: (error: string) => void;
-  onStopped: (fullText: string) => void;
+  onDone: (fullText: string) => void | Promise<void>;
+  onError: (error: string) => void | Promise<void>;
+  onStopped: (fullText: string) => void | Promise<void>;
   /** Called when the agent's execution phase changes (developer agents only). */
   onPhaseChange?: (phase: ExecutionPhase) => void;
 }
@@ -304,20 +304,20 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
 
   let fullText = "";
   let terminalState: "none" | "done" | "error" | "stopped" = "none";
-  const emitDone = () => {
+  const emitDone = async () => {
     if (terminalState !== "none") return;
     terminalState = "done";
-    callbacks.onDone(fullText);
+    await callbacks.onDone(fullText);
   };
-  const emitError = (msg: string) => {
+  const emitError = async (msg: string) => {
     if (terminalState !== "none") return;
     terminalState = "error";
-    callbacks.onError(msg);
+    await callbacks.onError(msg);
   };
-  const emitStopped = () => {
+  const emitStopped = async () => {
     if (terminalState !== "none") return;
     terminalState = "stopped";
-    callbacks.onStopped(fullText);
+    await callbacks.onStopped(fullText);
   };
 
   const loaded = await loadLlmModel();
@@ -406,18 +406,18 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
           status: "success"
         });
       } else if (chunk.type === "error") {
-        emitError(String(chunk.error));
+        await emitError(String(chunk.error));
         break;
       }
     }
 
-    emitDone();
+    await emitDone();
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
-      emitStopped();
+      await emitStopped();
     } else {
       const msg = e instanceof Error ? e.message : String(e);
-      emitError(msg);
+      await emitError(msg);
     }
   }
 }

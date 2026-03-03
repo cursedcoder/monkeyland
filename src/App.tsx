@@ -896,9 +896,6 @@ export default function App() {
             }).catch(() => {});
           },
           onDone: async (fullText) => {
-            if (role !== "developer") {
-              updatePayload({ status: "done", answer: fullText, toolActivity: "", toolCalls: [] }, true, true);
-            }
             if (role === "developer") {
               await developerSelfHeal(
                 agentNodeId, role, userMessage, taskId, taskMeta, projectPath,
@@ -906,12 +903,137 @@ export default function App() {
                 (text) => { accumulatedText = text; },
                 () => accumulatedText,
               );
-            } else {
-              const result = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => "error");
-              // PM/Validator can't self-complete - need force yield if they didn't explicitly yield
-              if (result === "already_done" && (role === "project_manager" || role === "validator")) {
-                await invoke("agent_force_yield", { agentId: agentNodeId }).catch(() => {});
+            } else if (role === "project_manager" || role === "validator") {
+              // PM/Validator cannot self-complete - they must yield for review
+              // We retry nudges up to 3 times, then force-yield as a fallback
+              const MAX_PM_NUDGE_RETRIES = 3;
+              let nudgeRetry = 0;
+              let lastResult = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => "error");
+              console.log(`[agent_turn_ended] ${role} ${agentNodeId} returned: ${lastResult}`);
+
+              while (lastResult === "needs_yield" && nudgeRetry < MAX_PM_NUDGE_RETRIES) {
+                nudgeRetry++;
+                console.log(`[pm-nudge] ${role} ${agentNodeId} nudge attempt ${nudgeRetry}/${MAX_PM_NUDGE_RETRIES}`);
+                updatePayload({ status: "loading", toolActivity: `Completing task (attempt ${nudgeRetry})...`, toolCalls: [] }, false, true);
+
+                // Get PM phase and task info to create context-aware nudge
+                let pmPhase: string | null = null;
+                let hasSubtasks = false;
+                if (role === "project_manager") {
+                  pmPhase = await invoke<string | null>("agent_get_pm_phase", { agentId: agentNodeId }).catch(() => null);
+                  // Check if subtasks exist under the epic
+                  if (taskId && projectPath) {
+                    try {
+                      const tasksJson = await invoke<string>("beads_run", { projectPath, args: ["list", "--json", "--parent", taskId] });
+                      const tasks = JSON.parse(tasksJson);
+                      hasSubtasks = Array.isArray(tasks) && tasks.length > 0;
+                    } catch { /* ignore - may not have subtasks yet */ }
+                  }
+                }
+
+                // Build context-aware nudge message
+                let nudgeMsg: string;
+                if (role === "project_manager") {
+                  if (pmPhase === "exploration" || !hasSubtasks) {
+                    nudgeMsg = `You are still in the ${pmPhase || "exploration"} phase and haven't created any subtasks yet.
+
+**You MUST complete these steps before yielding:**
+1. Use \`create_beads_task\` to create subtasks for this epic (with deferred: true and parent_id: "${taskId || "the epic ID"}")
+2. Review dependencies between tasks
+3. Call \`yield_for_review\` to submit your task breakdown for validation
+
+Do NOT call yield_for_review until you have created at least one subtask.`;
+                  } else if (pmPhase === "task_drafting") {
+                    nudgeMsg = `You have created some tasks but haven't finished the task breakdown.
+
+Please either:
+- Create more subtasks if needed using \`create_beads_task\`
+- Or call \`yield_for_review\` to submit your task breakdown for validation`;
+                  } else {
+                    nudgeMsg = `You haven't submitted your task breakdown for validation yet.
+Please call \`yield_for_review\` now to submit your work for validation.`;
+                  }
+                } else {
+                  // Validator nudge
+                  nudgeMsg = `You haven't completed your validation yet. Please finish your review and call \`yield_for_review\`.`;
+                }
+
+                let nudgeCompleted = false;
+                const currentAttempt = nudgeRetry; // Capture attempt number for callback closure
+                await runAgent({
+                  systemPrompt: getPromptForRole(role),
+                  userMessage: nudgeMsg,
+                  plugins: buildPlugins(role, agentNodeId, agentNodeId, taskId, projectPath),
+                  signal: controller.signal,
+                  callbacks: {
+                    onChunk: (c) => {
+                      if (c.type === "content" && c.text) {
+                        accumulatedText += c.text;
+                        updatePayload({ status: "loading", answer: accumulatedText, streamingContent: accumulatedText, toolActivity: "Generating…", toolCalls: [] }, false, true);
+                      }
+                      if (c.type === "tool") {
+                        const statusText =
+                          c.state === "running" ? (c.status || `Running ${c.name}...`) :
+                          c.state === "preparing" ? `Calling ${c.name}...` :
+                          (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
+                        if (statusText) updatePayload({ status: "loading", toolActivity: statusText, toolCalls: [] }, false, true);
+                      }
+                    },
+                    onUsage: (usage) => {
+                      costStore.reportUsage(
+                        agentNodeId, role, mi.modelName,
+                        usage.prompt_tokens, usage.completion_tokens,
+                        mi.inputPricePerM, mi.outputPricePerM,
+                      );
+                    },
+                    onDone: async () => {
+                      nudgeCompleted = true;
+                      lastResult = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => "error");
+                      console.log(`[pm-nudge-done] ${role} ${agentNodeId} attempt ${currentAttempt} returned: ${lastResult}`);
+                    },
+                    onError: (msg) => {
+                      console.error(`[pm-nudge-error] ${role} ${agentNodeId} attempt ${currentAttempt}: ${msg}`);
+                      nudgeCompleted = true;
+                      lastResult = "error";
+                    },
+                    onStopped: () => {
+                      nudgeCompleted = true;
+                    },
+                  },
+                });
+
+                // If nudge was aborted, break out
+                if (!nudgeCompleted || controller.signal.aborted) {
+                  break;
+                }
               }
+
+              // After max retries, force-yield if still stuck
+              if (lastResult === "needs_yield") {
+                console.log(`[pm-force-yield] ${role} ${agentNodeId} force-yielding after ${nudgeRetry} nudge attempts`);
+                try {
+                  await invoke("agent_force_yield", { agentId: agentNodeId });
+                  const summary = `Auto-submitted: PM did not yield after ${nudgeRetry} nudge attempts.`;
+                  await invoke("agent_set_yield_summary", { agentId: agentNodeId, diffSummary: summary });
+                  updatePayload({ status: "in_review", answer: accumulatedText, toolActivity: "Auto-submitted for review", toolCalls: [] }, true, true);
+                } catch (e) {
+                  console.error(`[pm-force-yield-error] ${role} ${agentNodeId}: ${e}`);
+                  updatePayload({ status: "error", errorMessage: `PM stuck: could not force-yield`, answer: accumulatedText, toolCalls: [] }, true, true);
+                }
+              } else if (lastResult === "completed" || lastResult === "already_done") {
+                // PM/validator properly completed
+                updatePayload({ status: "done", answer: accumulatedText, toolActivity: "", toolCalls: [] }, true, true);
+              } else if (lastResult === "error") {
+                updatePayload({ status: "error", errorMessage: "Agent ended with error", answer: accumulatedText, toolCalls: [] }, true, true);
+              } else {
+                // Unknown result - treat as done
+                updatePayload({ status: "done", answer: accumulatedText, toolActivity: "", toolCalls: [] }, true, true);
+              }
+            } else {
+              // Non-developer, non-PM roles (operator, worker, etc.) - can self-complete
+              const result = await invoke<string>("agent_turn_ended", { agentId: agentNodeId, role }).catch(() => "error");
+              console.log(`[agent_turn_ended] ${role} ${agentNodeId} returned: ${result}`);
+              updatePayload({ status: "done", answer: fullText, toolActivity: "", toolCalls: [] }, true, true);
             }
           },
           onError: (msg) => {
@@ -2376,21 +2498,27 @@ export default function App() {
         console.log(`[PM Validation] Submitted results: ${passed ? "PASSED" : "FAILED"}`);
 
         // ── 5. If passed, promote all deferred tasks ──
+        // Tasks are created with status "open" but defer_until set to 100 years in the future.
+        // We need to clear defer_until for all tasks that have it set.
         if (passed) {
           console.log(`[PM Validation] Promoting deferred tasks for epic ${epic_id}`);
+          let promotedCount = 0;
           for (const task of tasks) {
-            if (task.status === "deferred") {
+            // Check if task has a defer_until date set (tasks are "open" status but deferred via this field)
+            if (task.defer_until) {
               try {
                 await invoke<string>("beads_run", {
                   projectPath: resolvedProjectPath,
                   args: ["update", task.id, "--defer", ""],
                 });
-                console.log(`[PM Validation] Promoted task ${task.id}`);
+                promotedCount++;
+                console.log(`[PM Validation] Promoted task ${task.id} (cleared defer_until)`);
               } catch (e) {
                 console.error(`[PM Validation] Failed to promote task ${task.id}:`, e);
               }
             }
           }
+          console.log(`[PM Validation] Promoted ${promotedCount}/${tasks.length} tasks`);
         }
 
         // ── 6. If failed, send feedback to PM agent ──

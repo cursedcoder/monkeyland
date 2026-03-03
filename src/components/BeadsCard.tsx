@@ -47,6 +47,7 @@ export interface BeadsTask {
   reporter?: string;
   created_at?: string;
   updated_at?: string;
+  defer_until?: string;
 }
 
 interface BeadsCardProps {
