@@ -1,7 +1,6 @@
 import { Plugin, type PluginParameter, type PluginExecutionContext } from "./Plugin";
 import { invoke } from "@tauri-apps/api/core";
 import type { BeadsStatus } from "../components/BeadsCard";
-import { inspectExistingProject, getActiveTaskIds, ProjectState } from "../projectInspection";
 
 export type AddBeadsNodeFn = (agentNodeId: string) => string;
 export type UpdateBeadsStatusFn = (nodeId: string, status: BeadsStatus) => void;
@@ -133,24 +132,36 @@ export class BeadsToolPlugin extends Plugin {
         lastRefresh: Date.now(),
       });
 
-      // Project already existed — run inspection to detect state and clean up zombies.
-      // This covers the fresh-canvas scenario where the pre-LLM inspection found no beads card.
+      // Safety net: if the project was already initialized, do a quick check
+      // for completed state. The WM brain does the heavy lifting before the LLM
+      // runs, but if the LLM still calls this tool, we catch it here.
       if (initResult.includes("already initialized")) {
-        console.log("[BeadsToolPlugin] Project already initialized — running inspection");
-        const activeIds = getActiveTaskIds(_context.layouts ?? []);
-        const inspection = await inspectExistingProject(path, activeIds);
-
-        if (inspection.state === ProjectState.COMPLETED) {
-          return {
-            result: `[TERMINAL] Project "${path}" is already complete. ${inspection.completionSummary ?? "All work is finished."} Do NOT create new epics or tasks — the project is done.`,
-            stopAgent: true,
-          };
-        }
-        if (inspection.state === ProjectState.ERROR) {
-          return { result: `Project opened but inspection failed: ${inspection.errorMessage}` };
-        }
-        if (inspection.stateContext) {
-          return { result: `${steps.join(" ")}\n\n${inspection.stateContext}` };
+        try {
+          const raw = await invoke<string>("beads_run", {
+            projectPath: path,
+            args: ["list", "--json", "--all"],
+            agentId: this.backendAgentId,
+          });
+          const tasks = JSON.parse(raw.trim());
+          if (Array.isArray(tasks)) {
+            const epics = tasks.filter((t: { type?: string; issue_type?: string }) =>
+              t.type === "epic" || t.issue_type === "epic"
+            );
+            const closedEpics = epics.filter((t: { status: string }) =>
+              t.status === "done" || t.status === "closed"
+            );
+            const openEpics = epics.filter((t: { status: string }) =>
+              t.status !== "done" && t.status !== "closed"
+            );
+            if (closedEpics.length > 0 && openEpics.length === 0) {
+              return {
+                result: `[TERMINAL] Project "${path}" is already complete. All epics are closed. Do NOT create new epics or tasks.`,
+                stopAgent: true,
+              };
+            }
+          }
+        } catch {
+          // Quick check failed — not critical, continue normally
         }
       }
 

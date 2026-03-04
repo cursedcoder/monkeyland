@@ -1082,6 +1082,18 @@ impl AgentRegistry {
             .collect())
     }
 
+    /// Returns the set of task IDs that have an active (non-terminal) agent assigned.
+    /// Used by WM brain to protect tasks with live agents from zombie cleanup.
+    pub fn active_task_ids(&self) -> Result<std::collections::HashSet<String>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        Ok(inner
+            .agents
+            .values()
+            .filter(|a| !a.state.is_terminal() && a.task_id.is_some())
+            .filter_map(|a| a.task_id.clone())
+            .collect())
+    }
+
     /// Start validation for a developer that yielded.
     /// Transitions Yielded → InReview via the state machine.
     pub fn start_validation(

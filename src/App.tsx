@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Plugin } from "./plugins/Plugin";
@@ -27,8 +27,8 @@ import {
   ReprioritizeTaskPlugin,
 } from "./plugins/OrchestrationControlPlugins";
 import { runAgent, type Attachment, type ModelMessage } from "./agentRunner";
-import { inspectProject, ProjectState } from "./projectInspection";
 import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
+import { wmReducer, initialWmUiState, type WmEvent, type WmPhase as WmReducerPhase } from "./wmReducer";
 import type { ToolName } from "./agentPrompts";
 import { createCostStore, CostStoreContext } from "./costStore";
 import { getValidatorSpawnFailureSubmissions, normalizeValidatorOutput } from "./validatorSafety";
@@ -121,15 +121,26 @@ export default function App() {
   const activeWmNodeId = useRef<string | null>(null);
   const wmCardSessionId = useRef<string | null>(null);
 
-  // WM Conversation state
-  const [wmConversation, setWmConversation] = useState<WMChatMessage[]>([]);
+  // WM state — driven by backend events via wmReducer
+  const [wmState, wmDispatch] = useReducer(wmReducer, initialWmUiState);
+  const wmConversation: WMChatMessage[] = useMemo(
+    () => wmState.conversation.map((m, i) => ({
+      id: `wm-msg-${i}`,
+      role: m.role,
+      content: m.content,
+      timestamp: 0,
+    })),
+    [wmState.conversation],
+  );
+  const wmPhase = wmState.phase as WMPhase;
+  const wmIsProcessing = wmState.isProcessing;
+  const wmOrchStatus = wmState.orchStatus;
+
+  // UI-only streaming state (not driven by backend events)
   const [wmNodeId, setWmNodeId] = useState<string | null>(null);
-  const [wmPhase, setWmPhase] = useState<WMPhase>("initial");
-  const [wmIsProcessing, setWmIsProcessing] = useState(false);
   const [wmStreamingContent, setWmStreamingContent] = useState<string>("");
   const [wmStreamingToolCalls, setWmStreamingToolCalls] = useState<Array<{ name: string; status: string }>>([]);
   const [wmTaskProgress, _setWmTaskProgress] = useState({ done: 0, total: 0 });
-  const [wmOrchStatus, setWmOrchStatus] = useState<"running" | "paused" | "idle">("idle");
 
   const persistLayouts = useCallback((next: SessionLayout[]) => {
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
@@ -220,25 +231,52 @@ export default function App() {
       loaded.current = true;
       setLayoutsHydrated(true);
 
-      // Load WM conversation
+      // Hydrate WM state from backend
       try {
-        const wmPayload = await invoke<{
-          messages: WMChatMessage[];
-          wm_node_id: string | null;
-          wm_phase: string | null;
-        }>("load_wm_conversation");
-        if (!cancelled && wmPayload.messages.length > 0) {
-          setWmConversation(wmPayload.messages);
-          if (wmPayload.wm_node_id) {
-            setWmNodeId(wmPayload.wm_node_id);
-            activeWmNodeId.current = wmPayload.wm_node_id;
-          }
-          if (wmPayload.wm_phase) {
-            setWmPhase(wmPayload.wm_phase as WMPhase);
-          }
+        const wmBackendState = await invoke<{
+          phase: string;
+          conversation: Array<{ role: string; content: string }>;
+          project_path: string | null;
+        }>("wm_get_state");
+        if (!cancelled && wmBackendState.conversation.length > 0) {
+          wmDispatch({
+            type: "HYDRATE",
+            state: {
+              phase: wmBackendState.phase as WmReducerPhase,
+              conversation: wmBackendState.conversation.map((m) => ({
+                role: m.role as "user" | "assistant",
+                content: m.content,
+              })),
+            },
+          });
         }
       } catch (_) {
-        // No saved conversation
+        // No saved state — try legacy format
+        try {
+          const wmPayload = await invoke<{
+            messages: WMChatMessage[];
+            wm_node_id: string | null;
+            wm_phase: string | null;
+          }>("load_wm_conversation");
+          if (!cancelled && wmPayload.messages.length > 0) {
+            wmDispatch({
+              type: "HYDRATE",
+              state: {
+                phase: (wmPayload.wm_phase ?? "idle") as WmReducerPhase,
+                conversation: wmPayload.messages.map((m) => ({
+                  role: m.role,
+                  content: m.content,
+                })),
+              },
+            });
+            if (wmPayload.wm_node_id) {
+              setWmNodeId(wmPayload.wm_node_id);
+              activeWmNodeId.current = wmPayload.wm_node_id;
+            }
+          }
+        } catch (_) {
+          // No saved conversation
+        }
       }
     })();
     return () => {
@@ -246,15 +284,20 @@ export default function App() {
     };
   }, []);
 
-  // Save WM conversation when it changes
+  // Backend persists WmState on every command — this is a legacy fallback
   useEffect(() => {
-    if (!loaded.current || wmConversation.length === 0) return;
-    
+    if (!loaded.current || wmState.conversation.length === 0) return;
+
     const saveConversation = async () => {
       try {
         await invoke("save_wm_conversation", {
           payload: {
-            messages: wmConversation,
+            messages: wmState.conversation.map((m, i) => ({
+              id: `msg-${i}`,
+              role: m.role,
+              content: m.content,
+              timestamp: Date.now(),
+            })),
             wm_node_id: wmNodeId,
             wm_phase: wmPhase,
           },
@@ -263,10 +306,10 @@ export default function App() {
         console.warn("Failed to save WM conversation:", e);
       }
     };
-    
+
     const timeout = setTimeout(saveConversation, 500);
     return () => clearTimeout(timeout);
-  }, [wmConversation, wmNodeId, wmPhase]);
+  }, [wmState.conversation, wmNodeId, wmPhase]);
 
   const handleLayoutChange = useCallback((nodeId: string, layout: SessionLayout) => {
     setLayouts((prev) => {
@@ -1125,31 +1168,9 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
 
       if (!promptText) return;
 
-      // Halt any running orchestration before we inspect / modify project state
-      try { await invoke("orch_pause"); } catch { /* not running */ }
-
-      // Spawn WM agent in the backend
-      let newWmNodeId: string;
-      try {
-        const result = await invoke<{ agent_id: string }>("agent_spawn", {
-          payload: {
-            role: "workforce_manager",
-            task_id: null,
-            parent_agent_id: null,
-          },
-        });
-        newWmNodeId = result.agent_id;
-      } catch (e) {
-        console.error("Failed to spawn workforce manager:", e);
-        return;
-      }
-      
-      activeWmNodeId.current = newWmNodeId;
       wmCardSessionId.current = nodeId;
-      setWmNodeId(newWmNodeId);
-      setWmPhase("inspecting");
 
-      // Transform the prompt card into a wm_chat card
+      // Transform prompt card into wm_chat card
       setLayouts((prev) => {
         const next = prev.map((l) => {
           if (l.session_id !== nodeId) return l;
@@ -1165,358 +1186,22 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         return next;
       });
 
-      // Add user's prompt as first message
-      const userMsg: WMChatMessage = {
-        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-        role: "user",
-        content: promptText,
-        timestamp: Date.now(),
-      };
-      setWmConversation([userMsg]);
-      setWmIsProcessing(true);
-
-      // --- Project Inspection (deterministic, runs before LLM) ---
-      const inspection = await inspectProject(layoutsRef.current);
-
-      if (inspection.state === ProjectState.COMPLETED && inspection.completionSummary) {
-        // Short-circuit: work is already done — no LLM needed
-        const syntheticMsg: WMChatMessage = {
-          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          role: "assistant",
-          content: inspection.completionSummary,
-          timestamp: Date.now(),
-        };
-        setWmConversation((prev) => [...prev, syntheticMsg]);
-        setWmIsProcessing(false);
-        setWmPhase("monitoring");
-        return;
-      }
-
-      if (inspection.state === ProjectState.ERROR) {
-        const errorMsg: WMChatMessage = {
-          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          role: "assistant",
-          content: `Inspection error: ${inspection.errorMessage ?? "Unknown error"}`,
-          timestamp: Date.now(),
-        };
-        setWmConversation((prev) => [...prev, errorMsg]);
-        setWmIsProcessing(false);
-        setWmPhase("monitoring");
-        return;
-      }
-
-      // Determine tool constraints based on inspection state
-      const removeTools = new Set<ToolName>();
-      if (inspection.state === ProjectState.IN_PROGRESS) {
-        removeTools.add("open_project_with_beads");
-        removeTools.add("sanitize_project");
-      }
-
-      setWmPhase("project_setup");
-
-      const plugins = buildPlugins("workforce_manager", nodeId, newWmNodeId, null, null, removeTools.size > 0 ? removeTools : undefined);
-      const systemPrompt = getPromptForRole("workforce_manager") + inspection.stateContext;
-
-      const controller = new AbortController();
-      abortControllers.current.set(newWmNodeId, controller);
-
-      let accumulatedText = "";
-      const toolCalls: Array<{ name: string; status: string }> = [];
-
-      try {
-        const messages: ModelMessage[] = [userMsg].map((m) => ({
-          role: m.role,
-          content: m.content,
-        }));
-
-        await runAgent({
-          systemPrompt,
-          messages,
-          plugins,
-          signal: controller.signal,
-          abortController: controller,
-          layouts: layoutsRef.current,
-          callbacks: {
-            onChunk: (c) => {
-              if (c.type === "content" && c.text) {
-                accumulatedText += c.text;
-                setWmStreamingContent(accumulatedText);
-              }
-              if (c.type === "reasoning" && c.text) {
-                accumulatedText += c.text;
-                setWmStreamingContent(accumulatedText);
-              }
-              if (c.type === "tool") {
-                if (c.state === "running" || c.state === "preparing") {
-                  toolCalls.push({ name: c.name ?? "unknown", status: "running" });
-                  setWmStreamingToolCalls([...toolCalls]);
-                } else if ((c.state === "done" || c.state === "completed") && c.name) {
-                  const tc = toolCalls.find((t) => t.name === c.name && t.status === "running");
-                  if (tc) tc.status = "done";
-                  setWmStreamingToolCalls([...toolCalls]);
-                }
-              }
-            },
-            onUsage: (usage) => {
-              costStore.reportUsage(
-                newWmNodeId, "workforce_manager", "unknown",
-                usage.prompt_tokens, usage.completion_tokens, 0, 0,
-              );
-            },
-            onDone: () => {},
-            onError: () => {},
-            onStopped: () => {},
-          },
-        });
-
-        const assistantMsg: WMChatMessage = {
-          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          role: "assistant",
-          content: accumulatedText,
-          timestamp: Date.now(),
-          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        };
-        setWmConversation((prev) => [...prev, assistantMsg]);
-      } catch (e) {
-        console.error("WM agent error:", e);
-        const errorMsg: WMChatMessage = {
-          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          role: "assistant",
-          content: `Error: ${e instanceof Error ? e.message : String(e)}`,
-          timestamp: Date.now(),
-        };
-        setWmConversation((prev) => [...prev, errorMsg]);
-      } finally {
-        setWmIsProcessing(false);
-        setWmStreamingContent("");
-        setWmStreamingToolCalls([]);
-        setWmOrchStatus("running");
-        abortControllers.current.delete(newWmNodeId);
-      }
-
-      try {
-        await invoke("orch_start");
-      } catch {
-        /* already running or not available */
-      }
+      // Backend handles: orch_pause, inspection, classification, event emission
+      await invoke("wm_launch", { promptText });
     },
-    [buildPlugins, persistLayouts],
+    [persistLayouts],
   );
 
   /**
-   * Handle sending a message to the WM in the new chat-based interface.
-   * Supports multi-turn conversation - spawns WM if needed, otherwise continues conversation.
+   * Handle sending a message to the WM in the chat interface.
+   * Backend handles: orch_pause, inspection, classification, event emission.
    */
   const handleWMMessage = useCallback(
     async (text: string) => {
       if (!text.trim()) return;
-
-      // Create user message
-      const userMsg: WMChatMessage = {
-        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-        role: "user",
-        content: text.trim(),
-        timestamp: Date.now(),
-      };
-
-      setWmConversation((prev) => [...prev, userMsg]);
-      setWmIsProcessing(true);
-
-      let currentWmNodeId = wmNodeId;
-
-      // Spawn WM if not already spawned
-      if (!currentWmNodeId) {
-        try {
-          const result = await invoke<{ agent_id: string }>("agent_spawn", {
-            payload: {
-              role: "workforce_manager",
-              task_id: null,
-              parent_agent_id: null,
-            },
-          });
-          currentWmNodeId = result.agent_id;
-          setWmNodeId(currentWmNodeId);
-          activeWmNodeId.current = currentWmNodeId;
-          wmCardSessionId.current = currentWmNodeId;
-          setWmPhase("project_setup");
-
-          // Create the WM agent layout for tracking
-          const size = getDefaultSize("agent");
-          setLayouts((prev) => {
-            const newAgentLayout: SessionLayout = {
-              session_id: currentWmNodeId!,
-              x: 0,
-              y: 0,
-              w: size.w,
-              h: size.h,
-              collapsed: false,
-              node_type: "agent",
-              payload: JSON.stringify({
-                role: "workforce_manager",
-                status: "loading",
-                answer: "",
-                toolActivity: "Connecting…",
-                turnStartedAt: Date.now(),
-              }),
-            };
-            const next = repositionLayouts([...prev, newAgentLayout]);
-            if (loaded.current) persistLayouts(next);
-            return next;
-          });
-
-        } catch (e) {
-          console.error("Failed to spawn workforce manager:", e);
-          setWmIsProcessing(false);
-          return;
-        }
-      }
-
-      // Halt orchestration before inspecting project state
-      try { await invoke("orch_pause"); } catch { /* not running */ }
-
-      // --- Project Inspection (deterministic, before LLM) ---
-      setWmPhase("inspecting");
-      const inspection = await inspectProject(layoutsRef.current);
-
-      // Determine tool constraints and prompt based on inspection
-      const removeTools = new Set<ToolName>();
-      let systemPrompt: string;
-
-      if (inspection.state === ProjectState.IN_PROGRESS || inspection.state === ProjectState.COMPLETED) {
-        removeTools.add("open_project_with_beads");
-        removeTools.add("sanitize_project");
-      }
-
-      if (inspection.state === ProjectState.COMPLETED) {
-        systemPrompt = getPromptForRole("workforce_manager", "completed") + inspection.stateContext;
-      } else {
-        systemPrompt = getPromptForRole("workforce_manager") + inspection.stateContext;
-      }
-
-      setWmPhase("project_setup");
-
-      const canvasCardId = wmCardSessionId.current ?? currentWmNodeId;
-      const plugins = buildPlugins("workforce_manager", canvasCardId, currentWmNodeId, null, null, removeTools.size > 0 ? removeTools : undefined);
-
-      const controller = new AbortController();
-      abortControllers.current.set(currentWmNodeId, controller);
-
-      let accumulatedText = "";
-      const toolCalls: Array<{ name: string; status: string }> = [];
-
-      const updateAgentPayload = (update: Record<string, unknown>) => {
-        setLayouts((prev) =>
-          prev.map((l) => {
-            if (l.session_id !== currentWmNodeId) return l;
-            try {
-              const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
-              return { ...l, payload: JSON.stringify({ ...p, ...update }) };
-            } catch {
-              return l;
-            }
-          })
-        );
-      };
-
-      try {
-        const messages: ModelMessage[] = wmConversation.map((m) => ({
-          role: m.role,
-          content: m.content,
-        }));
-
-        await runAgent({
-          systemPrompt,
-          messages,
-          plugins,
-          signal: controller.signal,
-          abortController: controller,
-          layouts: layoutsRef.current,
-          callbacks: {
-            onChunk: (c) => {
-              if (c.type === "content" && c.text) {
-                accumulatedText += c.text;
-                updateAgentPayload({ status: "loading", answer: accumulatedText, toolActivity: "Generating…" });
-                setWmStreamingContent(accumulatedText);
-              }
-              if (c.type === "reasoning" && c.text) {
-                accumulatedText += c.text;
-                updateAgentPayload({ status: "loading", answer: accumulatedText, toolActivity: "Reasoning…" });
-                setWmStreamingContent(accumulatedText);
-              }
-              if (c.type === "tool") {
-                const statusText =
-                  c.state === "running" ? (c.status || `Running ${c.name}...`) :
-                  c.state === "preparing" ? `Calling ${c.name}...` :
-                  (c.state === "done" || c.state === "completed") && c.name ? `Finished: ${c.name}` : "";
-                if (statusText) {
-                  updateAgentPayload({ status: "loading", toolActivity: statusText });
-                }
-                if (c.state === "running" || c.state === "preparing") {
-                  toolCalls.push({ name: c.name ?? "unknown", status: "running" });
-                  setWmStreamingToolCalls([...toolCalls]);
-                } else if ((c.state === "done" || c.state === "completed") && c.name) {
-                  const tc = toolCalls.find((t) => t.name === c.name && t.status === "running");
-                  if (tc) tc.status = "done";
-                  setWmStreamingToolCalls([...toolCalls]);
-                }
-              }
-            },
-            onUsage: (usage) => {
-              costStore.reportUsage(
-                currentWmNodeId!, "workforce_manager", "unknown",
-                usage.prompt_tokens, usage.completion_tokens, 0, 0,
-              );
-              invoke("agent_report_tokens", {
-                agentId: currentWmNodeId,
-                delta: usage.prompt_tokens + usage.completion_tokens,
-              }).catch(() => {});
-            },
-            onDone: (fullText) => {
-              updateAgentPayload({ status: "done", answer: fullText, toolActivity: "" });
-
-              const assistantMsg: WMChatMessage = {
-                id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-                role: "assistant",
-                content: fullText,
-                timestamp: Date.now(),
-                toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
-              };
-              setWmConversation((prev) => [...prev, assistantMsg]);
-              setWmIsProcessing(false);
-              setWmStreamingContent("");
-              setWmStreamingToolCalls([]);
-              setWmPhase("monitoring");
-
-              invoke("agent_turn_ended", { agentId: currentWmNodeId, role: "workforce_manager" }).catch(() => {});
-            },
-            onError: (msg) => {
-              updateAgentPayload({ status: "error", errorMessage: msg });
-              setWmIsProcessing(false);
-              setWmStreamingContent("");
-              setWmStreamingToolCalls([]);
-            },
-            onStopped: () => {
-              updateAgentPayload({ status: "stopped", answer: accumulatedText, toolActivity: "" });
-              setWmIsProcessing(false);
-              setWmStreamingContent("");
-              setWmStreamingToolCalls([]);
-            },
-          },
-        });
-      } catch (e) {
-        console.error("WM conversation error:", e);
-        setWmIsProcessing(false);
-      }
-
-      abortControllers.current.delete(currentWmNodeId);
-
-      // Resume orchestration after WM turn completes
-      try {
-        await invoke("orch_start");
-        setWmOrchStatus("running");
-      } catch { /* not available */ }
+      await invoke("wm_handle_message", { text: text.trim() });
     },
-    [wmNodeId, buildPlugins, costStore, persistLayouts],
+    [],
   );
 
   /**
@@ -1525,7 +1210,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
   const handleWMPause = useCallback(async () => {
     try {
       await invoke("orch_pause");
-      setWmOrchStatus("paused");
+      wmDispatch({ type: "OrchStatusChanged", status: "paused" });
     } catch (e) {
       console.error("Failed to pause orchestration:", e);
     }
@@ -1537,7 +1222,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
   const handleWMResume = useCallback(async () => {
     try {
       await invoke("orch_resume");
-      setWmOrchStatus("running");
+      wmDispatch({ type: "OrchStatusChanged", status: "running" });
     } catch (e) {
       console.error("Failed to resume orchestration:", e);
     }
@@ -1552,7 +1237,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       invoke("agent_kill", { agentId: id }).catch(() => {});
     }
     abortControllers.current.clear();
-    setWmOrchStatus("idle");
+    wmDispatch({ type: "OrchStatusChanged", status: "idle" });
     setLayouts((prev) =>
       prev.map((l) => {
         if (!["agent", "worker", "validator"].includes(l.node_type ?? "")) return l;
@@ -1853,12 +1538,136 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         });
       }
 
-      // Do NOT start orchestration here — the WM handleLaunch / handleWMMessage
+      // Do NOT start orchestration here — the backend wm_launch / wm_handle_message
       // will start it after inspection completes. Starting it here causes a race
       // where developers get dispatched for zombie tasks before cleanup.
-      setWmOrchStatus("paused");
+      wmDispatch({ type: "OrchStatusChanged", status: "paused" });
     })();
   }, [layoutsHydrated]);
+
+  // ---------------------------------------------------------------------------
+  // WM event listener — backend emits wm_event, reducer applies them
+  // ---------------------------------------------------------------------------
+  const wmDispatchRef = useRef(wmDispatch);
+  wmDispatchRef.current = wmDispatch;
+
+  const startWmLlmStream = useCallback(
+    async (config: Extract<WmEvent, { type: "RunLlm" }>) => {
+      let currentWmNodeId = wmNodeId;
+
+      if (!currentWmNodeId) {
+        try {
+          const result = await invoke<{ agent_id: string }>("agent_spawn", {
+            payload: {
+              role: "workforce_manager",
+              task_id: null,
+              parent_agent_id: null,
+            },
+          });
+          currentWmNodeId = result.agent_id;
+          setWmNodeId(currentWmNodeId);
+          activeWmNodeId.current = currentWmNodeId;
+        } catch (e) {
+          console.error("Failed to spawn WM agent:", e);
+          await invoke("wm_llm_error", { error: `Failed to spawn WM: ${e}` }).catch(() => {});
+          return;
+        }
+      }
+
+      const canvasCardId = wmCardSessionId.current ?? currentWmNodeId;
+      const removeToolSet = new Set<ToolName>(config.remove_tools as ToolName[]);
+      const plugins = buildPlugins(
+        "workforce_manager", canvasCardId, currentWmNodeId, null, null,
+        removeToolSet.size > 0 ? removeToolSet : undefined,
+      );
+
+      const systemPrompt = getPromptForRole(
+        "workforce_manager",
+        config.prompt_variant === "completed" ? "completed" : undefined,
+      ) + config.state_context;
+
+      const controller = new AbortController();
+      abortControllers.current.set(currentWmNodeId, controller);
+
+      let accumulatedText = "";
+      const toolCalls: Array<{ name: string; status: string }> = [];
+
+      const messages: ModelMessage[] = wmState.conversation.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      try {
+        await runAgent({
+          systemPrompt,
+          messages,
+          plugins,
+          signal: controller.signal,
+          abortController: controller,
+          layouts: layoutsRef.current,
+          callbacks: {
+            onChunk: (c) => {
+              if ((c.type === "content" || c.type === "reasoning") && c.text) {
+                accumulatedText += c.text;
+                setWmStreamingContent(accumulatedText);
+              }
+              if (c.type === "tool") {
+                if (c.state === "running" || c.state === "preparing") {
+                  toolCalls.push({ name: c.name ?? "unknown", status: "running" });
+                  setWmStreamingToolCalls([...toolCalls]);
+                } else if ((c.state === "done" || c.state === "completed") && c.name) {
+                  const tc = toolCalls.find((t) => t.name === c.name && t.status === "running");
+                  if (tc) tc.status = "done";
+                  setWmStreamingToolCalls([...toolCalls]);
+                }
+              }
+            },
+            onUsage: (usage) => {
+              costStore.reportUsage(
+                currentWmNodeId!, "workforce_manager", "unknown",
+                usage.prompt_tokens, usage.completion_tokens, 0, 0,
+              );
+              invoke("agent_report_tokens", {
+                agentId: currentWmNodeId,
+                delta: usage.prompt_tokens + usage.completion_tokens,
+              }).catch(() => {});
+            },
+            onDone: () => {},
+            onError: () => {},
+            onStopped: () => {},
+          },
+        });
+
+        setWmStreamingContent("");
+        setWmStreamingToolCalls([]);
+        abortControllers.current.delete(currentWmNodeId);
+
+        await invoke("wm_llm_done", { responseText: accumulatedText });
+      } catch (e) {
+        console.error("WM LLM error:", e);
+        setWmStreamingContent("");
+        setWmStreamingToolCalls([]);
+        abortControllers.current.delete(currentWmNodeId);
+
+        await invoke("wm_llm_error", { error: String(e) }).catch(() => {});
+      }
+    },
+    [wmNodeId, wmState.conversation, buildPlugins, costStore],
+  );
+  const startWmLlmStreamRef = useRef(startWmLlmStream);
+  startWmLlmStreamRef.current = startWmLlmStream;
+
+  useEffect(() => {
+    const unlisten = listen<WmEvent>("wm_event", (event) => {
+      wmDispatchRef.current(event.payload);
+
+      if (event.payload.type === "RunLlm") {
+        startWmLlmStreamRef.current(event.payload as Extract<WmEvent, { type: "RunLlm" }>);
+      }
+    });
+
+    return () => { safeUnlisten(unlisten); };
+  }, []);
 
   // Wire up dispatchAgentRef so WM's dispatch_agent tool can spawn agents.
   dispatchAgentRef.current = async (p) => {
@@ -2754,11 +2563,8 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
     } catch { /* ignore */ }
 
     // 3. Clear WM conversation state
-    setWmConversation([]);
+    wmDispatch({ type: "HYDRATE", state: { phase: "idle" as WmReducerPhase, conversation: [] } });
     setWmNodeId(null);
-    setWmPhase("initial");
-    setWmIsProcessing(false);
-    setWmOrchStatus("idle");
     try {
       await invoke("clear_wm_conversation");
     } catch { /* ignore */ }

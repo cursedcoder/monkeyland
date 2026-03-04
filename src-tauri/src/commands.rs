@@ -6,14 +6,16 @@ use crate::browser_pool::BrowserPool;
 use crate::developer_phases::{Phase, PhaseEvent};
 use crate::orchestration::{
     MergeQueue, OrchestrationMetrics, OrchestrationMetricsSnapshot, OrchestrationState,
+    TauriOrchEnv,
 };
 use crate::pty_pool::PtyPool;
 use crate::storage::{MetaDb, SessionLayoutRow};
+use crate::wm_brain::{self, WmEvent, WmPhase, WmState};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionLayout {
@@ -2711,4 +2713,235 @@ pub async fn clear_wm_conversation(meta_db: State<'_, MetaDb>) -> Result<(), Str
     };
     let json = serde_json::to_string(&empty).map_err(|e| e.to_string())?;
     meta_db.set_setting("wm_conversation", &json)
+}
+
+// ---------------------------------------------------------------------------
+// WM Brain commands — event-driven state machine
+// ---------------------------------------------------------------------------
+
+fn emit_wm_event(app: &tauri::AppHandle, event: &WmEvent) -> Result<(), String> {
+    app.emit("wm_event", event).map_err(|e| e.to_string())
+}
+
+fn persist_wm_state(meta_db: &MetaDb, state: &WmState) -> Result<(), String> {
+    let json = serde_json::to_string(state).map_err(|e| e.to_string())?;
+    meta_db.set_setting("wm_state", &json)
+}
+
+fn load_wm_state(meta_db: &MetaDb) -> WmState {
+    meta_db
+        .get_setting("wm_state")
+        .ok()
+        .flatten()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn wm_launch(
+    app: tauri::AppHandle,
+    meta_db: State<'_, MetaDb>,
+    orch_state: State<'_, OrchestrationState>,
+    registry: State<'_, AgentRegistry>,
+    pool: State<'_, PtyPool>,
+    prompt_text: String,
+) -> Result<(), String> {
+    // Pause orchestration before inspection
+    orch_state.set_paused();
+    emit_wm_event(
+        &app,
+        &WmEvent::OrchStatusChanged {
+            status: "paused".to_string(),
+        },
+    )?;
+
+    let mut wm = load_wm_state(&meta_db);
+    wm.transition_to(WmPhase::Inspecting);
+    wm.add_message("user", &prompt_text);
+    emit_wm_event(
+        &app,
+        &WmEvent::PhaseChanged {
+            phase: WmPhase::Inspecting,
+        },
+    )?;
+    emit_wm_event(
+        &app,
+        &WmEvent::MessageAdded {
+            role: "user".to_string(),
+            content: prompt_text,
+        },
+    )?;
+
+    let project_path = meta_db
+        .get_setting("beads_project_path")?
+        .filter(|p| !p.is_empty());
+    let active = registry.active_task_ids()?;
+
+    let env = TauriOrchEnv {
+        app_handle: &app,
+        pool: &pool,
+    };
+    let result = wm_brain::inspect_and_decide(&env, project_path.as_deref(), &active);
+    let events = wm_brain::decide_events(&result);
+
+    // Update WM state based on decision
+    wm.project_path = result.project_path.clone();
+    wm.last_inspection = Some(result);
+
+    for event in &events {
+        match event {
+            WmEvent::ShortCircuit { message, .. } => {
+                wm.transition_to(WmPhase::Completed);
+                wm.add_message("assistant", message);
+            }
+            WmEvent::RunLlm { .. } => {
+                wm.transition_to(WmPhase::SettingUp);
+            }
+            WmEvent::ShowError { message, .. } => {
+                wm.transition_to(WmPhase::Error);
+                wm.add_message("assistant", message);
+            }
+            _ => {}
+        }
+        emit_wm_event(&app, event)?;
+    }
+
+    persist_wm_state(&meta_db, &wm)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn wm_handle_message(
+    app: tauri::AppHandle,
+    meta_db: State<'_, MetaDb>,
+    orch_state: State<'_, OrchestrationState>,
+    registry: State<'_, AgentRegistry>,
+    pool: State<'_, PtyPool>,
+    text: String,
+) -> Result<(), String> {
+    orch_state.set_paused();
+    emit_wm_event(
+        &app,
+        &WmEvent::OrchStatusChanged {
+            status: "paused".to_string(),
+        },
+    )?;
+
+    let mut wm = load_wm_state(&meta_db);
+    wm.transition_to(WmPhase::Inspecting);
+    wm.add_message("user", &text);
+    emit_wm_event(
+        &app,
+        &WmEvent::PhaseChanged {
+            phase: WmPhase::Inspecting,
+        },
+    )?;
+    emit_wm_event(
+        &app,
+        &WmEvent::MessageAdded {
+            role: "user".to_string(),
+            content: text,
+        },
+    )?;
+
+    let project_path = meta_db
+        .get_setting("beads_project_path")?
+        .filter(|p| !p.is_empty());
+    let active = registry.active_task_ids()?;
+
+    let env = TauriOrchEnv {
+        app_handle: &app,
+        pool: &pool,
+    };
+    let result = wm_brain::inspect_and_decide(&env, project_path.as_deref(), &active);
+    let events = wm_brain::decide_events(&result);
+
+    wm.project_path = result.project_path.clone();
+    wm.last_inspection = Some(result);
+
+    for event in &events {
+        match event {
+            WmEvent::ShortCircuit { message, .. } => {
+                wm.transition_to(WmPhase::Completed);
+                wm.add_message("assistant", message);
+            }
+            WmEvent::RunLlm { .. } => {
+                wm.transition_to(WmPhase::SettingUp);
+            }
+            WmEvent::ShowError { message, .. } => {
+                wm.transition_to(WmPhase::Error);
+                wm.add_message("assistant", message);
+            }
+            _ => {}
+        }
+        emit_wm_event(&app, event)?;
+    }
+
+    persist_wm_state(&meta_db, &wm)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn wm_llm_done(
+    app: tauri::AppHandle,
+    meta_db: State<'_, MetaDb>,
+    orch_state: State<'_, OrchestrationState>,
+    response_text: String,
+) -> Result<(), String> {
+    let mut wm = load_wm_state(&meta_db);
+    wm.transition_to(WmPhase::Monitoring);
+    wm.add_message("assistant", &response_text);
+
+    // Start orchestration now that the LLM turn is complete
+    orch_state.set_running();
+
+    emit_wm_event(&app, &WmEvent::LlmDone {})?;
+    emit_wm_event(
+        &app,
+        &WmEvent::PhaseChanged {
+            phase: WmPhase::Monitoring,
+        },
+    )?;
+    emit_wm_event(
+        &app,
+        &WmEvent::OrchStatusChanged {
+            status: "running".to_string(),
+        },
+    )?;
+
+    persist_wm_state(&meta_db, &wm)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn wm_llm_error(
+    app: tauri::AppHandle,
+    meta_db: State<'_, MetaDb>,
+    error: String,
+) -> Result<(), String> {
+    let mut wm = load_wm_state(&meta_db);
+    wm.transition_to(WmPhase::Error);
+    wm.add_message("assistant", &format!("Error: {}", error));
+
+    emit_wm_event(
+        &app,
+        &WmEvent::ShowError {
+            message: error,
+            diagnostics: None,
+        },
+    )?;
+    emit_wm_event(
+        &app,
+        &WmEvent::PhaseChanged {
+            phase: WmPhase::Error,
+        },
+    )?;
+
+    persist_wm_state(&meta_db, &wm)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn wm_get_state(meta_db: State<'_, MetaDb>) -> Result<WmState, String> {
+    Ok(load_wm_state(&meta_db))
 }

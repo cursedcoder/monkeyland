@@ -1,34 +1,47 @@
 import type { AgentRole } from "../types";
 
-/** WM conversation phases */
+/** WM conversation phases — matches Rust WmPhase enum */
 export type WMPhase =
-  | "initial"
+  | "idle"
   | "inspecting"
+  | "completed"
+  | "setting_up"
+  | "monitoring"
+  | "error"
+  // Legacy phases kept for backward compat with saved state
+  | "initial"
   | "project_setup"
   | "planning"
   | "executing"
-  | "monitoring"
   | "intervening"
   | "concluding";
 
 export const WM_PHASE_LABELS: Record<WMPhase, string> = {
-  initial: "Ready",
+  idle: "Ready",
   inspecting: "Inspecting",
+  completed: "Complete",
+  setting_up: "Setting Up",
+  monitoring: "Monitoring",
+  error: "Error",
+  initial: "Ready",
   project_setup: "Setting Up",
   planning: "Planning",
   executing: "Executing",
-  monitoring: "Monitoring",
   intervening: "Intervening",
   concluding: "Wrapping Up",
 };
 
 export const WM_PHASE_COLORS: Record<WMPhase, string> = {
-  initial: "#6b7280",
+  idle: "#6b7280",
   inspecting: "#f97316",
+  completed: "#10b981",
+  setting_up: "#3b82f6",
+  monitoring: "#8b5cf6",
+  error: "#ef4444",
+  initial: "#6b7280",
   project_setup: "#3b82f6",
   planning: "#f59e0b",
   executing: "#10b981",
-  monitoring: "#8b5cf6",
   intervening: "#ef4444",
   concluding: "#06b6d4",
 };

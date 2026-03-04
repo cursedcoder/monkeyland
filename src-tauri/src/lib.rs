@@ -70,6 +70,11 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         crate::commands::save_wm_conversation,
         crate::commands::load_wm_conversation,
         crate::commands::clear_wm_conversation,
+        crate::commands::wm_launch,
+        crate::commands::wm_handle_message,
+        crate::commands::wm_llm_done,
+        crate::commands::wm_llm_error,
+        crate::commands::wm_get_state,
     ]
 }
 
@@ -225,6 +230,7 @@ mod pm_phases;
 mod project;
 mod pty_pool;
 mod storage;
+mod wm_brain;
 mod wm_phases;
 mod worktree;
 
