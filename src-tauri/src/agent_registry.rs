@@ -1032,7 +1032,7 @@ impl AgentRegistry {
     }
 
     /// Returns (agent_id, task_id) pairs for agents that have exceeded their TTL.
-    pub fn expired_agent_ids(&self) -> Result<Vec<(String, Option<String>)>, String> {
+    pub fn expired_agent_ids(&self) -> Result<Vec<(String, Option<String>, String)>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let mut expired = Vec::new();
         for (id, entry) in inner.agents.iter() {
@@ -1044,7 +1044,7 @@ impl AgentRegistry {
                 None => continue,
             };
             if entry.spawned_at.elapsed() >= Duration::from_secs(config.ttl_secs) {
-                expired.push((id.clone(), entry.task_id.clone()));
+                expired.push((id.clone(), entry.task_id.clone(), entry.role.clone()));
             }
         }
         Ok(expired)
@@ -2263,6 +2263,7 @@ mod tests {
         let expired = registry.expired_agent_ids().unwrap();
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].0, id);
+        assert_eq!(expired[0].2, "worker");
     }
 
     // --- Stuck developer detection ---

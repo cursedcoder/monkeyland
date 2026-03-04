@@ -185,7 +185,7 @@ fn close_eligible_from_task_list(items: &[serde_json::Value]) -> Vec<String> {
         let Some(children) = child_statuses.get(&epic_id) else {
             continue;
         };
-        if !children.is_empty() && children.iter().all(|s| s == "done") {
+        if !children.is_empty() && children.iter().all(|s| s == "done" || s == "closed") {
             eligible.push(epic_id);
         }
     }
@@ -555,22 +555,28 @@ pub async fn tick(
 
     // 3. Kill expired agents (clean up worktree without merging, release Beads claim)
     let expired = registry.expired_agent_ids()?;
-    for (id, task_id) in expired {
+    for (id, task_id, role) in expired {
         if let Ok(Some(_wt)) = registry.get_worktree_path(&id) {
             let wt_path = path.to_path_buf();
             let wt_id = id.clone();
             let _ = tokio::task::spawn_blocking(move || crate::worktree::remove(&wt_path, &wt_id))
                 .await;
         }
-        // Release the Beads task claim so the task can be re-assigned.
-        if let Some(tid) = &task_id {
-            let unclaim_args = vec![
-                "update".to_string(),
-                tid.clone(),
-                "--status".to_string(),
-                "ready".to_string(),
-            ];
-            let _ = env.run_bd(path, &unclaim_args);
+        // Release the Beads task claim so the task can be re-assigned —
+        // but only for roles that own the task (spawned via bd ready).
+        // Validators and merge_agents carry the developer's task_id for
+        // association but must NOT reset the task status on expiry.
+        let owns_task = role != "validator" && role != "merge_agent";
+        if owns_task {
+            if let Some(tid) = &task_id {
+                let unclaim_args = vec![
+                    "update".to_string(),
+                    tid.clone(),
+                    "--status".to_string(),
+                    "ready".to_string(),
+                ];
+                let _ = env.run_bd(path, &unclaim_args);
+            }
         }
         let _ = registry.kill(&id);
         let _ = env.kill_pty(&id);
@@ -771,14 +777,22 @@ pub async fn tick(
             eprintln!(
                 "[orch] task {task_id} (agent {agent_id}) completed without worktree; finalizing without merge"
             );
-            let done_args = vec![
-                "update".to_string(),
-                task_id.clone(),
-                "--status".to_string(),
-                "done".to_string(),
-            ];
-            if let Err(e) = env.run_bd(path, &done_args) {
-                eprintln!("[orch] WARNING: bd update --status done failed for {task_id}: {e}");
+            let close_args = vec!["close".to_string(), task_id.clone()];
+            if let Err(e) = env.run_bd(path, &close_args) {
+                eprintln!(
+                    "[orch] WARNING: bd close failed for {task_id}: {e}; falling back to bd update --status done"
+                );
+                let done_args = vec![
+                    "update".to_string(),
+                    task_id.clone(),
+                    "--status".to_string(),
+                    "done".to_string(),
+                ];
+                if let Err(e2) = env.run_bd(path, &done_args) {
+                    eprintln!(
+                        "[orch] WARNING: bd update --status done also failed for {task_id}: {e2}"
+                    );
+                }
             }
             let _ = registry.kill(&agent_id);
             let _ = env.kill_pty(&agent_id);
@@ -871,19 +885,20 @@ pub async fn tick(
             match merge_result {
                 Ok(Ok(crate::worktree::MergeOutcome::Clean)) => {
                     eprintln!("[orch] merge clean for task {task_id}");
-                    let done_args = vec![
-                        "update".to_string(),
-                        task_id.clone(),
-                        "--status".to_string(),
-                        "done".to_string(),
-                    ];
-                    if let Err(e) = env.run_bd(path, &done_args) {
+                    let close_args = vec!["close".to_string(), task_id.clone()];
+                    if let Err(e) = env.run_bd(path, &close_args) {
                         eprintln!(
-                            "[orch] WARNING: bd update --status done failed for {task_id}: {e}; retrying once"
+                            "[orch] WARNING: bd close failed for {task_id}: {e}; falling back to bd update --status done"
                         );
+                        let done_args = vec![
+                            "update".to_string(),
+                            task_id.clone(),
+                            "--status".to_string(),
+                            "done".to_string(),
+                        ];
                         if let Err(e2) = env.run_bd(path, &done_args) {
                             eprintln!(
-                                "[orch] ERROR: bd update --status done retry also failed for {task_id}: {e2}"
+                                "[orch] ERROR: bd update --status done also failed for {task_id}: {e2}"
                             );
                         }
                     }
@@ -1612,13 +1627,13 @@ mod tests {
 
         // --- 4. Beads (bd) calls ---
 
-        let bd_done_winner = env
-            .bd_calls_matching(&winner_task)
-            .iter()
-            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
+        let bd_done_winner = env.bd_calls_matching(&winner_task).iter().any(|args| {
+            args.contains(&"close".to_string())
+                || (args.contains(&"update".to_string()) && args.contains(&"done".to_string()))
+        });
         assert!(
             bd_done_winner,
-            "bd update {winner_task} --status done should have been called"
+            "bd close (or bd update --status done) should have been called for {winner_task}"
         );
 
         let bd_done_loser = env
@@ -1798,6 +1813,69 @@ mod tests {
         assert!(
             !claimed.contains(&"bd-ttl-wt".to_string()),
             "task should not appear in claimed_task_ids after TTL kill"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Validator TTL expiry must NOT reset the developer's task status.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn validator_ttl_expiry_does_not_unclaim_task() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        // Spawn a developer via bd ready
+        env.set_ready_tasks(r#"[{"id":"bd-val-ttl","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Spawn a validator as a child of the developer, carrying the same task_id
+        let validator_id = registry
+            .spawn(
+                "validator",
+                Some("bd-val-ttl".into()),
+                Some(agent_id.clone()),
+                None,
+            )
+            .unwrap();
+
+        // Expire only the validator (300s TTL)
+        registry.test_backdate_spawn(&validator_id, std::time::Duration::from_secs(301));
+        env.set_ready_tasks("[]");
+
+        // Clear bd_calls before this tick so we can check what THIS tick does
+        env.bd_calls.lock().unwrap().clear();
+
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        // Validator should be killed
+        let snap = registry.debug_snapshot().unwrap();
+        assert!(
+            !snap.agents.iter().any(|a| a.id == validator_id),
+            "validator should be removed from registry after TTL"
+        );
+
+        // The task should NOT have been reset to ready
+        let unclaim_calls = env.bd_calls_matching("bd-val-ttl").iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"ready".to_string())
+        });
+        assert!(
+            !unclaim_calls,
+            "validator TTL expiry must NOT reset the task to ready"
         );
     }
 
@@ -2053,15 +2131,15 @@ mod tests {
             "task/bd-ghost branch should be deleted after clean merge"
         );
 
-        // --- Beads: bd update should mark task done ---
+        // --- Beads: bd close should mark task done ---
 
-        let bd_done = env
-            .bd_calls_matching("bd-ghost")
-            .iter()
-            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
+        let bd_done = env.bd_calls_matching("bd-ghost").iter().any(|args| {
+            args.contains(&"close".to_string())
+                || (args.contains(&"update".to_string()) && args.contains(&"done".to_string()))
+        });
         assert!(
             bd_done,
-            "bd update bd-ghost --status done should be called even for dead agent"
+            "bd close (or bd update --status done) should be called even for dead agent"
         );
 
         // --- Registry: no agents should remain ---
@@ -2243,15 +2321,15 @@ mod tests {
             "task/bd-remerge branch should be deleted after successful re-merge"
         );
 
-        // --- Beads: bd update --status done called ---
+        // --- Beads: bd close called ---
 
-        let bd_done = env
-            .bd_calls_matching("bd-remerge")
-            .iter()
-            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
+        let bd_done = env.bd_calls_matching("bd-remerge").iter().any(|args| {
+            args.contains(&"close".to_string())
+                || (args.contains(&"update".to_string()) && args.contains(&"done".to_string()))
+        });
         assert!(
             bd_done,
-            "bd update bd-remerge --status done should be called after successful re-merge"
+            "bd close (or bd update --status done) should be called after successful re-merge"
         );
 
         // --- Registry: merge agent killed ---
@@ -2479,15 +2557,15 @@ mod tests {
             "worktree entry should be pruned from git after merge"
         );
 
-        // --- Beads: bd update --status done called ---
+        // --- Beads: bd close called ---
 
-        let bd_done = env
-            .bd_calls_matching("bd-clean")
-            .iter()
-            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
+        let bd_done = env.bd_calls_matching("bd-clean").iter().any(|args| {
+            args.contains(&"close".to_string())
+                || (args.contains(&"update".to_string()) && args.contains(&"done".to_string()))
+        });
         assert!(
             bd_done,
-            "bd update bd-clean --status done should have been called"
+            "bd close (or bd update --status done) should have been called for bd-clean"
         );
 
         // --- Registry: developer killed, no zombies ---
@@ -3082,6 +3160,34 @@ mod tests {
         assert_eq!(eligible, vec!["e1"]);
     }
 
+    #[test]
+    fn close_eligible_all_children_closed() {
+        let items: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+            {"id": "epic-1", "issue_type": "epic", "status": "in_progress"},
+            {"id": "task-1", "type": "task", "status": "closed", "parent": "epic-1"},
+            {"id": "task-2", "type": "task", "status": "closed", "parent": "epic-1"}
+        ]"#,
+        )
+        .unwrap();
+        let eligible = close_eligible_from_task_list(&items);
+        assert_eq!(eligible, vec!["epic-1"]);
+    }
+
+    #[test]
+    fn close_eligible_mixed_done_and_closed_children() {
+        let items: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+            {"id": "epic-1", "issue_type": "epic", "status": "in_progress"},
+            {"id": "task-1", "type": "task", "status": "done", "parent": "epic-1"},
+            {"id": "task-2", "type": "task", "status": "closed", "parent": "epic-1"}
+        ]"#,
+        )
+        .unwrap();
+        let eligible = close_eligible_from_task_list(&items);
+        assert_eq!(eligible, vec!["epic-1"]);
+    }
+
     // -----------------------------------------------------------------------
     // role_for_task unit tests
     // -----------------------------------------------------------------------
@@ -3393,11 +3499,11 @@ mod tests {
             "merge_status=done emitted"
         );
 
-        let bd_done = env
-            .bd_calls_matching("bd-lifecycle")
-            .iter()
-            .any(|args| args.contains(&"update".to_string()) && args.contains(&"done".to_string()));
-        assert!(bd_done, "bd update --status done called");
+        let bd_done = env.bd_calls_matching("bd-lifecycle").iter().any(|args| {
+            args.contains(&"close".to_string())
+                || (args.contains(&"update".to_string()) && args.contains(&"done".to_string()))
+        });
+        assert!(bd_done, "bd close (or bd update --status done) called");
 
         let snap = registry.debug_snapshot().unwrap();
         assert_eq!(snap.agents.len(), 0, "registry empty after full lifecycle");
