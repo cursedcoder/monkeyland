@@ -1,0 +1,44 @@
+---
+description: Core Monkeyland architecture patterns — WM inspection workflow, plugin system, state detection. Apply when working on agent orchestration, WM, plugins, or projectInspection.
+globs: src/App.tsx,src/agentRunner.ts,src/projectInspection.ts,src/agentPrompts.ts,src/plugins/*.ts,src/constants/phases.ts
+alwaysApply: false
+---
+
+# Monkeyland Architecture
+
+## Plugin system
+
+Plugins extend LLM agent capabilities. Each plugin implements `Plugin` (src/plugins/Plugin.ts):
+- `execute()` returns `{ result: string }` — can also include `stopAgent: true` to abort the agent
+- `PluginExecutionContext` provides `layouts` (canvas cards), `abortController` (to stop the agent)
+- `toAiTool()` wraps execute for the Vercel AI SDK; auto-aborts controller if `stopAgent: true`
+
+## Project inspection (deterministic, pre-LLM)
+
+`inspectProject(layouts)` in `src/projectInspection.ts` runs BEFORE any LLM call:
+
+1. Detects project path from canvas beads card OR MetaDb fallback (`get_beads_project_path`)
+2. Starts Dolt, lists all tasks
+3. Cleans up zombies (closes, not archives — `bd close`)
+4. Returns `ProjectState`: NEW, IN_PROGRESS, COMPLETED, ERROR
+
+The heavy lifting is in `inspectExistingProject(projectPath, activeTaskIds)` — reusable from plugins.
+
+### Key principle: never trust the LLM for state management
+
+- `[TERMINAL]` markers in tool results are hints, not guarantees — LLMs ignore them
+- Use `stopAgent: true` in plugin results to force-abort via the abortController
+- Physical tool constraints (removing tools from plugin set) beat prompt instructions
+- Pre-LLM deterministic checks beat in-LLM tool calls
+
+## WM phases
+
+`inspecting` → `project_setup` / `monitoring` (if completed) → `executing` → `monitoring`
+
+When inspection returns COMPLETED, the WM LLM is short-circuited entirely — a synthetic message is displayed instead.
+
+## State detection priority
+
+1. Canvas beads card (`detectProjectPath` from layouts)
+2. MetaDb stored path (`get_beads_project_path` — persists across restarts)
+3. BeadsToolPlugin fallback (runs `inspectExistingProject` when `beads_init` returns "already initialized")

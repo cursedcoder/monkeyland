@@ -36,7 +36,7 @@ function detectProjectPath(layouts: SessionLayout[]): string | null {
   return null;
 }
 
-function getActiveTaskIds(layouts: SessionLayout[]): Set<string> {
+export function getActiveTaskIds(layouts: SessionLayout[]): Set<string> {
   const ids = new Set<string>();
   for (const l of layouts) {
     try {
@@ -48,48 +48,18 @@ function getActiveTaskIds(layouts: SessionLayout[]): Set<string> {
 }
 
 /**
- * Deterministic project inspection. Runs before the WM LLM turn.
+ * Core inspection logic against a known project path.
+ * Caller MUST ensure Dolt is already running for this project.
  *
- * 1. Detects existing Beads project on the canvas
- * 2. Starts Dolt (fails loudly on error)
- * 3. Lists all tasks
- * 4. Archives zombie/duplicate epics and their children
- * 5. Classifies state as NEW / IN_PROGRESS / COMPLETED / ERROR
- * 6. Builds prompt context and completion summary
+ * 1. Lists all tasks
+ * 2. Archives zombie/duplicate epics and their children
+ * 3. Classifies state as NEW / IN_PROGRESS / COMPLETED / ERROR
+ * 4. Builds prompt context and completion summary
  */
-export async function inspectProject(layouts: SessionLayout[]): Promise<InspectionResult> {
-  const projectPath = detectProjectPath(layouts);
-
-  if (!projectPath) {
-    return {
-      state: ProjectState.NEW,
-      projectPath: null,
-      completedEpics: [],
-      activeEpics: [],
-      remainingTasks: [],
-      zombiesArchived: [],
-      stateContext: "",
-    };
-  }
-
-  // Dolt must be running — fail loudly if it can't start
-  try {
-    await invoke("beads_dolt_start", { projectPath, agentId: null });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error("[inspection] Dolt failed to start:", msg);
-    return {
-      state: ProjectState.ERROR,
-      projectPath,
-      completedEpics: [],
-      activeEpics: [],
-      remainingTasks: [],
-      zombiesArchived: [],
-      errorMessage: `Could not start Dolt for project ${projectPath}: ${msg}`,
-      stateContext: "",
-    };
-  }
-
+export async function inspectExistingProject(
+  projectPath: string,
+  activeTaskIds: Set<string>,
+): Promise<InspectionResult> {
   let allTasks: BeadsTask[];
   try {
     const raw = await invoke<string>("beads_run", {
@@ -115,6 +85,7 @@ export async function inspectProject(layouts: SessionLayout[]): Promise<Inspecti
   }
 
   if (allTasks.length === 0) {
+    console.log("[inspection] Project exists but has no tasks — treating as NEW");
     return {
       state: ProjectState.NEW,
       projectPath,
@@ -126,7 +97,7 @@ export async function inspectProject(layouts: SessionLayout[]): Promise<Inspecti
     };
   }
 
-  const activeTaskIds = getActiveTaskIds(layouts);
+  console.log(`[inspection] Found ${allTasks.length} tasks in ${projectPath}`);
 
   // --- Zombie detection and cleanup ---
   const toArchive = new Set<string>();
@@ -217,7 +188,7 @@ export async function inspectProject(layouts: SessionLayout[]): Promise<Inspecti
       try {
         await invoke("beads_run", {
           projectPath,
-          args: ["archive", id],
+          args: ["close", id, "--reason", "Auto-closed: zombie/duplicate detected by inspection"],
           agentId: null,
         });
         archived.push(id);
@@ -239,11 +210,12 @@ export async function inspectProject(layouts: SessionLayout[]): Promise<Inspecti
   } else if (finalOpenEpics.length > 0) {
     state = ProjectState.IN_PROGRESS;
   } else if (remaining.length > 0) {
-    // Tasks exist but no epics — treat as in-progress
     state = ProjectState.IN_PROGRESS;
   } else {
     state = ProjectState.NEW;
   }
+
+  console.log(`[inspection] State: ${state} (${remaining.length} tasks remaining, ${archived.length} archived)`);
 
   // --- Build state context for the system prompt ---
   const ctxLines: string[] = [
@@ -322,5 +294,74 @@ export async function inspectProject(layouts: SessionLayout[]): Promise<Inspecti
     zombiesArchived: archived,
     stateContext: ctxLines.join("\n"),
     completionSummary,
+  };
+}
+
+/**
+ * Top-level inspection. Runs before the WM LLM turn.
+ *
+ * Detects project from canvas layouts, starts Dolt, and delegates to
+ * inspectExistingProject for the heavy lifting.
+ */
+export async function inspectProject(layouts: SessionLayout[]): Promise<InspectionResult> {
+  let projectPath = detectProjectPath(layouts);
+  let fromMetaDb = false;
+
+  // Fallback: if no beads card on canvas, check MetaDb for a previously stored project path
+  if (!projectPath) {
+    try {
+      const stored = await invoke<string | null>("get_beads_project_path");
+      if (stored) {
+        projectPath = stored;
+        fromMetaDb = true;
+        console.log(`[inspection] No canvas card, but MetaDb has stored project: ${projectPath}`);
+      }
+    } catch {
+      // MetaDb unavailable — proceed as NEW
+    }
+  }
+
+  if (!projectPath) {
+    console.log("[inspection] No beads card and no stored project — treating as NEW");
+    return newResult(null);
+  }
+
+  console.log(`[inspection] Inspecting project: ${projectPath} (source: ${fromMetaDb ? "MetaDb" : "canvas"})`);
+
+  // Dolt must be running — for MetaDb fallback, treat Dolt failure as NEW (stale path)
+  try {
+    await invoke("beads_dolt_start", { projectPath, agentId: null });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (fromMetaDb) {
+      console.warn(`[inspection] MetaDb project path but Dolt failed — treating as NEW: ${msg}`);
+      return newResult(null);
+    }
+    console.error("[inspection] Dolt failed to start:", msg);
+    return {
+      state: ProjectState.ERROR,
+      projectPath,
+      completedEpics: [],
+      activeEpics: [],
+      remainingTasks: [],
+      zombiesArchived: [],
+      errorMessage: `Could not start Dolt for project ${projectPath}: ${msg}`,
+      stateContext: "",
+    };
+  }
+
+  const activeTaskIds = getActiveTaskIds(layouts);
+  return inspectExistingProject(projectPath, activeTaskIds);
+}
+
+function newResult(projectPath: string | null): InspectionResult {
+  return {
+    state: ProjectState.NEW,
+    projectPath,
+    completedEpics: [],
+    activeEpics: [],
+    remainingTasks: [],
+    zombiesArchived: [],
+    stateContext: "",
   };
 }

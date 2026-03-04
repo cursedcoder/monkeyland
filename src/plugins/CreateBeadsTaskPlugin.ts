@@ -183,7 +183,7 @@ export class CreateBeadsTaskPlugin extends Plugin {
       try {
         const listOutput = await invoke<string>("beads_run", {
           projectPath,
-          args: ["list", "--json"],
+          args: ["list", "--json", "--all"],
           agentId: this.agentId,
         });
         const parsed = JSON.parse(listOutput.trim());

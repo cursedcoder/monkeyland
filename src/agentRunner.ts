@@ -113,6 +113,8 @@ export interface AgentRunnerParams {
   attachment?: Attachment;
   /** Optional frontend layout context for tools that need it. */
   layouts?: SessionLayout[];
+  /** Optional controller so plugins can abort the agent (e.g. on project-complete detection). */
+  abortController?: AbortController;
 }
 
 export interface LoadedModel {
@@ -353,7 +355,7 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
     const tools: Record<string, Tool> = {};
     for (const plugin of plugins) {
       if (plugin.isEnabled()) {
-        tools[plugin.getName()] = plugin.toAiTool({ layouts: params.layouts });
+        tools[plugin.getName()] = plugin.toAiTool({ layouts: params.layouts, abortController: params.abortController });
       }
     }
 

@@ -1234,6 +1234,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
           messages,
           plugins,
           signal: controller.signal,
+          abortController: controller,
           layouts: layoutsRef.current,
           callbacks: {
             onChunk: (c) => {
@@ -1432,6 +1433,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
           messages,
           plugins,
           signal: controller.signal,
+          abortController: controller,
           layouts: layoutsRef.current,
           callbacks: {
             onChunk: (c) => {

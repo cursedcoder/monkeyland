@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { inspectProject, ProjectState } from "./projectInspection";
+import { inspectProject, inspectExistingProject, getActiveTaskIds, ProjectState } from "./projectInspection";
 import type { SessionLayout } from "./types";
 
 const mockInvoke = vi.fn();
@@ -31,8 +31,50 @@ beforeEach(() => {
   mockInvoke.mockReset();
 });
 
+describe("getActiveTaskIds", () => {
+  it("returns task IDs from layouts with loading status", () => {
+    const layouts = [
+      agentLayout("task-1", "loading"),
+      agentLayout("task-2", "done"),
+      agentLayout("task-3", "loading"),
+    ];
+    const ids = getActiveTaskIds(layouts);
+    expect(ids.has("task-1")).toBe(true);
+    expect(ids.has("task-2")).toBe(false);
+    expect(ids.has("task-3")).toBe(true);
+  });
+
+  it("returns empty set for empty layouts", () => {
+    expect(getActiveTaskIds([]).size).toBe(0);
+  });
+});
+
 describe("inspectProject", () => {
-  it("returns NEW when no beads cards on canvas", async () => {
+  it("returns NEW when no beads cards on canvas and no MetaDb path", async () => {
+    mockInvoke.mockResolvedValueOnce(null); // get_beads_project_path
+    const result = await inspectProject([]);
+    expect(result.state).toBe(ProjectState.NEW);
+    expect(result.projectPath).toBeNull();
+  });
+
+  it("uses MetaDb fallback when no canvas card but stored path exists", async () => {
+    const tasks = [
+      { id: "epic-1", title: "Build app", type: "epic", status: "closed" },
+      { id: "task-1", title: "index.html", type: "task", status: "done", parent: "epic-1" },
+    ];
+    mockInvoke.mockResolvedValueOnce("/tmp/stored-proj"); // get_beads_project_path
+    mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks)); // beads_run list
+
+    const result = await inspectProject([]);
+    expect(result.state).toBe(ProjectState.COMPLETED);
+    expect(result.projectPath).toBe("/tmp/stored-proj");
+  });
+
+  it("falls back to NEW when MetaDb path exists but Dolt fails", async () => {
+    mockInvoke.mockResolvedValueOnce("/tmp/stale-proj"); // get_beads_project_path
+    mockInvoke.mockRejectedValueOnce(new Error("dolt failed")); // beads_dolt_start
+
     const result = await inspectProject([]);
     expect(result.state).toBe(ProjectState.NEW);
     expect(result.projectPath).toBeNull();
@@ -187,5 +229,91 @@ describe("inspectProject", () => {
     const result = await inspectProject([beadsLayout("/tmp/myapp")]);
     expect(result.stateContext).toContain("/tmp/myapp");
     expect(result.stateContext).toContain("epic-1");
+  });
+});
+
+describe("inspectExistingProject", () => {
+  it("returns ERROR when beads_run list fails", async () => {
+    mockInvoke.mockRejectedValueOnce(new Error("bd crashed"));
+    const result = await inspectExistingProject("/tmp/proj", new Set());
+    expect(result.state).toBe(ProjectState.ERROR);
+    expect(result.errorMessage).toContain("bd crashed");
+  });
+
+  it("returns NEW when project has no tasks", async () => {
+    mockInvoke.mockResolvedValueOnce("[]");
+    const result = await inspectExistingProject("/tmp/proj", new Set());
+    expect(result.state).toBe(ProjectState.NEW);
+    expect(result.projectPath).toBe("/tmp/proj");
+  });
+
+  it("returns COMPLETED and builds summary for closed epics", async () => {
+    const tasks = [
+      { id: "epic-1", title: "Build site", type: "epic", status: "closed" },
+      { id: "task-1", title: "Create index.html", type: "task", status: "done", parent: "epic-1" },
+    ];
+    mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
+    const result = await inspectExistingProject("/tmp/proj", new Set());
+    expect(result.state).toBe(ProjectState.COMPLETED);
+    expect(result.completionSummary).toContain("already complete");
+    expect(result.completionSummary).toContain("Build site");
+    expect(result.stateContext).toContain("WORK IS ALREADY COMPLETED");
+  });
+
+  it("archives zombies and returns COMPLETED when closed + open epics exist", async () => {
+    const tasks = [
+      { id: "epic-done", title: "Done", type: "epic", status: "closed" },
+      { id: "epic-zombie", title: "Zombie", type: "epic", status: "in_progress" },
+      { id: "child", title: "Zombie child", type: "task", status: "open", parent: "epic-zombie" },
+    ];
+    mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks)); // list
+    mockInvoke.mockResolvedValue("ok"); // archive calls
+
+    const result = await inspectExistingProject("/tmp/proj", new Set());
+    expect(result.state).toBe(ProjectState.COMPLETED);
+    expect(result.zombiesArchived).toContain("epic-zombie");
+    expect(result.zombiesArchived).toContain("child");
+  });
+
+  it("does not archive active tasks", async () => {
+    const tasks = [
+      { id: "epic-done", title: "Done", type: "epic", status: "closed" },
+      { id: "epic-active", title: "Active", type: "epic", status: "in_progress" },
+    ];
+    mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
+
+    const activeIds = new Set(["epic-active"]);
+    const result = await inspectExistingProject("/tmp/proj", activeIds);
+    expect(result.zombiesArchived).not.toContain("epic-active");
+  });
+
+  it("returns IN_PROGRESS for open epics", async () => {
+    const tasks = [
+      { id: "epic-1", title: "WIP", type: "epic", status: "in_progress" },
+      { id: "task-1", title: "Do thing", type: "task", status: "open", parent: "epic-1" },
+    ];
+    mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
+
+    const result = await inspectExistingProject("/tmp/proj", new Set());
+    expect(result.state).toBe(ProjectState.IN_PROGRESS);
+    expect(result.stateContext).toContain("EPIC ALREADY IN PROGRESS");
+    expect(result.stateContext).toContain("epic-1");
+  });
+
+  it("uses bd close (not archive) when cleaning up zombies", async () => {
+    const tasks = [
+      { id: "epic-done", title: "Done", type: "epic", status: "closed" },
+      { id: "epic-zombie", title: "Zombie", type: "epic", status: "in_progress" },
+    ];
+    mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks)); // list
+    mockInvoke.mockResolvedValueOnce("ok"); // close
+
+    await inspectExistingProject("/tmp/proj", new Set());
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "beads_run",
+      expect.objectContaining({
+        args: expect.arrayContaining(["close", "epic-zombie"]),
+      }),
+    );
   });
 });

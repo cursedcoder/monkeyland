@@ -14,6 +14,7 @@ export interface PluginParameter {
 
 export interface PluginExecutionContext {
   layouts?: SessionLayout[];
+  abortController?: AbortController;
 }
 
 export abstract class Plugin {
@@ -86,6 +87,10 @@ export abstract class Plugin {
             timeoutPromise,
           ]);
           clearTimeout(timer);
+          if (result?.stopAgent && context.abortController) {
+            console.log(`[${pluginName}] Plugin requested agent stop — aborting controller`);
+            context.abortController.abort("plugin_stop");
+          }
           return result;
         } catch (e) {
           clearTimeout(timer);

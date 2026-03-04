@@ -166,7 +166,7 @@ export class SanitizeProjectPlugin extends Plugin {
           try {
             await invoke("beads_run", {
               projectPath: path,
-              args: ["archive", id],
+              args: ["close", id, "--reason", "Auto-closed: zombie/duplicate detected by sanitize"],
               agentId: this.agentId,
             });
           } catch (e) {

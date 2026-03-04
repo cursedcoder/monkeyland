@@ -32,7 +32,7 @@ describe("CreateBeadsTaskPlugin", () => {
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/tmp/proj");
     await plugin.execute({}, { title: "Setup" });
-    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ args: ["list", "--json"] }));
+    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ args: ["list", "--json", "--all"] }));
     expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ projectPath: "/tmp/proj", args: expect.arrayContaining(["create"]) }));
   });
 

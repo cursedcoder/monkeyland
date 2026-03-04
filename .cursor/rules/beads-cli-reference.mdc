@@ -1,0 +1,81 @@
+---
+description: Beads (bd) CLI reference and Tauri integration. Apply when working with beads_run, BeadsToolPlugin, CreateBeadsTaskPlugin, projectInspection, SanitizeProjectPlugin, or any bd/beads command usage.
+globs: src/plugins/BeadsToolPlugin.ts,src/plugins/CreateBeadsTaskPlugin.ts,src/plugins/SanitizeProjectPlugin.ts,src/projectInspection.ts,src-tauri/src/commands.rs
+alwaysApply: false
+---
+
+# Beads CLI Reference (bd)
+
+The `bd` binary is the Beads CLI. All beads operations in Monkeyland go through the Tauri `beads_run` command which shells out to `bd`.
+
+## CRITICAL: Valid commands
+
+There is **NO** `bd archive` command. Calling it silently fails. Use these instead:
+
+| Action | Command | Notes |
+|--------|---------|-------|
+| Close issue(s) | `bd close <id> [--reason "..."]` | Marks as closed, preserves history |
+| Delete issue(s) | `bd delete <id> --force` | Destructive, removes from DB |
+| Reopen issue(s) | `bd reopen <id>` | Sets status back to open |
+
+## Commands used by Monkeyland
+
+### Listing tasks
+```
+bd list --json --all          # All tasks including closed (for inspection/dedup)
+bd list --json                # Only open/in-progress tasks
+bd ready --json               # Ready tasks (open, no blockers)
+bd children <parent-id> --json
+```
+
+`--all` is critical for deduplication — without it, closed tasks are hidden and the hard-block on duplicate epics won't see completed ones.
+
+### Creating tasks
+```
+bd create <title> --silent --type <type> --priority <n> [--parent <id>] [--description "..."] [--deps "id1,id2"] [--labels "l1,l2"] [--acceptance "..."] [--estimate <minutes>] [--defer "+100y"]
+```
+- `--silent` outputs only the new issue ID (for scripting)
+- Types: `epic`, `task`, `feature`, `bug`, `chore`, `decision`
+- `--defer "+100y"` creates hidden draft tasks (used by PM agents)
+
+### Closing / cleanup
+```
+bd close <id> [--reason "..."]    # Close one issue
+bd close id1 id2 id3             # Close multiple
+bd close --force                  # Force-close pinned issues
+```
+
+### Updating tasks
+```
+bd update <id> --status <status> [--title "..."] [--description "..."] [--assignee "..."]
+```
+- Statuses: `open`, `in_progress`, `blocked`, `deferred`, `closed`
+
+### Other useful commands
+```
+bd show <id> --json           # Full issue details
+bd delete <id> --force        # Permanent deletion
+bd delete <id> --cascade --force  # Delete with all dependents
+bd find-duplicates            # AI-powered duplicate detection
+bd status                     # Database overview
+bd types                      # Valid issue types
+```
+
+## Tauri commands (invoke from frontend)
+
+| Command | Purpose |
+|---------|---------|
+| `beads_dolt_start` | Start Dolt SQL server for the project. **Must run before any bd command.** Params: `{ projectPath, agentId }` |
+| `beads_init` | Initialize beads in a project. Returns "Beads already initialized." if exists. Params: `{ projectPath, agentId }` |
+| `beads_run` | Run any bd subcommand. Params: `{ projectPath, args: string[], agentId }` |
+| `get_beads_project_path` | Read stored project path from MetaDb (persists across restarts) |
+| `set_beads_project_path` | Store project path in MetaDb. Params: `{ projectPath, agentId }` |
+
+## Common pitfalls
+
+1. **Always start Dolt first** — `beads_dolt_start` must succeed before any `beads_run` call
+2. **Use `--all` for dedup queries** — `bd list --json` hides closed tasks; use `--all` to see everything
+3. **`bd archive` does NOT exist** — use `bd close` or `bd delete`
+4. **`bd list` has a default limit of 50** — use `--limit 0` for unlimited, or `--all` which also removes the limit
+5. **`--silent` on create** — returns only the ID string, critical for scripting
+6. **MetaDb persists across restarts** — `get_beads_project_path` returns the last project path even after app restart
