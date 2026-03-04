@@ -670,59 +670,61 @@ impl WmState {
 }
 
 // ===========================================================================
-// Tests
+// Test support — shared helpers for wm_brain tests and wm_commands_inner tests
 // ===========================================================================
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub mod test_support {
+    use crate::orchestration::OrchEnv;
+    use std::collections::HashMap;
+    use std::path::Path;
     use std::sync::{Arc, Mutex as StdMutex};
 
     #[derive(Debug, Clone)]
-    struct BdCall {
-        args: Vec<String>,
+    pub struct BdCall {
+        pub args: Vec<String>,
     }
 
     /// Test implementation of OrchEnv that returns canned responses keyed by first bd arg.
-    struct TestWmEnv {
+    pub struct TestWmEnv {
         bd_responses: StdMutex<HashMap<String, Result<String, String>>>,
         bd_calls: Arc<StdMutex<Vec<BdCall>>>,
     }
 
     impl TestWmEnv {
-        fn new() -> Self {
+        pub fn new() -> Self {
             Self {
                 bd_responses: StdMutex::new(HashMap::new()),
                 bd_calls: Arc::new(StdMutex::new(Vec::new())),
             }
         }
 
-        fn set_list_response(&self, json: &str) {
+        pub fn set_list_response(&self, json: &str) {
             self.bd_responses
                 .lock()
                 .unwrap()
                 .insert("list".to_string(), Ok(json.to_string()));
         }
 
-        fn set_list_error(&self, err: &str) {
+        pub fn set_list_error(&self, err: &str) {
             self.bd_responses
                 .lock()
                 .unwrap()
                 .insert("list".to_string(), Err(err.to_string()));
         }
 
-        fn set_close_error(&self, id: &str, err: &str) {
+        pub fn set_close_error(&self, id: &str, err: &str) {
             self.bd_responses
                 .lock()
                 .unwrap()
                 .insert(format!("close:{}", id), Err(err.to_string()));
         }
 
-        fn bd_calls(&self) -> Vec<BdCall> {
+        pub fn bd_calls(&self) -> Vec<BdCall> {
             self.bd_calls.lock().unwrap().clone()
         }
 
-        fn close_calls(&self) -> Vec<Vec<String>> {
+        pub fn close_calls(&self) -> Vec<Vec<String>> {
             self.bd_calls
                 .lock()
                 .unwrap()
@@ -745,7 +747,6 @@ mod tests {
 
             let responses = self.bd_responses.lock().unwrap();
 
-            // Check for specific close:<id> response
             if args.first().map(|a| a.as_str()) == Some("close") {
                 if let Some(id) = args.get(1) {
                     let key = format!("close:{}", id);
@@ -755,7 +756,6 @@ mod tests {
                 }
             }
 
-            // Check for command-level response
             if let Some(cmd) = args.first() {
                 if let Some(resp) = responses.get(cmd.as_str()) {
                     return resp.clone();
@@ -780,8 +780,7 @@ mod tests {
         }
     }
 
-    // Helper to build a task JSON object
-    fn task_json(id: &str, title: &str, task_type: &str, status: &str) -> serde_json::Value {
+    pub fn task_json(id: &str, title: &str, task_type: &str, status: &str) -> serde_json::Value {
         serde_json::json!({
             "id": id,
             "title": title,
@@ -790,7 +789,7 @@ mod tests {
         })
     }
 
-    fn task_with_parent(
+    pub fn task_with_parent(
         id: &str,
         title: &str,
         task_type: &str,
@@ -806,7 +805,7 @@ mod tests {
         })
     }
 
-    fn task_with_updated(
+    pub fn task_with_updated(
         id: &str,
         title: &str,
         task_type: &str,
@@ -821,6 +820,16 @@ mod tests {
             "updated_at": updated_at
         })
     }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::*;
+    use super::*;
 
     // -----------------------------------------------------------------------
     // Inspection tests

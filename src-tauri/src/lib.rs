@@ -231,6 +231,7 @@ mod project;
 mod pty_pool;
 mod storage;
 mod wm_brain;
+mod wm_commands_inner;
 mod wm_phases;
 mod worktree;
 
