@@ -25,7 +25,7 @@ import {
   GetOrchestrationStatusPlugin,
   ReprioritizeTaskPlugin,
 } from "./plugins/OrchestrationControlPlugins";
-import { runAgent, type Attachment } from "./agentRunner";
+import { runAgent, type Attachment, type ModelMessage } from "./agentRunner";
 import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
 import type { ToolName } from "./agentPrompts";
 import { createCostStore, CostStoreContext } from "./costStore";
@@ -542,7 +542,22 @@ export default function App() {
         plugins.push(new MessageAgentPlugin());
       }
       if (allowed.has("get_orchestration_status")) {
-        plugins.push(new GetOrchestrationStatusPlugin());
+        plugins.push(new GetOrchestrationStatusPlugin(() => {
+          return layoutsRef.current
+            .filter(l => l.node_type === "beads" || l.node_type === "agent" || l.node_type === "worker")
+            .map(l => {
+              try {
+                const p = JSON.parse(l.payload ?? "{}");
+                return {
+                  type: l.node_type ?? "unknown",
+                  project_path: p.project_path || (p.beadsStatus ? p.beadsStatus.projectPath : undefined),
+                  task_id: p.task_id,
+                };
+              } catch {
+                return { type: l.node_type ?? "unknown" };
+              }
+            });
+        }));
       }
       if (allowed.has("reprioritize_task")) {
         plugins.push(new ReprioritizeTaskPlugin());
@@ -603,6 +618,7 @@ export default function App() {
             userMessage: nudgeMsg,
             plugins: buildPlugins(role, agentNodeId, agentNodeId, taskId, projectPath),
             signal: nudgeController.signal,
+            layouts: layoutsRef.current,
             callbacks: {
               onChunk: (c) => {
                 if (c.type === "content" && c.text) {
@@ -839,6 +855,7 @@ export default function App() {
         userMessage: userMessage || "Hello, respond briefly.",
         plugins,
         signal: controller.signal,
+        layouts: layoutsRef.current,
         callbacks: {
           onModelLoaded: (info) => {
             mi.modelName = info.modelName;
@@ -968,6 +985,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
                   userMessage: nudgeMsg,
                   plugins: buildPlugins(role, agentNodeId, agentNodeId, taskId, projectPath),
                   signal: controller.signal,
+                  layouts: layoutsRef.current,
                   callbacks: {
                     onChunk: (c) => {
                       if (c.type === "content" && c.text) {
@@ -1160,11 +1178,17 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       const toolCalls: Array<{ name: string; status: string }> = [];
 
       try {
+        const messages: ModelMessage[] = [userMsg].map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+
         await runAgent({
           systemPrompt: getPromptForRole("workforce_manager"),
-          userMessage: promptText,
+          messages,
           plugins,
           signal: controller.signal,
+          layouts: layoutsRef.current,
           callbacks: {
             onChunk: (c) => {
               if (c.type === "content" && c.text) {
@@ -1335,11 +1359,17 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       };
 
       try {
+        const messages: ModelMessage[] = wmConversation.map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+
         await runAgent({
           systemPrompt: getPromptForRole("workforce_manager"),
-          userMessage: text.trim(),
+          messages,
           plugins,
           signal: controller.signal,
+          layouts: layoutsRef.current,
           callbacks: {
             onChunk: (c) => {
               if (c.type === "content" && c.text) {

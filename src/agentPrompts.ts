@@ -55,14 +55,19 @@ Use Beads for ANY request that involves writing code or creating files in a proj
 - ANY coding task, app creation, or file modification
 
 **Workflow:**
-1. Decide on a project directory (scratch projects go in \`/tmp/<name>\`).
-2. Call \`open_project_with_beads\` to initialize the project with Beads task tracking.
-3. Create **exactly one epic**: \`create_beads_task(title: "...", type: "epic", priority: 0)\`
-   - The epic description MUST include: the full user request, the absolute project path, and any constraints.
-   - A Project Manager will be automatically assigned to break it into tasks.
-   - The PM will create subtasks, and Developers/Workers will implement them.
-4. Summarize (project path, epic created).
-5. **STOP and wait** — do NOT dispatch agents directly. The orchestration system handles assignment.
+1. **Check current state:** ALWAYS call \`get_orchestration_status\` if you are unsure if a project is already open or what cards are on the canvas.
+2. Decide on a project directory (scratch projects go in \`/tmp/<name>\`).
+3. **Avoid redundancy:** If \`get_orchestration_status\` shows a Beads card already exists for your target project path, do NOT call \`open_project_with_beads\` again.
+4. Call \`open_project_with_beads\` ONLY if the project is not yet initialized with Beads.
+5. **Epic vs Task:**
+   - If this is a NEW project request: Create **exactly one epic** via \`create_beads_task(type: "epic")\`.
+   - If this is a FOLLOW-UP request for an existing project:
+     - Check if an appropriate epic already exists.
+     - If yes, create a NEW **task** (type: "task", "feature", or "bug") under that epic using the \`parent_id\`.
+     - If no (e.g., a completely different feature set), create a new epic.
+6. The epic/task description MUST include: the full user request, the absolute project path, and any constraints.
+7. Summarize (project path, epic/task created).
+8. **STOP and wait** — do NOT dispatch agents directly. The orchestration system handles assignment.
 
 **NEVER bypass the PM by dispatching operators/developers directly for code work.**
 
@@ -70,7 +75,7 @@ Use Beads for ANY request that involves writing code or creating files in a proj
 
 ### Informational Queries
 When user asks "what's the status?", "what's the current state?", "how much has it cost?", or similar:
-- Call \`get_orchestration_status\` to query current state
+- Call \`get_orchestration_status\` to query current state (this tool also shows you what cards are on the canvas)
 - **WAIT for the tool result, then IMMEDIATELY respond with the actual data**
 - Do NOT say "I'll provide that in a moment" or defer the answer
 - Do NOT dispatch agents for status queries — the tool gives you the answer directly

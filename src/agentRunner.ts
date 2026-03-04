@@ -3,9 +3,11 @@ import { loadModels, type ChatModel } from "multi-llm-ts";
 import { Plugin } from "./plugins/Plugin";
 import type { LlmProviderId } from "./types";
 import { streamText, type ModelMessage, type Tool, stepCountIs } from "ai";
+export type { ModelMessage };
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import type { SessionLayout } from "./types";
 
 export interface LlmUsageData {
   prompt_tokens: number;
@@ -109,6 +111,8 @@ export interface AgentRunnerParams {
   signal: AbortSignal;
   callbacks: AgentRunnerCallbacks;
   attachment?: Attachment;
+  /** Optional frontend layout context for tools that need it. */
+  layouts?: SessionLayout[];
 }
 
 export interface LoadedModel {
@@ -349,7 +353,7 @@ export async function runAgent(params: AgentRunnerParams): Promise<void> {
     const tools: Record<string, Tool> = {};
     for (const plugin of plugins) {
       if (plugin.isEnabled()) {
-        tools[plugin.getName()] = plugin.toAiTool();
+        tools[plugin.getName()] = plugin.toAiTool({ layouts: params.layouts });
       }
     }
 

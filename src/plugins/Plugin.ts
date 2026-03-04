@@ -1,6 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
 
+import type { SessionLayout } from "../types";
+
 export const DEFAULT_TOOL_TIMEOUT_MS = 60_000;
 
 export interface PluginParameter {
@@ -11,7 +13,7 @@ export interface PluginParameter {
 }
 
 export interface PluginExecutionContext {
-  // Add any context properties if needed, though most plugins seem to ignore it
+  layouts?: SessionLayout[];
 }
 
 export abstract class Plugin {
@@ -33,7 +35,7 @@ export abstract class Plugin {
     return `Running ${toolName}...`;
   }
 
-  toAiTool() {
+  toAiTool(context: PluginExecutionContext = {}) {
     const params = this.getParameters();
     
     const schemaShape: Record<string, z.ZodTypeAny> = {};
@@ -80,7 +82,7 @@ export abstract class Plugin {
 
         try {
           const result = await Promise.race([
-            this.execute({}, args, { abortSignal }),
+            this.execute(context, args, { abortSignal }),
             timeoutPromise,
           ]);
           clearTimeout(timer);

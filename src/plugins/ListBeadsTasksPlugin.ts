@@ -61,14 +61,9 @@ export class ListBeadsTasksPlugin extends Plugin {
   }
 
   async execute(
-    tool: string,
+    _context: PluginExecutionContext,
     args: Record<string, unknown>,
-    _ctx: PluginExecutionContext
-  ): Promise<string> {
-    if (tool !== "list_beads_tasks") {
-      throw new Error(`Unknown tool: ${tool}`);
-    }
-
+  ): Promise<{ result: string }> {
     // Resolve project path from agent if not already set
     if (!this.projectPath && this.agentId) {
       try {
@@ -80,9 +75,9 @@ export class ListBeadsTasksPlugin extends Plugin {
     }
 
     if (!this.projectPath) {
-      return JSON.stringify({
+      return { result: JSON.stringify({
         error: "Beads project path not set. Ensure open_project_with_beads was called first.",
-      });
+      }) };
     }
 
     try {
@@ -109,7 +104,7 @@ export class ListBeadsTasksPlugin extends Plugin {
       try {
         const tasks = JSON.parse(rawOutput.trim());
         if (!Array.isArray(tasks)) {
-          return JSON.stringify({ tasks: [tasks] });
+          return { result: JSON.stringify({ tasks: [tasks] }) };
         }
 
         // Format task summary for easier reading
@@ -122,15 +117,15 @@ export class ListBeadsTasksPlugin extends Plugin {
           deps: extractDeps(t),
         }));
 
-        return JSON.stringify({ count: tasks.length, tasks: summary }, null, 2);
+        return { result: JSON.stringify({ count: tasks.length, tasks: summary }, null, 2) };
       } catch {
         // Return raw output if parsing fails
-        return rawOutput;
+        return { result: rawOutput };
       }
     } catch (e) {
-      return JSON.stringify({
+      return { result: JSON.stringify({
         error: `Failed to list tasks: ${e instanceof Error ? e.message : String(e)}`,
-      });
+      }) };
     }
   }
 }

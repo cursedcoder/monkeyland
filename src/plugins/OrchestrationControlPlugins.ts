@@ -191,15 +191,27 @@ export interface OrchStatusResult {
   is_paused: boolean;
   active_agents: ActiveAgentInfo[];
   project_path: string | null;
+  frontend_cards?: {
+    type: string;
+    project_path?: string;
+    task_id?: string;
+  }[];
 }
 
 export class GetOrchestrationStatusPlugin extends Plugin {
+  private getFrontendCards: () => OrchStatusResult["frontend_cards"];
+
+  constructor(getFrontendCards: () => OrchStatusResult["frontend_cards"] = () => []) {
+    super();
+    this.getFrontendCards = getFrontendCards;
+  }
+
   getName(): string {
     return "get_orchestration_status";
   }
 
   getDescription(): string {
-    return "Get the current status of the orchestration system, including active agents, their tasks, and project info.";
+    return "Get the current status of the orchestration system, including active agents, their tasks, project info, and existing cards on the canvas.";
   }
 
   getRunningDescription(): string {
@@ -216,6 +228,7 @@ export class GetOrchestrationStatusPlugin extends Plugin {
   ): Promise<{ result: string }> {
     try {
       const status = await invoke<OrchStatusResult>("orch_get_status");
+      const frontendCards = this.getFrontendCards();
 
       const lines: string[] = [];
       lines.push(`Orchestration: ${status.state} (running: ${status.is_running}, paused: ${status.is_paused})`);
@@ -232,6 +245,15 @@ export class GetOrchestrationStatusPlugin extends Plugin {
           const taskPart = agent.task_id ? ` [task: ${agent.task_id}]` : "";
           const phasePart = agent.phase ? ` (${agent.phase})` : "";
           lines.push(`  - ${agent.role}: ${agent.state}${phasePart}${taskPart}`);
+        }
+      }
+
+      if (frontendCards && frontendCards.length > 0) {
+        lines.push(`Frontend Cards (${frontendCards.length}):`);
+        for (const card of frontendCards) {
+          const projectPart = card.project_path ? ` [project: ${card.project_path}]` : "";
+          const taskPart = card.task_id ? ` [task: ${card.task_id}]` : "";
+          lines.push(`  - ${card.type}${projectPart}${taskPart}`);
         }
       }
 

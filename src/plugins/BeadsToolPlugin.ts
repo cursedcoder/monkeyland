@@ -89,6 +89,21 @@ export class BeadsToolPlugin extends Plugin {
       return { result: "Error: project_path is required." };
     }
 
+    // Check if a Beads card for this project already exists on the canvas
+    const existingBeadsCard = _context.layouts?.find(l => {
+      if (l.node_type !== "beads") return false;
+      try {
+        const p = JSON.parse(l.payload ?? "{}");
+        return p.beadsStatus?.projectPath === path;
+      } catch {
+        return false;
+      }
+    });
+
+    if (existingBeadsCard) {
+      this.beadsNodeId = existingBeadsCard.session_id;
+    }
+
     if (!this.beadsNodeId) {
       this.beadsNodeId = this.addBeadsNode(this.canvasNodeId);
     }
