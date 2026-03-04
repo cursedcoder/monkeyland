@@ -178,6 +178,31 @@ export class CreateBeadsTaskPlugin extends Plugin {
     }
 
     try {
+      // Deduplication logic: check if task already exists
+      const listOutput = await invoke<string>("beads_run", {
+        projectPath,
+        args: ["list", "--json"],
+        agentId: this.agentId,
+      });
+      try {
+        const existingTasks = JSON.parse(listOutput.trim());
+        if (Array.isArray(existingTasks)) {
+          const match = existingTasks.find((t: any) => 
+            t.title?.trim().toLowerCase() === title.toLowerCase() && 
+            (t.type === issueType || t.issue_type === issueType)
+          );
+          if (match) {
+            const isClosed = match.status === "done" || match.status === "closed";
+            if (isClosed) {
+              return { result: `Existing task "${title}" (ID: ${match.id}) is already completed. No new task created.` };
+            }
+            return { result: `Task already exists (ID: ${match.id}). Reusing existing task.` };
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to parse existing tasks for deduplication:", e);
+      }
+
       const stdout = await invoke<string>("beads_run", {
         projectPath,
         args,
