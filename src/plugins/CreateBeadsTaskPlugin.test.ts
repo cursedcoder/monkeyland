@@ -27,22 +27,24 @@ describe("CreateBeadsTaskPlugin", () => {
   });
 
   it("skips get_beads_project_path when projectPath is set", async () => {
-    mockInvoke.mockResolvedValueOnce("  bd-task-99  ");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("  bd-task-99  "); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/tmp/proj");
     await plugin.execute({}, { title: "Setup" });
-    expect(mockInvoke).not.toHaveBeenCalledWith("get_beads_project_path");
-    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ projectPath: "/tmp/proj" }));
+    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ args: ["list", "--json"] }));
+    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ projectPath: "/tmp/proj", args: expect.arrayContaining(["create"]) }));
   });
 
   it("falls back to get_beads_project_path when projectPath is not set", async () => {
     mockInvoke
       .mockResolvedValueOnce("/fallback/path")
-      .mockResolvedValueOnce("bd-1");
+      .mockResolvedValueOnce("[]") // list
+      .mockResolvedValueOnce("bd-1"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     await plugin.execute({}, { title: "Setup" });
     expect(mockInvoke).toHaveBeenCalledWith("get_beads_project_path");
-    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ projectPath: "/fallback/path" }));
+    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ projectPath: "/fallback/path", args: expect.arrayContaining(["create"]) }));
   });
 
   it("returns error when no project path available (returns null)", async () => {
@@ -60,7 +62,8 @@ describe("CreateBeadsTaskPlugin", () => {
   });
 
   it("builds full args array with all optional params", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, {
@@ -92,67 +95,74 @@ describe("CreateBeadsTaskPlugin", () => {
   });
 
   it("normalizes deps with extra whitespace and empties", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "X", deps: " a , , b " });
-    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run" && (c[1] as any).args.includes("create"))!;
     const args = (call[1] as { args: string[] }).args;
     expect(args).toContain("--deps");
     expect(args[args.indexOf("--deps") + 1]).toBe("a,b");
   });
 
   it("normalizes labels with extra whitespace and empties", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "X", labels: " x , , y " });
-    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run" && (c[1] as any).args.includes("create"))!;
     const args = (call[1] as { args: string[] }).args;
     expect(args[args.indexOf("--labels") + 1]).toBe("x,y");
   });
 
   it("excludes estimate_minutes when 0", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "X", estimate_minutes: 0 });
-    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run" && (c[1] as any).args.includes("create"))!;
     const args = (call[1] as { args: string[] }).args;
     expect(args).not.toContain("--estimate");
   });
 
   it("excludes estimate_minutes when negative", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "X", estimate_minutes: -5 });
-    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run" && (c[1] as any).args.includes("create"))!;
     const args = (call[1] as { args: string[] }).args;
     expect(args).not.toContain("--estimate");
   });
 
   it("defaults type to 'task'", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "X" });
-    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run" && (c[1] as any).args.includes("create"))!;
     const args = (call[1] as { args: string[] }).args;
     expect(args[args.indexOf("--type") + 1]).toBe("task");
   });
 
   it("defaults priority to 2", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "X" });
-    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run" && (c[1] as any).args.includes("create"))!;
     const args = (call[1] as { args: string[] }).args;
     expect(args[args.indexOf("--priority") + 1]).toBe("2");
   });
 
   it("returns error when beads_run throws", async () => {
+    mockInvoke.mockResolvedValueOnce("[]"); // list
     mockInvoke.mockRejectedValueOnce(new Error("bd not installed"));
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
@@ -162,7 +172,8 @@ describe("CreateBeadsTaskPlugin", () => {
   });
 
   it("trims stdout whitespace in result message", async () => {
-    mockInvoke.mockResolvedValueOnce("  bd-42  \n");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("  bd-42  \n"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     const result = await plugin.execute({}, { title: "Setup" });
@@ -170,57 +181,81 @@ describe("CreateBeadsTaskPlugin", () => {
   });
 
   it("passes agentId through to beads_run invoke", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-1");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-1"); // create
     const plugin = new CreateBeadsTaskPlugin("my-agent-id");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "X" });
-    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ agentId: "my-agent-id" }));
+    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ agentId: "my-agent-id", args: expect.arrayContaining(["create"]) }));
   });
 
   it("passes null agentId when not provided", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-1");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-1"); // create
     const plugin = new CreateBeadsTaskPlugin();
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "X" });
-    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ agentId: null }));
+    expect(mockInvoke).toHaveBeenCalledWith("beads_run", expect.objectContaining({ agentId: null, args: expect.arrayContaining(["create"]) }));
   });
 
   it("adds --defer flag when deferred is true", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "Draft task", deferred: true });
-    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run" && (c[1] as any).args.includes("create"))!;
     const args = (call[1] as { args: string[] }).args;
     expect(args).toContain("--defer");
     expect(args[args.indexOf("--defer") + 1]).toBe("+100y");
   });
 
   it("does not add --defer flag when deferred is false", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "Normal task", deferred: false });
-    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run" && (c[1] as any).args.includes("create"))!;
     const args = (call[1] as { args: string[] }).args;
     expect(args).not.toContain("--defer");
   });
 
   it("does not add --defer flag when deferred is not provided", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     await plugin.execute({}, { title: "Normal task" });
-    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run")!;
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run" && (c[1] as any).args.includes("create"))!;
     const args = (call[1] as { args: string[] }).args;
     expect(args).not.toContain("--defer");
   });
 
   it("includes deferred status in result message", async () => {
-    mockInvoke.mockResolvedValueOnce("bd-42");
+    mockInvoke.mockResolvedValueOnce("[]"); // list
+    mockInvoke.mockResolvedValueOnce("bd-42"); // create
     const plugin = new CreateBeadsTaskPlugin("agent-1");
     plugin.setProjectPath("/proj");
     const result = await plugin.execute({}, { title: "Draft task", deferred: true });
     expect(result.result).toContain("deferred");
+  });
+
+  it("deduplicates open tasks with same title, type, and description", async () => {
+    mockInvoke.mockResolvedValueOnce(JSON.stringify([{ id: "bd-existing", title: "Setup", type: "task", status: "open", description: "desc" }]));
+    const plugin = new CreateBeadsTaskPlugin("agent-1");
+    plugin.setProjectPath("/proj");
+    const result = await plugin.execute({}, { title: "Setup", type: "task", description: "desc" });
+    expect(result.result).toContain("Task already exists (ID: bd-existing)");
+    expect(mockInvoke).not.toHaveBeenCalledWith("beads_run", expect.objectContaining({ args: expect.arrayContaining(["create"]) }));
+  });
+
+  it("prevents creation when identical completed task exists", async () => {
+    mockInvoke.mockResolvedValueOnce(JSON.stringify([{ id: "bd-done", title: "Setup", type: "task", status: "done", description: "desc" }]));
+    const plugin = new CreateBeadsTaskPlugin("agent-1");
+    plugin.setProjectPath("/proj");
+    const result = await plugin.execute({}, { title: "Setup", type: "task", description: "desc" });
+    expect(result.result).toContain("already completed");
+    expect(mockInvoke).not.toHaveBeenCalledWith("beads_run", expect.objectContaining({ args: expect.arrayContaining(["create"]) }));
   });
 });

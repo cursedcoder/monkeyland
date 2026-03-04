@@ -558,6 +558,8 @@ export const ROLE_TOOLS: Record<AgentRole | "orchestrator", ToolName[]> = {
   orchestrator: [
     "open_project_with_beads",
     "create_beads_task",
+    "list_beads_tasks",
+    "sanitize_project",
     "dispatch_agent",
     "pause_orchestration",
     "resume_orchestration",

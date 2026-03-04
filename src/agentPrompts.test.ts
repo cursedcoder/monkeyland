@@ -26,7 +26,7 @@ const ALL_ROLES: AgentRole[] = [
 const ALL_TOOL_NAMES: ToolName[] = [
   "write_file", "read_file", "run_terminal_command", "browser_action",
   "open_project_with_beads", "create_beads_task", "update_beads_task",
-  "list_beads_tasks", "dispatch_agent", "yield_for_review", "complete_task",
+  "list_beads_tasks", "sanitize_project", "dispatch_agent", "yield_for_review", "complete_task",
   "pause_orchestration", "resume_orchestration", "cancel_task",
   "reprioritize_task", "message_agent", "get_orchestration_status",
 ];
@@ -96,7 +96,10 @@ describe("ROLE_TOOLS", () => {
   });
 
   it("workforce_manager and orchestrator have identical tools", () => {
-    expect(ROLE_TOOLS.workforce_manager).toEqual(ROLE_TOOLS.orchestrator);
+    // Both should have the same set of management tools
+    const wmTools = [...ROLE_TOOLS.workforce_manager].sort();
+    const orchTools = [...ROLE_TOOLS.orchestrator].sort();
+    expect(wmTools).toEqual(orchTools);
   });
 
   it("developer includes yield_for_review", () => {
