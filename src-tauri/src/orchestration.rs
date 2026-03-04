@@ -402,7 +402,7 @@ pub async fn tick(
 
     // 1. bd ready --json — failure must NOT prevent steps 3–6 (merge train, cleanup, etc.)
     let tasks: Vec<BeadsIssue> =
-        match env.run_bd(path, &vec!["ready".to_string(), "--json".to_string()]) {
+        match env.run_bd(path, &["ready".to_string(), "--json".to_string()]) {
             Ok(stdout) => match serde_json::from_str(&stdout) {
                 Ok(v) => v,
                 Err(_) => {
