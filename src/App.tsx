@@ -12,7 +12,7 @@ import { BeadsToolPlugin } from "./plugins/BeadsToolPlugin";
 import { CreateBeadsTaskPlugin } from "./plugins/CreateBeadsTaskPlugin";
 import { UpdateBeadsTaskPlugin } from "./plugins/UpdateBeadsTaskPlugin";
 import { ListBeadsTasksPlugin } from "./plugins/ListBeadsTasksPlugin";
-import { SanitizeProjectPlugin } from "./plugins/SanitizeProjectPlugin";
+// SanitizeProjectPlugin removed — inspection handles cleanup automatically
 import { YieldForReviewPlugin } from "./plugins/YieldForReviewPlugin";
 import { CompleteTaskPlugin } from "./plugins/CompleteTaskPlugin";
 import { WriteFileToolPlugin } from "./plugins/WriteFileToolPlugin";
@@ -27,7 +27,7 @@ import {
   ReprioritizeTaskPlugin,
 } from "./plugins/OrchestrationControlPlugins";
 import { runAgent, type Attachment, type ModelMessage } from "./agentRunner";
-import { runBeadsPreflight } from "./beadsPreflight";
+import { inspectProject, ProjectState } from "./projectInspection";
 import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
 import type { ToolName } from "./agentPrompts";
 import { createCostStore, CostStoreContext } from "./costStore";
@@ -489,8 +489,11 @@ export default function App() {
    * Only includes tools the role is permitted to use (per ROLE_TOOLS).
    */
   const buildPlugins = useCallback(
-    (role: AgentRole, canvasNodeId: string, backendAgentId: string, taskId: string | null, projectPath?: string | null): Plugin[] => {
+    (role: AgentRole, canvasNodeId: string, backendAgentId: string, taskId: string | null, projectPath?: string | null, removeTools?: Set<ToolName>): Plugin[] => {
       const allowed = new Set<ToolName>(ROLE_TOOLS[role] ?? []);
+      if (removeTools) {
+        for (const t of removeTools) allowed.delete(t);
+      }
       const plugins: Plugin[] = [];
 
       if (allowed.has("open_project_with_beads")) {
@@ -504,9 +507,6 @@ export default function App() {
       }
       if (allowed.has("list_beads_tasks")) {
         plugins.push(new ListBeadsTasksPlugin(backendAgentId));
-      }
-      if (allowed.has("sanitize_project")) {
-        plugins.push(new SanitizeProjectPlugin(backendAgentId));
       }
       if (allowed.has("dispatch_agent")) {
         plugins.push(new DispatchAgentPlugin(backendAgentId, (p) => dispatchAgentRef.current(p)));
@@ -1144,7 +1144,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       activeWmNodeId.current = newWmNodeId;
       wmCardSessionId.current = nodeId;
       setWmNodeId(newWmNodeId);
-      setWmPhase("project_setup");
+      setWmPhase("inspecting");
 
       // Transform the prompt card into a wm_chat card
       setLayouts((prev) => {
@@ -1172,10 +1172,51 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       setWmConversation([userMsg]);
       setWmIsProcessing(true);
 
-      // Build plugins for WM - use nodeId (canvas session_id) for parent references, newWmNodeId (backend) for backend calls
-      const plugins = buildPlugins("workforce_manager", nodeId, newWmNodeId, null, null);
+      // --- Project Inspection (deterministic, runs before LLM) ---
+      const inspection = await inspectProject(layoutsRef.current);
 
-      // Run the agent turn
+      if (inspection.state === ProjectState.COMPLETED && inspection.completionSummary) {
+        // Short-circuit: work is already done — no LLM needed
+        const syntheticMsg: WMChatMessage = {
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          role: "assistant",
+          content: inspection.completionSummary,
+          timestamp: Date.now(),
+        };
+        setWmConversation((prev) => [...prev, syntheticMsg]);
+        setWmIsProcessing(false);
+        setWmPhase("monitoring");
+
+        try { await invoke("orch_start"); } catch { /* already running */ }
+        setWmOrchStatus("running");
+        return;
+      }
+
+      if (inspection.state === ProjectState.ERROR) {
+        const errorMsg: WMChatMessage = {
+          id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          role: "assistant",
+          content: `Inspection error: ${inspection.errorMessage ?? "Unknown error"}`,
+          timestamp: Date.now(),
+        };
+        setWmConversation((prev) => [...prev, errorMsg]);
+        setWmIsProcessing(false);
+        setWmPhase("monitoring");
+        return;
+      }
+
+      // Determine tool constraints based on inspection state
+      const removeTools = new Set<ToolName>();
+      if (inspection.state === ProjectState.IN_PROGRESS) {
+        removeTools.add("open_project_with_beads");
+        removeTools.add("sanitize_project");
+      }
+
+      setWmPhase("project_setup");
+
+      const plugins = buildPlugins("workforce_manager", nodeId, newWmNodeId, null, null, removeTools.size > 0 ? removeTools : undefined);
+      const systemPrompt = getPromptForRole("workforce_manager") + inspection.stateContext;
+
       const controller = new AbortController();
       abortControllers.current.set(newWmNodeId, controller);
 
@@ -1183,10 +1224,6 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       const toolCalls: Array<{ name: string; status: string }> = [];
 
       try {
-        // Pre-flight: auto-sanitize zombies and build state context BEFORE the LLM turn
-        const preflight = await runBeadsPreflight(layoutsRef.current);
-        const systemPrompt = getPromptForRole("workforce_manager") + preflight.stateContext;
-
         const messages: ModelMessage[] = [userMsg].map((m) => ({
           role: m.role,
           content: m.content,
@@ -1231,7 +1268,6 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
           },
         });
 
-        // Add assistant response
         const assistantMsg: WMChatMessage = {
           id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
           role: "assistant",
@@ -1257,7 +1293,6 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         abortControllers.current.delete(newWmNodeId);
       }
 
-      // Start orchestration
       try {
         await invoke("orch_start");
       } catch {
@@ -1342,11 +1377,30 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         }
       }
 
-      // Build plugins for WM - use canvas session_id for parent references, currentWmNodeId (backend) for backend calls
-      const canvasCardId = wmCardSessionId.current ?? currentWmNodeId;
-      const plugins = buildPlugins("workforce_manager", canvasCardId, currentWmNodeId, null, null);
+      // --- Project Inspection (deterministic, before LLM) ---
+      setWmPhase("inspecting");
+      const inspection = await inspectProject(layoutsRef.current);
 
-      // Run the agent turn
+      // Determine tool constraints and prompt based on inspection
+      const removeTools = new Set<ToolName>();
+      let systemPrompt: string;
+
+      if (inspection.state === ProjectState.IN_PROGRESS || inspection.state === ProjectState.COMPLETED) {
+        removeTools.add("open_project_with_beads");
+        removeTools.add("sanitize_project");
+      }
+
+      if (inspection.state === ProjectState.COMPLETED) {
+        systemPrompt = getPromptForRole("workforce_manager", "completed") + inspection.stateContext;
+      } else {
+        systemPrompt = getPromptForRole("workforce_manager") + inspection.stateContext;
+      }
+
+      setWmPhase("project_setup");
+
+      const canvasCardId = wmCardSessionId.current ?? currentWmNodeId;
+      const plugins = buildPlugins("workforce_manager", canvasCardId, currentWmNodeId, null, null, removeTools.size > 0 ? removeTools : undefined);
+
       const controller = new AbortController();
       abortControllers.current.set(currentWmNodeId, controller);
 
@@ -1368,10 +1422,6 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       };
 
       try {
-        // Pre-flight: auto-sanitize zombies and build state context BEFORE the LLM turn
-        const preflight = await runBeadsPreflight(layoutsRef.current);
-        const systemPrompt = getPromptForRole("workforce_manager") + preflight.stateContext;
-
         const messages: ModelMessage[] = wmConversation.map((m) => ({
           role: m.role,
           content: m.content,
@@ -1426,7 +1476,6 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
             onDone: (fullText) => {
               updateAgentPayload({ status: "done", answer: fullText, toolActivity: "" });
 
-              // Add assistant message to conversation
               const assistantMsg: WMChatMessage = {
                 id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
                 role: "assistant",

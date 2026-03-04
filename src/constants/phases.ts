@@ -3,6 +3,7 @@ import type { AgentRole } from "../types";
 /** WM conversation phases */
 export type WMPhase =
   | "initial"
+  | "inspecting"
   | "project_setup"
   | "planning"
   | "executing"
@@ -12,6 +13,7 @@ export type WMPhase =
 
 export const WM_PHASE_LABELS: Record<WMPhase, string> = {
   initial: "Ready",
+  inspecting: "Inspecting",
   project_setup: "Setting Up",
   planning: "Planning",
   executing: "Executing",
@@ -22,6 +24,7 @@ export const WM_PHASE_LABELS: Record<WMPhase, string> = {
 
 export const WM_PHASE_COLORS: Record<WMPhase, string> = {
   initial: "#6b7280",
+  inspecting: "#f97316",
   project_setup: "#3b82f6",
   planning: "#f59e0b",
   executing: "#10b981",

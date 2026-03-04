@@ -16,6 +16,8 @@ pub enum WMPhase {
     /// Initial state: WM has just been spawned, ready to receive first request.
     #[default]
     Initial,
+    /// WM is inspecting existing project state before acting.
+    Inspecting,
     /// WM is setting up a new project (opening with Beads, etc.).
     ProjectSetup,
     /// WM is working with PM to create tasks and plan the work.
@@ -34,6 +36,7 @@ impl std::fmt::Display for WMPhase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WMPhase::Initial => write!(f, "initial"),
+            WMPhase::Inspecting => write!(f, "inspecting"),
             WMPhase::ProjectSetup => write!(f, "project_setup"),
             WMPhase::Planning => write!(f, "planning"),
             WMPhase::Executing => write!(f, "executing"),
@@ -71,8 +74,13 @@ pub enum WMPhaseEvent {
 /// Note: WM transitions are more flexible than other roles since the conversation is persistent.
 pub fn try_wm_phase_transition(current: WMPhase, event: WMPhaseEvent) -> Result<WMPhase, String> {
     match (current, event) {
-        // Initial -> ProjectSetup when user sends first request
-        (WMPhase::Initial, WMPhaseEvent::StartProject) => Ok(WMPhase::ProjectSetup),
+        // Initial -> Inspecting (or ProjectSetup) when user sends first request
+        (WMPhase::Initial, WMPhaseEvent::StartProject) => Ok(WMPhase::Inspecting),
+
+        // Inspecting -> ProjectSetup after inspection completes
+        (WMPhase::Inspecting, WMPhaseEvent::ProjectReady) => Ok(WMPhase::ProjectSetup),
+        (WMPhase::Inspecting, WMPhaseEvent::StartExecution) => Ok(WMPhase::Executing),
+        (WMPhase::Inspecting, WMPhaseEvent::BeginMonitoring) => Ok(WMPhase::Monitoring),
 
         // ProjectSetup -> Planning when project is opened
         (WMPhase::ProjectSetup, WMPhaseEvent::ProjectReady) => Ok(WMPhase::Planning),
@@ -120,6 +128,10 @@ pub fn wm_phase_tools(phase: WMPhase) -> Vec<&'static str> {
     match phase {
         WMPhase::Initial => {
             // Initial: waiting for request, limited tools
+            vec![]
+        }
+        WMPhase::Inspecting => {
+            // Inspecting: code-level inspection runs, no LLM tools needed
             vec![]
         }
         WMPhase::ProjectSetup => {
@@ -178,9 +190,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initial_to_project_setup() {
+    fn initial_to_inspecting() {
         let result = try_wm_phase_transition(WMPhase::Initial, WMPhaseEvent::StartProject);
+        assert_eq!(result, Ok(WMPhase::Inspecting));
+    }
+
+    #[test]
+    fn inspecting_to_project_setup() {
+        let result = try_wm_phase_transition(WMPhase::Inspecting, WMPhaseEvent::ProjectReady);
         assert_eq!(result, Ok(WMPhase::ProjectSetup));
+    }
+
+    #[test]
+    fn inspecting_to_monitoring() {
+        let result = try_wm_phase_transition(WMPhase::Inspecting, WMPhaseEvent::BeginMonitoring);
+        assert_eq!(result, Ok(WMPhase::Monitoring));
     }
 
     #[test]
@@ -218,6 +242,7 @@ mod tests {
     fn any_phase_can_conclude() {
         for phase in [
             WMPhase::Initial,
+            WMPhase::Inspecting,
             WMPhase::ProjectSetup,
             WMPhase::Planning,
             WMPhase::Executing,
@@ -248,8 +273,9 @@ mod tests {
     }
 
     #[test]
-    fn wm_phase_tools_not_empty_except_initial() {
+    fn wm_phase_tools_not_empty_except_initial_and_inspecting() {
         assert!(wm_phase_tools(WMPhase::Initial).is_empty());
+        assert!(wm_phase_tools(WMPhase::Inspecting).is_empty());
         assert!(!wm_phase_tools(WMPhase::ProjectSetup).is_empty());
         assert!(!wm_phase_tools(WMPhase::Planning).is_empty());
         assert!(!wm_phase_tools(WMPhase::Executing).is_empty());

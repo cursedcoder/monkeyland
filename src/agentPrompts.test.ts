@@ -3,6 +3,7 @@ import {
   getPromptForRole,
   ROLE_TOOLS,
   WORKFORCE_MANAGER_PROMPT,
+  WM_COMPLETED_PROJECT_PROMPT,
   PROJECT_MANAGER_PROMPT,
   DEVELOPER_PROMPT,
   WORKER_PROMPT,
@@ -26,7 +27,7 @@ const ALL_ROLES: AgentRole[] = [
 const ALL_TOOL_NAMES: ToolName[] = [
   "write_file", "read_file", "run_terminal_command", "browser_action",
   "open_project_with_beads", "create_beads_task", "update_beads_task",
-  "list_beads_tasks", "sanitize_project", "dispatch_agent", "yield_for_review", "complete_task",
+  "list_beads_tasks", "dispatch_agent", "yield_for_review", "complete_task",
   "pause_orchestration", "resume_orchestration", "cancel_task",
   "reprioritize_task", "message_agent", "get_orchestration_status",
 ];
@@ -60,6 +61,15 @@ describe("getPromptForRole", () => {
     expect(getPromptForRole("worker")).toBe(WORKER_PROMPT);
     expect(getPromptForRole("validator")).toBe(UNIFIED_VALIDATOR_PROMPT);
     expect(getPromptForRole("merge_agent")).toBe(MERGE_AGENT_PROMPT);
+  });
+
+  it("returns completed project prompt when variant='completed'", () => {
+    expect(getPromptForRole("workforce_manager", "completed")).toBe(WM_COMPLETED_PROJECT_PROMPT);
+    expect(getPromptForRole("orchestrator", "completed")).toBe(WM_COMPLETED_PROJECT_PROMPT);
+  });
+
+  it("variant parameter is ignored for non-WM roles", () => {
+    expect(getPromptForRole("developer", "completed")).toBe(DEVELOPER_PROMPT);
   });
 });
 

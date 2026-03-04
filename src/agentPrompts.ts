@@ -56,21 +56,14 @@ Use Beads for ANY request that involves writing code or creating files in a proj
 
 **Workflow:**
 
-**IMPORTANT — State is pre-computed.** Before your turn starts, the system automatically:
-- Detects existing Beads projects on the canvas
-- Archives zombie/duplicate tasks from previous runs
-- Injects the full task state into this prompt (see "Current Project State" section below, if present)
+The system automatically inspects existing projects, archives zombie tasks, and injects state into this prompt. If a "Current Project State" section exists at the end of this prompt, read it first — it is authoritative.
 
-You do NOT need to call \`sanitize_project\`, \`list_beads_tasks\`, or \`get_orchestration_status\` to discover existing work. The state is already provided. Read it before acting.
-
-1. **Read the injected state first.** If a "Current Project State" section exists at the end of this prompt, it tells you everything: project path, existing tasks, whether work is completed.
-2. **If work is already completed:** Tell the user. Do NOT create a new epic. Ask if they want modifications.
-3. **If an epic is in progress:** Do NOT create another epic. Add tasks under the existing one.
-4. **If no project exists yet:** Decide on a directory (scratch projects go in \`/tmp/<name>\`), call \`open_project_with_beads\`, then create **exactly one epic** via \`create_beads_task(type: "epic")\`.
-5. For follow-up requests on an existing project, create individual **tasks** (not epics) under the existing epic using \`parent_id\`.
-6. The epic/task description MUST include: the full user request, the absolute project path, and any constraints.
-7. Summarize (project path, epic/task created).
-8. **STOP and wait** — do NOT dispatch agents directly. The orchestration system handles assignment.
+1. **If the state shows an epic in progress:** Do NOT create another epic. Add tasks under the existing one using \`parent_id\`.
+2. **If no project exists yet:** Decide on a directory (scratch projects go in \`/tmp/<name>\`), call \`open_project_with_beads\`, then create **exactly one epic** via \`create_beads_task(type: "epic")\`.
+3. For follow-up requests on an existing project, create individual **tasks** (not epics) under the existing epic using \`parent_id\`.
+4. The epic/task description MUST include: the full user request, the absolute project path, and any constraints.
+5. Summarize (project path, epic/task created).
+6. **STOP and wait** — do NOT dispatch agents directly. The orchestration system handles assignment.
 
 **The system enforces these rules in code.** Attempting to create a duplicate epic will be rejected by the tool.
 
@@ -491,12 +484,35 @@ You will be given:
 `;
 
 /**
- * Get the system prompt for a given agent role.
+ * Prompt used when a follow-up message arrives on a project whose work is
+ * already COMPLETED.  The inspection system already short-circuited the first
+ * message; this prompt is for subsequent turns where the user requests
+ * modifications or new work on the finished project.
  */
-export function getPromptForRole(role: AgentRole | "orchestrator"): string {
+export const WM_COMPLETED_PROJECT_PROMPT = `You are the Workforce Manager in Monkeyland. The project described in the "Current Project State" section below is ALREADY COMPLETE.
+
+## Rules
+
+- **DO NOT recreate existing work.** The epic and its tasks are finished.
+- **DO NOT create a new epic.** The tool will reject it.
+- If the user wants the same work that is already done, tell them it is complete and summarize what was delivered.
+- If the user wants NEW work (a modification, a new feature, a bug fix), create individual **tasks** (type: "task", "feature", or "bug") under the existing completed epic using \`parent_id\`.
+- The task description MUST include: the full user request, the absolute project path, and any constraints.
+- After creating the task, summarize and **STOP**. The orchestration system assigns developers.
+- For informational queries (status, cost), use \`get_orchestration_status\` and respond directly.
+
+**The system physically prevents epic creation.** Attempting to create a duplicate epic will be rejected.
+`;
+
+/**
+ * Get the system prompt for a given agent role.
+ * Pass variant="completed" for the WM to get the completed-project prompt.
+ */
+export function getPromptForRole(role: AgentRole | "orchestrator", variant?: "completed"): string {
   switch (role) {
     case "workforce_manager":
     case "orchestrator":
+      if (variant === "completed") return WM_COMPLETED_PROJECT_PROMPT;
       return WORKFORCE_MANAGER_PROMPT;
     case "project_manager":
       return PROJECT_MANAGER_PROMPT;
@@ -542,13 +558,10 @@ export type ToolName =
 
 export const ROLE_TOOLS: Record<AgentRole | "orchestrator", ToolName[]> = {
   workforce_manager: [
-    // Existing tools
     "open_project_with_beads",
     "create_beads_task",
     "list_beads_tasks",
-    "sanitize_project",
     "dispatch_agent",
-    // New orchestration control tools
     "pause_orchestration",
     "resume_orchestration",
     "cancel_task",
@@ -560,7 +573,6 @@ export const ROLE_TOOLS: Record<AgentRole | "orchestrator", ToolName[]> = {
     "open_project_with_beads",
     "create_beads_task",
     "list_beads_tasks",
-    "sanitize_project",
     "dispatch_agent",
     "pause_orchestration",
     "resume_orchestration",
