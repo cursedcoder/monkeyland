@@ -128,32 +128,129 @@ export function Canvas({
     return set;
   }, [bounds, layouts, draggingNodeId]);
 
+  const onLayoutChangeRef = useRef(onLayoutChange);
+  const onLayoutCommitRef = useRef(onLayoutCommit);
+  onLayoutChangeRef.current = onLayoutChange;
+  onLayoutCommitRef.current = onLayoutCommit;
+
+  const layoutChangeCacheRef = useRef(new Map<string, (l: SessionLayout) => void>());
+  const layoutCommitCacheRef = useRef(new Map<string, (l: SessionLayout) => void>());
+
   const handleCardLayoutChange = useCallback(
-    (nodeId: string) => (layout: SessionLayout) => {
-      onLayoutChange(nodeId, layout);
-      if (nodeId === draggingNodeIdRef.current) {
-        setLiveDragLayout(layout);
+    (nodeId: string) => {
+      let fn = layoutChangeCacheRef.current.get(nodeId);
+      if (!fn) {
+        fn = (layout: SessionLayout) => {
+          onLayoutChangeRef.current(nodeId, layout);
+          if (nodeId === draggingNodeIdRef.current) {
+            setLiveDragLayout(layout);
+          }
+        };
+        layoutChangeCacheRef.current.set(nodeId, fn);
       }
+      return fn;
     },
-    [onLayoutChange]
+    []
   );
 
   const handleCardLayoutCommit = useCallback(
-    (nodeId: string) => (layout: SessionLayout) => {
-      onLayoutCommit(nodeId, layout);
-      if (nodeId === draggingNodeIdRef.current) {
-        draggingNodeIdRef.current = null;
-        setDraggingNodeId(null);
-        setLiveDragLayout(null);
+    (nodeId: string) => {
+      let fn = layoutCommitCacheRef.current.get(nodeId);
+      if (!fn) {
+        fn = (layout: SessionLayout) => {
+          onLayoutCommitRef.current(nodeId, layout);
+          if (nodeId === draggingNodeIdRef.current) {
+            draggingNodeIdRef.current = null;
+            setDraggingNodeId(null);
+            setLiveDragLayout(null);
+          }
+        };
+        layoutCommitCacheRef.current.set(nodeId, fn);
       }
+      return fn;
     },
-    [onLayoutCommit]
+    []
   );
 
   const handleDragStart = useCallback((nodeId: string, initialLayout: SessionLayout) => {
     draggingNodeIdRef.current = nodeId;
     setDraggingNodeId(nodeId);
     setLiveDragLayout(initialLayout);
+  }, []);
+
+  const onRemoveLayoutRef = useRef(onRemoveLayout);
+  const onPromptChangeRef = useRef(onPromptChange);
+  const onLaunchRef = useRef(onLaunch);
+  const onStopAgentRef = useRef(onStopAgent);
+  const onBeadsStatusChangeRef = useRef(onBeadsStatusChange);
+  const onAddTaskCardRef = useRef(onAddTaskCard);
+  onRemoveLayoutRef.current = onRemoveLayout;
+  onPromptChangeRef.current = onPromptChange;
+  onLaunchRef.current = onLaunch;
+  onStopAgentRef.current = onStopAgent;
+  onBeadsStatusChangeRef.current = onBeadsStatusChange;
+  onAddTaskCardRef.current = onAddTaskCard;
+
+  const stableCloseCacheRef = useRef(new Map<string, (() => void) | undefined>());
+  const stableStopCacheRef = useRef(new Map<string, () => void>());
+
+  const getStableClose = useCallback((nodeId: string): (() => void) | undefined => {
+    if (!onRemoveLayoutRef.current) return undefined;
+    let fn = stableCloseCacheRef.current.get(nodeId);
+    if (!fn) {
+      fn = () => onRemoveLayoutRef.current?.(nodeId);
+      stableCloseCacheRef.current.set(nodeId, fn);
+    }
+    return fn;
+  }, []);
+
+  const getStableStop = useCallback((nodeId: string): () => void => {
+    let fn = stableStopCacheRef.current.get(nodeId);
+    if (!fn) {
+      fn = () => onStopAgentRef.current?.(nodeId);
+      stableStopCacheRef.current.set(nodeId, fn);
+    }
+    return fn;
+  }, []);
+
+  const stableStatusChangeCacheRef = useRef(new Map<string, (status: import("./BeadsCard").BeadsStatus) => void>());
+  const getStableStatusChange = useCallback((nodeId: string) => {
+    let fn = stableStatusChangeCacheRef.current.get(nodeId);
+    if (!fn) {
+      fn = (status: import("./BeadsCard").BeadsStatus) => onBeadsStatusChangeRef.current?.(nodeId, status);
+      stableStatusChangeCacheRef.current.set(nodeId, fn);
+    }
+    return fn;
+  }, []);
+
+  const stableAddTaskCardCacheRef = useRef(new Map<string, (task: import("../types").BeadsTask) => void>());
+  const getStableAddTaskCard = useCallback((nodeId: string) => {
+    let fn = stableAddTaskCardCacheRef.current.get(nodeId);
+    if (!fn) {
+      fn = (task: import("../types").BeadsTask) => onAddTaskCardRef.current?.(nodeId, task);
+      stableAddTaskCardCacheRef.current.set(nodeId, fn);
+    }
+    return fn;
+  }, []);
+
+  const stablePromptChangeCacheRef = useRef(new Map<string, (text: string) => void>());
+  const getStablePromptChange = useCallback((nodeId: string) => {
+    let fn = stablePromptChangeCacheRef.current.get(nodeId);
+    if (!fn) {
+      fn = (text: string) => onPromptChangeRef.current?.(nodeId, text);
+      stablePromptChangeCacheRef.current.set(nodeId, fn);
+    }
+    return fn;
+  }, []);
+
+  const stableLaunchCacheRef = useRef(new Map<string, () => void>());
+  const getStableLaunch = useCallback((nodeId: string) => {
+    let fn = stableLaunchCacheRef.current.get(nodeId);
+    if (!fn) {
+      fn = () => onLaunchRef.current?.(nodeId);
+      stableLaunchCacheRef.current.set(nodeId, fn);
+    }
+    return fn;
   }, []);
 
   /** Effective layout per node: use live drag position when that node is being dragged. */
@@ -382,8 +479,8 @@ export function Canvas({
                 layout={layout}
                 mode="prompt"
                 promptText={parsePromptPayload(layout.payload)}
-                onPromptChange={(text) => onPromptChange?.(layout.session_id, text)}
-                onLaunch={() => onLaunch?.(layout.session_id)}
+                onPromptChange={getStablePromptChange(layout.session_id)}
+                onLaunch={getStableLaunch(layout.session_id)}
                 onLayoutChange={handleCardLayoutChange(layout.session_id)}
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onDragStart={handleDragStart}
@@ -426,9 +523,9 @@ export function Canvas({
                 onLayoutChange={handleCardLayoutChange(layout.session_id)}
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onDragStart={handleDragStart}
-                onStatusChange={(status) => onBeadsStatusChange?.(layout.session_id, status)}
-                onAddTaskCard={(task) => onAddTaskCard?.(layout.session_id, task)}
-                onClose={onRemoveLayout ? () => onRemoveLayout(layout.session_id) : undefined}
+                onStatusChange={getStableStatusChange(layout.session_id)}
+                onAddTaskCard={getStableAddTaskCard(layout.session_id)}
+                onClose={getStableClose(layout.session_id)}
                 scale={viewport.scale}
               />
             );
@@ -442,7 +539,7 @@ export function Canvas({
                 onLayoutChange={handleCardLayoutChange(layout.session_id)}
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onDragStart={handleDragStart}
-                onClose={onRemoveLayout ? () => onRemoveLayout(layout.session_id) : undefined}
+                onClose={getStableClose(layout.session_id)}
                 scale={viewport.scale}
               />
             );
@@ -469,7 +566,7 @@ export function Canvas({
                 onLayoutChange={handleCardLayoutChange(layout.session_id)}
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onDragStart={handleDragStart}
-                onStop={() => onStopAgent?.(layout.session_id)}
+                onStop={getStableStop(layout.session_id)}
                 scale={viewport.scale}
               />
             );
@@ -485,7 +582,7 @@ export function Canvas({
               onLayoutChange={handleCardLayoutChange(layout.session_id)}
               onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
               onDragStart={handleDragStart}
-              onStop={() => onStopAgent?.(layout.session_id)}
+              onStop={getStableStop(layout.session_id)}
               scale={viewport.scale}
             />
           );

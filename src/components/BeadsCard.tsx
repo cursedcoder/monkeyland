@@ -98,7 +98,7 @@ const TYPE_ICONS: Record<string, string> = {
   improvement: "📈",
 };
 
-export function BeadsCard({
+export const BeadsCard = React.memo(function BeadsCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
@@ -523,12 +523,21 @@ export function BeadsCard({
       : status.projectPath
     : "—";
 
-  const doneTasks = tasks.filter((t) => t.status === "done");
-  const inProgressTasks = tasks.filter((t) => t.status === "in-progress");
-  const readyTasks = tasks.filter((t) => t.status === "ready");
-  const otherTasks = tasks.filter(
-    (t) => !["done", "in-progress", "ready"].includes(t.status)
-  );
+  const { doneTasks, inProgressTasks, readyTasks, otherTasks } = useMemo(() => {
+    const done: BeadsTask[] = [];
+    const inProgress: BeadsTask[] = [];
+    const ready: BeadsTask[] = [];
+    const other: BeadsTask[] = [];
+    for (const t of tasks) {
+      switch (t.status) {
+        case "done": done.push(t); break;
+        case "in-progress": inProgress.push(t); break;
+        case "ready": ready.push(t); break;
+        default: other.push(t);
+      }
+    }
+    return { doneTasks: done, inProgressTasks: inProgress, readyTasks: ready, otherTasks: other };
+  }, [tasks]);
 
   return (
     <div
@@ -690,4 +699,4 @@ export function BeadsCard({
       )}
     </div>
   );
-}
+});

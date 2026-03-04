@@ -16,7 +16,7 @@ interface TerminalCardProps {
   scale?: number;
 }
 
-export function TerminalCard({
+export const TerminalCard = React.memo(function TerminalCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
@@ -202,4 +202,4 @@ export function TerminalCard({
       )}
     </div>
   );
-}
+});

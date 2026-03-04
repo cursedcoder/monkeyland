@@ -75,7 +75,7 @@ interface WMChatCardProps {
   onCancelAll?: () => void;
 }
 
-export function WMChatCard({
+export const WMChatCard = React.memo(function WMChatCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
@@ -623,4 +623,4 @@ export function WMChatCard({
       />
     </div>
   );
-}
+});

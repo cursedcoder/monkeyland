@@ -42,7 +42,7 @@ export class ResumeOrchestrationPlugin extends Plugin {
   }
 
   getDescription(): string {
-    return "Resume the orchestration loop after a pause. Agents will continue receiving and processing tasks.";
+    return "Resume the orchestration loop after a USER-REQUESTED pause. Do NOT call this unless the user explicitly asked to pause previously. Orchestration auto-pauses/resumes during your processing — that is normal and not something you need to fix.";
   }
 
   getRunningDescription(): string {
@@ -230,8 +230,13 @@ export class GetOrchestrationStatusPlugin extends Plugin {
       const status = await invoke<OrchStatusResult>("orch_get_status");
       const frontendCards = this.getFrontendCards();
 
+      // The WM temporarily pauses orchestration while processing messages.
+      // Report "running" so the LLM doesn't mislead the user — orchestration
+      // auto-resumes once the WM finishes responding.
+      const effectiveState = status.is_paused ? "running (auto-resumes after this response)" : status.state;
+
       const lines: string[] = [];
-      lines.push(`Orchestration: ${status.state} (running: ${status.is_running}, paused: ${status.is_paused})`);
+      lines.push(`Orchestration: ${effectiveState}`);
 
       if (status.project_path) {
         lines.push(`Project: ${status.project_path}`);

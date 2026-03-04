@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useCostStore } from "../costStore";
 import { WM_PHASE_LABELS, type WMPhase } from "../constants/phases";
@@ -59,38 +59,48 @@ export function WorkforceOverlay({ wmPhase, orchStatus }: WorkforceOverlayProps 
     return () => { cancelled = true; clearInterval(iv); };
   }, []);
 
-  const agentEntries = Array.from(agents.values());
-  const registryCount = status ? Object.values(status.by_role).reduce((a, b) => a + b, 0) : 0;
-  const activeCount = Math.max(registryCount, agentEntries.length);
-  const totalSlots = status?.total_slots ?? 100;
-  const totalTokens = agentEntries.reduce((sum, a) => sum + a.promptTokens + a.completionTokens, 0);
-  const hasActivity = totalCostUsd > 0 || agentEntries.length > 0;
+  const agentEntries = useMemo(() => Array.from(agents.values()), [agents]);
 
-  // Group cost by agent type (role)
-  const byRole = agentEntries.reduce(
-    (acc, a) => {
-      const role = a.role;
-      const cur = acc.get(role) ?? { costUsd: 0, promptTokens: 0, completionTokens: 0 };
-      acc.set(role, {
-        costUsd: cur.costUsd + a.costUsd,
-        promptTokens: cur.promptTokens + a.promptTokens,
-        completionTokens: cur.completionTokens + a.completionTokens,
-      });
-      return acc;
-    },
-    new Map<string, { costUsd: number; promptTokens: number; completionTokens: number }>()
-  );
-  const roleOrder = [
-    "workforce_manager",
-    "project_manager",
-    "developer",
-    "operator",
-    "worker",
-    "validator",
-  ];
-  const sortedRoles = Array.from(byRole.entries()).sort(
-    (a, b) => roleOrder.indexOf(a[0]) - roleOrder.indexOf(b[0]) || a[0].localeCompare(b[0])
-  );
+  const { activeCount, totalSlots, totalTokens, hasActivity, sortedRoles } = useMemo(() => {
+    const registryCount = status ? Object.values(status.by_role).reduce((a, b) => a + b, 0) : 0;
+    const _activeCount = Math.max(registryCount, agentEntries.length);
+    const _totalSlots = status?.total_slots ?? 100;
+    const _totalTokens = agentEntries.reduce((sum, a) => sum + a.promptTokens + a.completionTokens, 0);
+    const _hasActivity = totalCostUsd > 0 || agentEntries.length > 0;
+
+    const byRole = agentEntries.reduce(
+      (acc, a) => {
+        const role = a.role;
+        const cur = acc.get(role) ?? { costUsd: 0, promptTokens: 0, completionTokens: 0 };
+        acc.set(role, {
+          costUsd: cur.costUsd + a.costUsd,
+          promptTokens: cur.promptTokens + a.promptTokens,
+          completionTokens: cur.completionTokens + a.completionTokens,
+        });
+        return acc;
+      },
+      new Map<string, { costUsd: number; promptTokens: number; completionTokens: number }>()
+    );
+    const roleOrder = [
+      "workforce_manager",
+      "project_manager",
+      "developer",
+      "operator",
+      "worker",
+      "validator",
+    ];
+    const _sortedRoles = Array.from(byRole.entries()).sort(
+      (a, b) => roleOrder.indexOf(a[0]) - roleOrder.indexOf(b[0]) || a[0].localeCompare(b[0])
+    );
+
+    return {
+      activeCount: _activeCount,
+      totalSlots: _totalSlots,
+      totalTokens: _totalTokens,
+      hasActivity: _hasActivity,
+      sortedRoles: _sortedRoles,
+    };
+  }, [agentEntries, status, totalCostUsd]);
 
   if (!hasActivity) return null;
 

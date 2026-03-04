@@ -51,7 +51,7 @@ function toPlaywrightKey(e: KeyboardEvent): string {
   return e.key;
 }
 
-export function BrowserCard({
+export const BrowserCard = React.memo(function BrowserCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
@@ -612,4 +612,4 @@ export function BrowserCard({
       )}
     </div>
   );
-}
+});

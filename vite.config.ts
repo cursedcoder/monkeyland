@@ -17,6 +17,21 @@ export default defineConfig({
       ignored: ["**/src-tauri/**"],
     },
   },
+  build: {
+    target: "esnext",
+    minify: "esbuild",
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom"],
+          "vendor-ai": ["ai", "@ai-sdk/openai", "@ai-sdk/anthropic", "@ai-sdk/google"],
+          "vendor-xterm": ["@xterm/xterm", "@xterm/addon-fit"],
+          "vendor-markdown": ["react-markdown", "remark-gfm"],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 600,
+  },
   test: {
     environment: "jsdom",
     coverage: {

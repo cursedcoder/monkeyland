@@ -1896,20 +1896,30 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
     };
   }, []);
 
-  // Listen for agent_killed events to mark cards as stopped
+  // Listen for agent_killed events to mark cards as done or stopped
   useEffect(() => {
+    const DONE_REASONS = new Set(["completed", "merge_done"]);
     const unlisten = listen<{ agent_id: string; reason: string }>("agent_killed", (event) => {
-      const { agent_id } = event.payload;
+      const { agent_id, reason } = event.payload;
       const controller = abortControllers.current.get(agent_id);
       if (controller) {
         controller.abort();
       }
+      const isDone = DONE_REASONS.has(reason);
       setLayouts((prev) =>
         prev.map((l) => {
           if (l.session_id !== agent_id) return l;
           try {
             const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
-            return { ...l, payload: JSON.stringify({ ...p, status: "stopped", toolActivity: "TTL expired" }) };
+            if (isDone && p.status === "done") return l;
+            return {
+              ...l,
+              payload: JSON.stringify({
+                ...p,
+                status: isDone ? "done" : "stopped",
+                toolActivity: isDone ? "Validation passed" : reason,
+              }),
+            };
           } catch {
             return l;
           }

@@ -47,7 +47,7 @@ function StatusIcon({ status }: { status: "pending" | "pass" | "fail" }) {
   return <span className="validator-icon validator-icon--fail">✗</span>;
 }
 
-export function ValidatorCard({
+export const ValidatorCard = React.memo(function ValidatorCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
@@ -221,4 +221,4 @@ export function ValidatorCard({
       </div>
     </div>
   );
-}
+});

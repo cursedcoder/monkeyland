@@ -167,10 +167,12 @@ async function handleRequest(req, res) {
         case 'navigate': {
           await page.goto(body.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
           const title = await page.title();
-          const content = await page.evaluate(() =>
-            document.body?.innerText?.slice(0, 8000) || ''
-          );
-          // Force a screenshot so screencast has at least one frame
+          let content = '';
+          try {
+            content = await page.evaluate(() =>
+              document.body?.innerText?.slice(0, 8000) || ''
+            );
+          } catch (_) { /* context destroyed during nav — skip content */ }
           pushScreenshotFrame(sessionId, session).catch(() => {});
           sendJson(res, { title, url: page.url(), content });
           break;
@@ -193,10 +195,19 @@ async function handleRequest(req, res) {
           break;
         }
         case 'content': {
-          const text = await Promise.race([
-            page.evaluate(() => document.body?.innerText?.slice(0, 16000) || ''),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('content extraction timed out')), 15000)),
-          ]);
+          let text = '';
+          try {
+            text = await Promise.race([
+              page.evaluate(() => document.body?.innerText?.slice(0, 16000) || ''),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('content extraction timed out')), 15000)),
+            ]);
+          } catch (contentErr) {
+            const msg = contentErr?.message || '';
+            if (msg.includes('context was destroyed') || msg.includes('navigation')) {
+              await page.waitForLoadState('domcontentloaded').catch(() => {});
+              try { text = await page.evaluate(() => document.body?.innerText?.slice(0, 16000) || ''); } catch (_) {}
+            }
+          }
           const title = await page.title();
           sendJson(res, { content: text, title, url: page.url() });
           break;
@@ -266,11 +277,33 @@ async function handleRequest(req, res) {
           break;
         }
         case 'evaluate': {
-          const result = await Promise.race([
-            page.evaluate(body.javascript),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('evaluate timed out')), 30000)),
-          ]);
-          sendJson(res, { result: typeof result === 'string' ? result : JSON.stringify(result) });
+          let js = body.javascript;
+          // Wrap bare `return` statements so page.evaluate doesn't choke:
+          // Playwright evaluates expressions, not function bodies.
+          if (/\breturn\b/.test(js)) {
+            js = `(() => { ${js} })()`;
+          }
+          try {
+            const result = await Promise.race([
+              page.evaluate(js),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('evaluate timed out')), 30000)),
+            ]);
+            sendJson(res, { result: typeof result === 'string' ? result : JSON.stringify(result) });
+          } catch (evalErr) {
+            const msg = evalErr?.message || String(evalErr);
+            if (msg.includes('context was destroyed') || msg.includes('navigation')) {
+              // Page navigated during evaluate — retry once after a brief wait
+              await page.waitForLoadState('domcontentloaded').catch(() => {});
+              try {
+                const retryResult = await page.evaluate(js);
+                sendJson(res, { result: typeof retryResult === 'string' ? retryResult : JSON.stringify(retryResult) });
+              } catch (retryErr) {
+                sendJson(res, { error: `evaluate failed after retry: ${retryErr?.message || retryErr}` }, 500);
+              }
+            } else {
+              sendJson(res, { error: `evaluate error: ${msg}` }, 500);
+            }
+          }
           break;
         }
         default:

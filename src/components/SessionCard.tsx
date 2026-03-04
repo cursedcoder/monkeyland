@@ -10,12 +10,24 @@ import {
 } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
 
-/** Only auto-scroll when user is within this many px of the bottom (lets them read without being yanked down). */
 const AUTO_SCROLL_THRESHOLD_PX = 80;
-/** Consider "at bottom" for showing/hiding the scroll-to-bottom button. */
 const AT_BOTTOM_THRESHOLD_PX = 24;
-/** Threshold in seconds after which the elapsed timer turns amber. */
 const STALE_THRESHOLD_S = 60;
+
+const ELAPSED_STYLE_NORMAL: React.CSSProperties = {
+  marginLeft: 8,
+  fontSize: "0.8em",
+  fontVariantNumeric: "tabular-nums",
+  color: "inherit",
+  opacity: 0.6,
+};
+const ELAPSED_STYLE_STALE: React.CSSProperties = {
+  marginLeft: 8,
+  fontSize: "0.8em",
+  fontVariantNumeric: "tabular-nums",
+  color: "#f5a623",
+  opacity: 1,
+};
 
 function ElapsedBadge({ startedAt }: { startedAt: number }) {
   const [elapsed, setElapsed] = useState(() => Math.floor((Date.now() - startedAt) / 1000));
@@ -30,13 +42,7 @@ function ElapsedBadge({ startedAt }: { startedAt: number }) {
   return (
     <span
       className="session-card-elapsed"
-      style={{
-        marginLeft: 8,
-        fontSize: "0.8em",
-        fontVariantNumeric: "tabular-nums",
-        color: stale ? "#f5a623" : "inherit",
-        opacity: stale ? 1 : 0.6,
-      }}
+      style={stale ? ELAPSED_STYLE_STALE : ELAPSED_STYLE_NORMAL}
       title={stale ? "Agent has been running for a while" : "Elapsed time"}
     >
       {label}
@@ -113,62 +119,66 @@ const WM_PHASE_COLORS: Record<string, string> = {
 };
 
 
-function parseRole(payload: string | undefined): AgentRole | null {
-  if (!payload) return null;
-  try {
-    const p = JSON.parse(payload) as { role?: string };
-    if (p.role && Object.prototype.hasOwnProperty.call(ROLE_LABELS, p.role))
-      return p.role as AgentRole;
-  } catch {
-    /* ignore */
-  }
-  return null;
+interface ParsedPayload {
+  role: AgentRole | null;
+  executionPhase: string | null;
+  pmPhase: string | null;
+  wmPhase: string | null;
+  status: string | null;
+  sourcePromptId?: string;
+  answer?: string;
+  errorMessage?: string;
+  toolActivity?: string;
+  toolCalls?: Array<{ name: string; status: string }>;
+  turnStartedAt?: number;
+  task_id?: string;
+  taskTitle?: string;
+  taskType?: string;
+  taskPriority?: number;
+  taskDescription?: string;
 }
 
-function parsePhase(payload: string | undefined): string | null {
-  if (!payload) return null;
-  try {
-    const p = JSON.parse(payload) as { executionPhase?: string };
-    if (p.executionPhase && Object.prototype.hasOwnProperty.call(PHASE_LABELS, p.executionPhase))
-      return p.executionPhase;
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
+const EMPTY_PAYLOAD: ParsedPayload = {
+  role: null,
+  executionPhase: null,
+  pmPhase: null,
+  wmPhase: null,
+  status: null,
+};
 
-function parsePMPhase(payload: string | undefined): string | null {
-  if (!payload) return null;
+function parsePayload(payload: string | undefined): ParsedPayload {
+  if (!payload) return EMPTY_PAYLOAD;
   try {
-    const p = JSON.parse(payload) as { pmExecutionPhase?: string };
-    if (p.pmExecutionPhase && Object.prototype.hasOwnProperty.call(PM_PHASE_LABELS, p.pmExecutionPhase))
-      return p.pmExecutionPhase;
+    const p = JSON.parse(payload) as Record<string, unknown>;
+    return {
+      role: typeof p.role === "string" && Object.prototype.hasOwnProperty.call(ROLE_LABELS, p.role)
+        ? p.role as AgentRole
+        : null,
+      executionPhase: typeof p.executionPhase === "string" && Object.prototype.hasOwnProperty.call(PHASE_LABELS, p.executionPhase)
+        ? p.executionPhase
+        : null,
+      pmPhase: typeof p.pmExecutionPhase === "string" && Object.prototype.hasOwnProperty.call(PM_PHASE_LABELS, p.pmExecutionPhase)
+        ? p.pmExecutionPhase
+        : null,
+      wmPhase: typeof p.wmPhase === "string" && Object.prototype.hasOwnProperty.call(WM_PHASE_LABELS, p.wmPhase)
+        ? p.wmPhase
+        : null,
+      status: typeof p.status === "string" ? p.status : null,
+      sourcePromptId: typeof p.sourcePromptId === "string" ? p.sourcePromptId : undefined,
+      answer: typeof p.answer === "string" ? p.answer : undefined,
+      errorMessage: typeof p.errorMessage === "string" ? p.errorMessage : undefined,
+      toolActivity: typeof p.toolActivity === "string" ? p.toolActivity : undefined,
+      toolCalls: Array.isArray(p.toolCalls) ? p.toolCalls as Array<{ name: string; status: string }> : undefined,
+      turnStartedAt: typeof p.turnStartedAt === "number" ? p.turnStartedAt : undefined,
+      task_id: typeof p.task_id === "string" ? p.task_id : undefined,
+      taskTitle: typeof p.taskTitle === "string" ? p.taskTitle : undefined,
+      taskType: typeof p.taskType === "string" ? p.taskType : undefined,
+      taskPriority: typeof p.taskPriority === "number" ? p.taskPriority : undefined,
+      taskDescription: typeof p.taskDescription === "string" ? p.taskDescription : undefined,
+    };
   } catch {
-    /* ignore */
+    return EMPTY_PAYLOAD;
   }
-  return null;
-}
-
-function parseStatus(payload: string | undefined): string | null {
-  if (!payload) return null;
-  try {
-    const p = JSON.parse(payload) as { status?: string };
-    return p.status ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function parseWMPhase(payload: string | undefined): string | null {
-  if (!payload) return null;
-  try {
-    const p = JSON.parse(payload) as { wmPhase?: string };
-    if (p.wmPhase && Object.prototype.hasOwnProperty.call(WM_PHASE_LABELS, p.wmPhase))
-      return p.wmPhase;
-  } catch {
-    /* ignore */
-  }
-  return null;
 }
 
 
@@ -235,7 +245,7 @@ function snap(v: number) {
   return Math.round(v / GRID_STEP) * GRID_STEP;
 }
 
-export function SessionCard({
+export const SessionCard = React.memo(function SessionCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
@@ -270,6 +280,7 @@ export function SessionCard({
   onLayoutCommitRef.current = onLayoutCommit;
   setLiveLayoutRef.current = setLiveLayout;
   const displayLayout = liveLayout ?? layout;
+  const parsed = useMemo(() => parsePayload(layout.payload), [layout.payload]);
 
   const handlePointerDownDrag = useCallback(
     (e: React.PointerEvent) => {
@@ -368,43 +379,33 @@ export function SessionCard({
     onLayoutCommit({ ...layout, collapsed: !layout.collapsed });
   }, [layout, onLayoutChange, onLayoutCommit]);
 
-  // Auto-scroll to bottom only when user is already near bottom (lets them scroll up to read)
   useEffect(() => {
     const el = bodyScrollRef.current;
     if (!el) return;
-    try {
-      const p = JSON.parse(layout.payload ?? "{}") as {
-        status?: string;
-        answer?: string;
-      };
-      if (p.status === "loading" || p.status === "done" || p.status === "in_review") {
-        const nearBottom =
-          el.scrollTop + el.clientHeight >= el.scrollHeight - AUTO_SCROLL_THRESHOLD_PX;
-        if (nearBottom) {
-          el.scrollTop = el.scrollHeight;
-          setIsAtBottom(true);
-        }
-        // Auto-grow card height when content overflows (up to SESSION_CARD_MAX_H)
-        const rafId = requestAnimationFrame(() => {
-          if (!bodyScrollRef.current || layoutRef.current.collapsed) return;
-          const { scrollHeight, clientHeight } = bodyScrollRef.current;
-          const curH = layoutRef.current.h;
-          if (scrollHeight > clientHeight && curH < SESSION_CARD_MAX_H) {
-            const newH = Math.min(curH + (scrollHeight - clientHeight), SESSION_CARD_MAX_H);
-            const snapped = Math.round(newH / GRID_STEP) * GRID_STEP;
-            if (snapped > curH) {
-              const next = { ...layoutRef.current, h: snapped };
-              onLayoutChangeRef.current(next);
-              onLayoutCommitRef.current(next);
-            }
-          }
-        });
-        return () => cancelAnimationFrame(rafId);
+    if (parsed.status === "loading" || parsed.status === "done" || parsed.status === "in_review") {
+      const nearBottom =
+        el.scrollTop + el.clientHeight >= el.scrollHeight - AUTO_SCROLL_THRESHOLD_PX;
+      if (nearBottom) {
+        el.scrollTop = el.scrollHeight;
+        setIsAtBottom(true);
       }
-    } catch {
-      /* ignore */
+      const rafId = requestAnimationFrame(() => {
+        if (!bodyScrollRef.current || layoutRef.current.collapsed) return;
+        const { scrollHeight, clientHeight } = bodyScrollRef.current;
+        const curH = layoutRef.current.h;
+        if (scrollHeight > clientHeight && curH < SESSION_CARD_MAX_H) {
+          const newH = Math.min(curH + (scrollHeight - clientHeight), SESSION_CARD_MAX_H);
+          const snapped = Math.round(newH / GRID_STEP) * GRID_STEP;
+          if (snapped > curH) {
+            const next = { ...layoutRef.current, h: snapped };
+            onLayoutChangeRef.current(next);
+            onLayoutCommitRef.current(next);
+          }
+        }
+      });
+      return () => cancelAnimationFrame(rafId);
     }
-  }, [layout.payload, layout.collapsed]);
+  }, [parsed.status, parsed.answer, layout.collapsed]);
 
   const handleBodyScroll = useCallback(() => {
     const el = bodyScrollRef.current;
@@ -443,29 +444,21 @@ export function SessionCard({
         onPointerDown={handlePointerDownDrag}
       >
         <span className="session-card-title">
-          {parseRole(layout.payload) ? ROLE_LABELS[parseRole(layout.payload)!] : `Agent ${index + 1}`}
+          {parsed.role ? ROLE_LABELS[parsed.role] : `Agent ${index + 1}`}
         </span>
         <div className="session-card-header-actions">
-          {(() => {
-            try {
-              const p = JSON.parse(layout.payload ?? "{}") as { status?: string };
-              if (p.status === "loading" && onStop) {
-                return (
-                  <button
-                    type="button"
-                    className="session-card-stop"
-                    onClick={(e) => { e.stopPropagation(); onStop(); }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    aria-label="Stop agent"
-                    title="Stop agent"
-                  >
-                    Stop
-                  </button>
-                );
-              }
-            } catch { /* ignore */ }
-            return null;
-          })()}
+          {parsed.status === "loading" && onStop && (
+            <button
+              type="button"
+              className="session-card-stop"
+              onClick={(e) => { e.stopPropagation(); onStop(); }}
+              onPointerDown={(e) => e.stopPropagation()}
+              aria-label="Stop agent"
+              title="Stop agent"
+            >
+              Stop
+            </button>
+          )}
           <button
             type="button"
             className="session-card-collapse"
@@ -479,41 +472,29 @@ export function SessionCard({
       </div>
       {!layout.collapsed && (
         <>
-          {(() => {
-            try {
-              const p = JSON.parse(layout.payload ?? "{}") as {
-                task_id?: string; taskTitle?: string; taskType?: string;
-                taskPriority?: number; taskDescription?: string; role?: string;
-              };
-              const showBrief = p.task_id && (p.taskTitle || p.taskDescription);
-              if (showBrief) {
-                return (
-                  <div className="session-card-brief">
-                    <div className="session-card-brief__header">
-                      {p.taskType && (
-                        <span className={`session-card-brief__type session-card-brief__type--${p.taskType}`}>
-                          {p.taskType}
-                        </span>
-                      )}
-                      <span className="session-card-brief__id">{p.task_id}</span>
-                      {p.taskPriority != null && (
-                        <span className={`session-card-brief__priority session-card-brief__priority--p${p.taskPriority}`}>
-                          P{p.taskPriority}
-                        </span>
-                      )}
-                    </div>
-                    {p.taskTitle && (
-                      <div className="session-card-brief__title">{p.taskTitle}</div>
-                    )}
-                    {p.taskDescription && (
-                      <div className="session-card-brief__desc">{p.taskDescription.length > 200 ? p.taskDescription.slice(0, 200) + "..." : p.taskDescription}</div>
-                    )}
-                  </div>
-                );
-              }
-            } catch { /* */ }
-            return null;
-          })()}
+          {parsed.task_id && (parsed.taskTitle || parsed.taskDescription) && (
+            <div className="session-card-brief">
+              <div className="session-card-brief__header">
+                {parsed.taskType && (
+                  <span className={`session-card-brief__type session-card-brief__type--${parsed.taskType}`}>
+                    {parsed.taskType}
+                  </span>
+                )}
+                <span className="session-card-brief__id">{parsed.task_id}</span>
+                {parsed.taskPriority != null && (
+                  <span className={`session-card-brief__priority session-card-brief__priority--p${parsed.taskPriority}`}>
+                    P{parsed.taskPriority}
+                  </span>
+                )}
+              </div>
+              {parsed.taskTitle && (
+                <div className="session-card-brief__title">{parsed.taskTitle}</div>
+              )}
+              {parsed.taskDescription && (
+                <div className="session-card-brief__desc">{parsed.taskDescription.length > 200 ? parsed.taskDescription.slice(0, 200) + "..." : parsed.taskDescription}</div>
+              )}
+            </div>
+          )}
           <div
             ref={bodyScrollRef}
             className="session-card-body"
@@ -529,109 +510,79 @@ export function SessionCard({
             }}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            {(() => {
-            try {
-              const p = JSON.parse(layout.payload ?? "{}") as {
-                sourcePromptId?: string;
-                status?: string;
-                answer?: string;
-                errorMessage?: string;
-                toolActivity?: string;
-                toolCalls?: Array<{ name: string; status: string }>;
-                turnStartedAt?: number;
-              };
-              if (p.status === "loading") {
-                return (
-                  <div className="session-card-response">
-                    <p className="session-card-response-loading">
-                      {p.toolActivity || "Thinking\u2026"}
-                      {p.turnStartedAt ? <ElapsedBadge startedAt={p.turnStartedAt} /> : null}
-                    </p>
-                    {p.toolCalls && p.toolCalls.length > 0 && (
-                      <div className="session-card-tool-badges">
-                        {p.toolCalls.map((tc, i) => (
-                          <span key={i} className={`session-card-tool-badge session-card-tool-badge--${tc.status}`}>
-                            {tc.name}: {tc.status}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    {p.answer ? (
-                      <div className="session-card-response-text session-card-markdown">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {p.answer}
-                        </ReactMarkdown>
-                      </div>
-                    ) : null}
+            {parsed.status === "loading" ? (
+              <div className="session-card-response">
+                <p className="session-card-response-loading">
+                  {parsed.toolActivity || "Thinking\u2026"}
+                  {parsed.turnStartedAt ? <ElapsedBadge startedAt={parsed.turnStartedAt} /> : null}
+                </p>
+                {parsed.toolCalls && parsed.toolCalls.length > 0 && (
+                  <div className="session-card-tool-badges">
+                    {parsed.toolCalls.map((tc, i) => (
+                      <span key={i} className={`session-card-tool-badge session-card-tool-badge--${tc.status}`}>
+                        {tc.name}: {tc.status}
+                      </span>
+                    ))}
                   </div>
-                );
-              }
-              if (p.status === "stopped") {
-                return (
-                  <div className="session-card-response">
-                    <p className="session-card-response-stopped">Stopped</p>
-                    {p.answer ? (
-                      <div className="session-card-response-text session-card-markdown">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {p.answer}
-                        </ReactMarkdown>
-                      </div>
-                    ) : null}
+                )}
+                {parsed.answer ? (
+                  <div className="session-card-response-text session-card-markdown">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {parsed.answer}
+                    </ReactMarkdown>
                   </div>
-                );
-              }
-              if (p.status === "error") {
-                return (
-                  <div className="session-card-response session-card-response-error">
-                    <p className="session-card-response-error-msg">
-                      {p.errorMessage ?? "Error"}
-                    </p>
-                    {p.answer ? (
-                      <div className="session-card-response-text session-card-markdown">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {p.answer}
-                        </ReactMarkdown>
-                      </div>
-                    ) : null}
+                ) : null}
+              </div>
+            ) : parsed.status === "stopped" ? (
+              <div className="session-card-response">
+                <p className="session-card-response-stopped">Stopped</p>
+                {parsed.answer ? (
+                  <div className="session-card-response-text session-card-markdown">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {parsed.answer}
+                    </ReactMarkdown>
                   </div>
-                );
-              }
-              if (p.status === "in_review") {
-                return (
-                  <div className="session-card-response">
-                    <p className="session-card-response-loading">
-                      {p.toolActivity || "Awaiting validation\u2026"}
-                    </p>
-                    {p.answer ? (
-                      <div className="session-card-response-text session-card-markdown">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {p.answer}
-                        </ReactMarkdown>
-                      </div>
-                    ) : null}
+                ) : null}
+              </div>
+            ) : parsed.status === "error" ? (
+              <div className="session-card-response session-card-response-error">
+                <p className="session-card-response-error-msg">
+                  {parsed.errorMessage ?? "Error"}
+                </p>
+                {parsed.answer ? (
+                  <div className="session-card-response-text session-card-markdown">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {parsed.answer}
+                    </ReactMarkdown>
                   </div>
-                );
-              }
-              if (p.status === "done" && p.answer != null) {
-                return (
-                  <div className="session-card-response">
-                    <div className="session-card-response-text session-card-markdown">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {p.answer}
-                      </ReactMarkdown>
-                    </div>
+                ) : null}
+              </div>
+            ) : parsed.status === "in_review" ? (
+              <div className="session-card-response">
+                <p className="session-card-response-loading">
+                  {parsed.toolActivity || "Awaiting validation\u2026"}
+                </p>
+                {parsed.answer ? (
+                  <div className="session-card-response-text session-card-markdown">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {parsed.answer}
+                    </ReactMarkdown>
                   </div>
-                );
-              }
-            } catch {
-              /* ignore */
-            }
-            return (
+                ) : null}
+              </div>
+            ) : parsed.status === "done" && parsed.answer != null ? (
+              <div className="session-card-response">
+                <div className="session-card-response-text session-card-markdown">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {parsed.answer}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            ) : (
               <div className="session-card-placeholder">
                 Waiting for prompt\u2026
               </div>
-            );
-          })()}
+            )}
             {!isAtBottom && (
               <button
                 type="button"
@@ -662,18 +613,17 @@ export function SessionCard({
             data-resize-handle
             onPointerDown={(e) => handlePointerDownResize(e, "e")}
           />
-          {/* Phase footer for developer, PM, and WM agents (hidden when done) */}
-          {parseRole(layout.payload) === "developer" && parsePhase(layout.payload) && parseStatus(layout.payload) !== "done" && (
-            <PhaseFooter phase={parsePhase(layout.payload)!} roleType="developer" />
+          {parsed.role === "developer" && parsed.executionPhase && parsed.status !== "done" && (
+            <PhaseFooter phase={parsed.executionPhase} roleType="developer" />
           )}
-          {parseRole(layout.payload) === "project_manager" && parsePMPhase(layout.payload) && parseStatus(layout.payload) !== "done" && (
-            <PhaseFooter phase={parsePMPhase(layout.payload)!} roleType="pm" />
+          {parsed.role === "project_manager" && parsed.pmPhase && parsed.status !== "done" && (
+            <PhaseFooter phase={parsed.pmPhase} roleType="pm" />
           )}
-          {parseRole(layout.payload) === "workforce_manager" && parseWMPhase(layout.payload) && parseStatus(layout.payload) !== "done" && (
-            <PhaseFooter phase={parseWMPhase(layout.payload)!} roleType="wm" />
+          {parsed.role === "workforce_manager" && parsed.wmPhase && parsed.status !== "done" && (
+            <PhaseFooter phase={parsed.wmPhase} roleType="wm" />
           )}
         </>
       )}
     </div>
   );
-}
+});

@@ -58,7 +58,7 @@ function relativeTime(iso?: string): string {
   return `${months}mo ago`;
 }
 
-export function BeadsTaskCard({
+export const BeadsTaskCard = React.memo(function BeadsTaskCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
@@ -91,27 +91,37 @@ export function BeadsTaskCard({
   }, [layout.payload]);
 
   const displayLayout = liveLayout ?? layout;
-  const taskType = task?.type || task?.issue_type || "task";
-  const description = task?.description || task?.body || "";
-  const priority =
-    typeof task?.priority === "number" && Number.isFinite(task.priority)
-      ? String(task.priority)
-      : "";
-  const deps = Array.isArray(task?.deps)
-    ? task.deps.filter(Boolean)
-    : typeof task?.deps === "string" && task.deps
-      ? task.deps.split(",").map((s) => s.trim()).filter(Boolean)
-      : [];
-  const blockedBy = Array.isArray(task?.blocked_by)
-    ? task.blocked_by.filter(Boolean)
-    : typeof task?.blocked_by === "string" && task.blocked_by
-      ? task.blocked_by.split(",").map((s) => s.trim()).filter(Boolean)
-      : [];
-  const parent = task?.parent_id || task?.parentId || "";
-  const assignee = task?.assignee || "";
-  const reporter = task?.reporter || "";
-  const epicName = task?.epic_name || task?.epic_id || "";
-  const labels = Array.isArray(task?.labels) ? task.labels.filter(Boolean) : [];
+
+  const { taskType, description, priority, deps, blockedBy, parent, assignee, reporter, epicName, labels } = useMemo(() => {
+    const _taskType = task?.type || task?.issue_type || "task";
+    const _description = task?.description || task?.body || "";
+    const _priority =
+      typeof task?.priority === "number" && Number.isFinite(task.priority)
+        ? String(task.priority)
+        : "";
+    const _deps = Array.isArray(task?.deps)
+      ? task.deps.filter(Boolean)
+      : typeof task?.deps === "string" && task.deps
+        ? task.deps.split(",").map((s) => s.trim()).filter(Boolean)
+        : [];
+    const _blockedBy = Array.isArray(task?.blocked_by)
+      ? task.blocked_by.filter(Boolean)
+      : typeof task?.blocked_by === "string" && task.blocked_by
+        ? task.blocked_by.split(",").map((s) => s.trim()).filter(Boolean)
+        : [];
+    return {
+      taskType: _taskType,
+      description: _description,
+      priority: _priority,
+      deps: _deps,
+      blockedBy: _blockedBy,
+      parent: task?.parent_id || task?.parentId || "",
+      assignee: task?.assignee || "",
+      reporter: task?.reporter || "",
+      epicName: task?.epic_name || task?.epic_id || "",
+      labels: Array.isArray(task?.labels) ? task.labels.filter(Boolean) : [],
+    };
+  }, [task]);
 
   const handlePointerDownDrag = useCallback(
     (e: React.PointerEvent) => {
@@ -354,4 +364,4 @@ export function BeadsTaskCard({
       />
     </div>
   );
-}
+});

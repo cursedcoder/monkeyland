@@ -371,6 +371,20 @@ impl OrchestrationMetrics {
     }
 }
 
+/// Kill an agent, its PTY, and notify the frontend in one step.
+fn kill_agent(env: &dyn OrchEnv, registry: &AgentRegistry, agent_id: &str, reason: &str) {
+    let _ = registry.kill(agent_id);
+    let _ = env.kill_pty(agent_id);
+    let _ = env_emit(
+        env,
+        "agent_killed",
+        &AgentKilledPayload {
+            agent_id: agent_id.to_string(),
+            reason: reason.to_string(),
+        },
+    );
+}
+
 /// One tick: get ready tasks, spawn agents, claim in Beads, kill expired, process yield queue.
 pub async fn tick(
     env: &dyn OrchEnv,
@@ -495,12 +509,12 @@ pub async fn tick(
                     eprintln!("[orch] worktree creation failed for {agent_id}: {e}");
                     // Kill the agent rather than falling back to project dir
                     // This ensures isolation is maintained
-                    let _ = registry.kill(&agent_id);
+                    kill_agent(env, registry, &agent_id, "worktree_failed");
                     continue;
                 }
                 Err(join_err) => {
                     eprintln!("[orch] worktree spawn_blocking panicked for {agent_id}: {join_err}");
-                    let _ = registry.kill(&agent_id);
+                    kill_agent(env, registry, &agent_id, "worktree_failed");
                     continue;
                 }
             }
@@ -520,7 +534,7 @@ pub async fn tick(
                 })
                 .await;
             }
-            let _ = registry.kill(&agent_id);
+            kill_agent(env, registry, &agent_id, "pty_failed");
             continue;
         }
         // bd update <id> --claim --assignee <agent_id>
@@ -578,16 +592,7 @@ pub async fn tick(
                 let _ = env.run_bd(path, &unclaim_args);
             }
         }
-        let _ = registry.kill(&id);
-        let _ = env.kill_pty(&id);
-        let _ = env_emit(
-            env,
-            "agent_killed",
-            &AgentKilledPayload {
-                agent_id: id.clone(),
-                reason: "ttl_expired".to_string(),
-            },
-        );
+        kill_agent(env, registry, &id, "ttl_expired");
     }
 
     // 4. Process yield queue: agents in Yielded state get validation started and frontend is notified
@@ -725,8 +730,7 @@ pub async fn tick(
     for (agent_id, task_id, role) in done_agents {
         if role == "project_manager" {
             eprintln!("[orch] skipping merge for epic task {task_id} (PM agent); auto-close will handle it");
-            let _ = registry.kill(&agent_id);
-            let _ = env.kill_pty(&agent_id);
+            kill_agent(env, registry, &agent_id, "completed");
             continue;
         }
         if role == "merge_agent" {
@@ -760,8 +764,7 @@ pub async fn tick(
                     },
                 );
             }
-            let _ = registry.kill(&agent_id);
-            let _ = env.kill_pty(&agent_id);
+            kill_agent(env, registry, &agent_id, "merge_requeue");
             continue;
         }
 
@@ -794,8 +797,7 @@ pub async fn tick(
                     );
                 }
             }
-            let _ = registry.kill(&agent_id);
-            let _ = env.kill_pty(&agent_id);
+            kill_agent(env, registry, &agent_id, "completed");
             let _ = env_emit(
                 env,
                 "merge_status",
@@ -835,8 +837,7 @@ pub async fn tick(
         }
         // Kill the developer now so done_agents_with_tasks won't return it on
         // subsequent ticks. The MergeEntry carries all the info the merge train needs.
-        let _ = registry.kill(&agent_id);
-        let _ = env.kill_pty(&agent_id);
+        kill_agent(env, registry, &agent_id, "completed");
     }
 
     // 5b. Merge train: process multiple queued entries per tick to reduce backlog latency.
@@ -908,8 +909,7 @@ pub async fn tick(
                         crate::worktree::delete_task_branch(&del_path, &del_task)
                     })
                     .await;
-                    let _ = registry.kill(&agent_id);
-                    let _ = env.kill_pty(&agent_id);
+                    kill_agent(env, registry, &agent_id, "merge_done");
                     let _ = env_emit(
                         env,
                         "merge_status",
@@ -939,8 +939,7 @@ pub async fn tick(
                 }
                 Err(e) => {
                     eprintln!("[orch] merge join error for task {task_id}: {e}");
-                    let _ = registry.kill(&agent_id);
-                    let _ = env.kill_pty(&agent_id);
+                    kill_agent(env, registry, &agent_id, "merge_error");
                 }
             }
         } else {
@@ -1117,8 +1116,7 @@ async fn handle_merge_conflict(
             "blocked".to_string(),
         ];
         let _ = env.run_bd(project_path, &block_args);
-        let _ = registry.kill(&agent_id);
-        let _ = env.kill_pty(&agent_id);
+        kill_agent(env, registry, &agent_id, "merge_blocked");
         let _ = env_emit(
             env,
             "merge_status",
@@ -1202,7 +1200,7 @@ async fn handle_merge_conflict(
         }
         Ok(Err(e)) => {
             eprintln!("[orch] merge agent worktree creation failed for {task_id}: {e}");
-            let _ = registry.kill(&merge_agent_id);
+            kill_agent(env, registry, &merge_agent_id, "worktree_failed");
             metrics.inc_merge_retry();
             let _ = merge_queue.push(MergeEntry {
                 agent_id,
@@ -1215,7 +1213,7 @@ async fn handle_merge_conflict(
             eprintln!(
                 "[orch] merge agent worktree spawn_blocking panicked for {task_id}: {join_err}"
             );
-            let _ = registry.kill(&merge_agent_id);
+            kill_agent(env, registry, &merge_agent_id, "worktree_failed");
             metrics.inc_merge_retry();
             let _ = merge_queue.push(MergeEntry {
                 agent_id,
@@ -1231,7 +1229,7 @@ async fn handle_merge_conflict(
         .is_err()
     {
         eprintln!("[orch] failed to spawn pty for merge agent {merge_agent_id}");
-        let _ = registry.kill(&merge_agent_id);
+        kill_agent(env, registry, &merge_agent_id, "pty_failed");
         metrics.inc_merge_retry();
         let _ = merge_queue.push(MergeEntry {
             agent_id,

@@ -30,6 +30,69 @@ pub(crate) fn persist_wm_state(meta_db: &MetaDb, state: &WmState) -> Result<(), 
     meta_db.set_setting("wm_state", &json)
 }
 
+/// Map RunLlm events to include orchestration status in state_context.
+fn augment_run_llm_context(events: Vec<WmEvent>, registry: &AgentRegistry) -> Vec<WmEvent> {
+    events
+        .into_iter()
+        .map(|event| match event {
+            WmEvent::RunLlm {
+                system_prompt,
+                state_context,
+                remove_tools,
+                prompt_variant,
+                diagnostics,
+                messages,
+            } => WmEvent::RunLlm {
+                system_prompt,
+                state_context: augment_state_context(&state_context, registry),
+                remove_tools,
+                prompt_variant,
+                diagnostics,
+                messages,
+            },
+            other => other,
+        })
+        .collect()
+}
+
+/// Append orchestration status note to state_context so the LLM knows the
+/// pause is temporary and doesn't mislead the user about it.
+fn augment_state_context(base: &str, registry: &AgentRegistry) -> String {
+    let agent_summary = match registry.debug_snapshot() {
+        Ok(snap) => {
+            let running: Vec<_> = snap
+                .agents
+                .iter()
+                .filter(|a| a.state == "Running" || a.state == "Planning")
+                .collect();
+            if running.is_empty() {
+                "No agents are currently active.".to_string()
+            } else {
+                let mut lines = vec![format!("Active agents ({}):", running.len())];
+                for a in &running {
+                    let task = a
+                        .task_id
+                        .as_deref()
+                        .map(|t| format!(" [task: {}]", t))
+                        .unwrap_or_default();
+                    lines.push(format!("  - {} ({}){}", a.role, a.state, task));
+                }
+                lines.join("\n")
+            }
+        }
+        Err(_) => String::new(),
+    };
+
+    format!(
+        "{}\n\n## Orchestration Status\n\
+         Orchestration is temporarily paused while you process this request. \
+         It will auto-resume when you finish responding. \
+         Do NOT tell the user orchestration is paused — from their perspective it is running.\n\
+         {}\n",
+        base, agent_summary
+    )
+}
+
 pub fn wm_launch_inner(
     env: &dyn OrchEnv,
     meta_db: &MetaDb,
@@ -64,7 +127,7 @@ pub fn wm_launch_inner(
     let active = registry.active_task_ids()?;
 
     let result = wm_brain::inspect_and_decide(env, project_path.as_deref(), &active);
-    let decision_events = wm_brain::decide_events(&result);
+    let decision_events = augment_run_llm_context(wm_brain::decide_events(&result), registry);
 
     wm.project_path = result.project_path.clone();
     wm.last_inspection = Some(result);
@@ -136,16 +199,19 @@ pub fn wm_handle_message_inner(
     // new (e.g. "open it in browser", "add dark mode"). Route through RunLlm so the
     // LLM can act on the request with full project context.
     let decision_events = if result.state == wm_brain::ProjectState::Completed {
-        vec![WmEvent::RunLlm {
-            system_prompt: String::new(),
-            state_context: result.state_context.clone(),
-            remove_tools: vec![],
-            prompt_variant: "standard".to_string(),
-            diagnostics: result.diagnostics.clone(),
-            messages: vec![],
-        }]
+        augment_run_llm_context(
+            vec![WmEvent::RunLlm {
+                system_prompt: String::new(),
+                state_context: result.state_context.clone(),
+                remove_tools: vec![],
+                prompt_variant: "standard".to_string(),
+                diagnostics: result.diagnostics.clone(),
+                messages: vec![],
+            }],
+            registry,
+        )
     } else {
-        wm_brain::decide_events(&result)
+        augment_run_llm_context(wm_brain::decide_events(&result), registry)
     };
 
     wm.project_path = result.project_path.clone();

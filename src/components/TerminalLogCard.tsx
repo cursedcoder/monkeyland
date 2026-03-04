@@ -37,7 +37,7 @@ function parseEntries(payload?: string): TerminalLogEntry[] {
   }
 }
 
-export function TerminalLogCard({
+export const TerminalLogCard = React.memo(function TerminalLogCard({
   layout,
   onLayoutChange,
   onLayoutCommit,
@@ -360,4 +360,4 @@ export function TerminalLogCard({
       )}
     </div>
   );
-}
+});

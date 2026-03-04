@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 
 interface Option {
   value: string;
@@ -25,9 +25,12 @@ export function CustomSelect({ value, options, onChange, placeholder, className 
   const showSearch = options.length > SEARCH_THRESHOLD;
   const selectedOption = options.find((o) => o.value === value);
 
-  const filtered = showSearch && query.trim()
-    ? options.filter((o) => o.label.toLowerCase().includes(query.toLowerCase()))
-    : options;
+  const filtered = useMemo(
+    () => showSearch && query.trim()
+      ? options.filter((o) => o.label.toLowerCase().includes(query.toLowerCase()))
+      : options,
+    [showSearch, query, options]
+  );
 
   const handleOpen = useCallback(() => {
     setOpen(true);
