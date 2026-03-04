@@ -1125,6 +1125,9 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
 
       if (!promptText) return;
 
+      // Halt any running orchestration before we inspect / modify project state
+      try { await invoke("orch_pause"); } catch { /* not running */ }
+
       // Spawn WM agent in the backend
       let newWmNodeId: string;
       try {
@@ -1186,9 +1189,6 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         setWmConversation((prev) => [...prev, syntheticMsg]);
         setWmIsProcessing(false);
         setWmPhase("monitoring");
-
-        try { await invoke("orch_start"); } catch { /* already running */ }
-        setWmOrchStatus("running");
         return;
       }
 
@@ -1364,19 +1364,15 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
             return next;
           });
 
-          // Start orchestration
-          try {
-            await invoke("orch_start");
-            setWmOrchStatus("running");
-          } catch {
-            /* already running or not available */
-          }
         } catch (e) {
           console.error("Failed to spawn workforce manager:", e);
           setWmIsProcessing(false);
           return;
         }
       }
+
+      // Halt orchestration before inspecting project state
+      try { await invoke("orch_pause"); } catch { /* not running */ }
 
       // --- Project Inspection (deterministic, before LLM) ---
       setWmPhase("inspecting");
@@ -1513,6 +1509,12 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       }
 
       abortControllers.current.delete(currentWmNodeId);
+
+      // Resume orchestration after WM turn completes
+      try {
+        await invoke("orch_start");
+        setWmOrchStatus("running");
+      } catch { /* not available */ }
     },
     [wmNodeId, buildPlugins, costStore, persistLayouts],
   );
@@ -1851,11 +1853,10 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         });
       }
 
-      try {
-        await invoke("orch_start");
-      } catch {
-        // non-fatal; user can start orchestration manually.
-      }
+      // Do NOT start orchestration here — the WM handleLaunch / handleWMMessage
+      // will start it after inspection completes. Starting it here causes a race
+      // where developers get dispatched for zombie tasks before cleanup.
+      setWmOrchStatus("paused");
     })();
   }, [layoutsHydrated]);
 

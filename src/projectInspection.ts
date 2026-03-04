@@ -51,15 +51,21 @@ export function getActiveTaskIds(layouts: SessionLayout[]): Set<string> {
  * Core inspection logic against a known project path.
  * Caller MUST ensure Dolt is already running for this project.
  *
- * 1. Lists all tasks
- * 2. Archives zombie/duplicate epics and their children
- * 3. Classifies state as NEW / IN_PROGRESS / COMPLETED / ERROR
- * 4. Builds prompt context and completion summary
+ * 1. Pauses orchestration (safety net — prevents dispatches during cleanup)
+ * 2. Lists all tasks
+ * 3. Closes zombie/duplicate epics and their children
+ * 4. Classifies state as NEW / IN_PROGRESS / COMPLETED / ERROR
+ * 5. Builds prompt context and completion summary
+ *
+ * Does NOT resume orchestration — the caller is responsible for that.
  */
 export async function inspectExistingProject(
   projectPath: string,
   activeTaskIds: Set<string>,
 ): Promise<InspectionResult> {
+  // Pause orchestration to prevent dispatches for tasks we're about to close
+  try { await invoke("orch_pause"); } catch { /* ignore — may not be running */ }
+
   let allTasks: BeadsTask[];
   try {
     const raw = await invoke<string>("beads_run", {
@@ -85,7 +91,9 @@ export async function inspectExistingProject(
   }
 
   if (allTasks.length === 0) {
-    console.log("[inspection] Project exists but has no tasks — treating as NEW");
+    console.log("[inspection] DIAGNOSTIC", JSON.stringify({
+      projectPath, totalTasks: 0, finalState: "NEW",
+    }));
     return {
       state: ProjectState.NEW,
       projectPath,
@@ -97,8 +105,6 @@ export async function inspectExistingProject(
     };
   }
 
-  console.log(`[inspection] Found ${allTasks.length} tasks in ${projectPath}`);
-
   // --- Zombie detection and cleanup ---
   const toArchive = new Set<string>();
   const cleanupNotes: string[] = [];
@@ -107,12 +113,17 @@ export async function inspectExistingProject(
   const closedEpics = epics.filter(isClosed);
   const openEpics = epics.filter(e => !isClosed(e));
 
-  if (closedEpics.length > 0) {
+  // When a completed epic exists, zombie epics and ALL their children get
+  // closed unconditionally — even if a developer was dispatched for them
+  // (the developer will fail gracefully on a closed task).
+  const hasCompletedEpic = closedEpics.length > 0;
+
+  if (hasCompletedEpic) {
     for (const ep of openEpics) {
       if (!activeTaskIds.has(ep.id)) {
         toArchive.add(ep.id);
         cleanupNotes.push(
-          `Archived zombie epic "${ep.title}" (${ep.id}) — completed epic ${closedEpics[0].id} exists`,
+          `Closed zombie epic "${ep.title}" (${ep.id}) — completed epic ${closedEpics[0].id} exists`,
         );
       }
     }
@@ -129,20 +140,24 @@ export async function inspectExistingProject(
       if (!activeTaskIds.has(ep.id)) {
         toArchive.add(ep.id);
         cleanupNotes.push(
-          `Archived duplicate epic "${ep.title}" (${ep.id}) — keeping ${keeper.id}`,
+          `Closed duplicate epic "${ep.title}" (${ep.id}) — keeping ${keeper.id}`,
         );
       }
     }
   }
 
-  // Cascade: archive children of archived epics
+  // Cascade: close children of closed zombie epics.
+  // Two modes:
+  //   - Completed-epic cleanup: ignore activeTaskIds (zombie children closed unconditionally)
+  //   - Open-epic dedup: respect activeTaskIds (don't kill legitimate work)
   let frontier = new Set(toArchive);
   while (frontier.size > 0) {
     const next = new Set<string>();
     for (const t of allTasks) {
       if (toArchive.has(t.id)) continue;
       const pid = t.parent || t.parent_id;
-      if (pid && frontier.has(pid) && !activeTaskIds.has(t.id)) {
+      if (!pid || !frontier.has(pid)) continue;
+      if (hasCompletedEpic || !activeTaskIds.has(t.id)) {
         toArchive.add(t.id);
         next.add(t.id);
       }
@@ -174,16 +189,16 @@ export async function inspectExistingProject(
       if (!activeTaskIds.has(loser.id)) {
         toArchive.add(loser.id);
         cleanupNotes.push(
-          `Archived duplicate task "${loser.title}" (${loser.id}) — keeping ${winner.id}`,
+          `Closed duplicate task "${loser.title}" (${loser.id}) — keeping ${winner.id}`,
         );
       }
     }
   }
 
-  // Perform archiving
+  // Perform closing
   const archived: string[] = [];
+  const closeFailed: string[] = [];
   if (toArchive.size > 0) {
-    console.log(`[inspection] Archiving ${toArchive.size} zombie/duplicate tasks: ${[...toArchive].join(", ")}`);
     for (const id of toArchive) {
       try {
         await invoke("beads_run", {
@@ -193,7 +208,9 @@ export async function inspectExistingProject(
         });
         archived.push(id);
       } catch (e) {
-        console.warn(`[inspection] Failed to archive ${id}:`, e);
+        const msg = e instanceof Error ? e.message : String(e);
+        closeFailed.push(`${id}: ${msg}`);
+        console.warn(`[inspection] Failed to close ${id}:`, msg);
       }
     }
   }
@@ -215,7 +232,20 @@ export async function inspectExistingProject(
     state = ProjectState.NEW;
   }
 
-  console.log(`[inspection] State: ${state} (${remaining.length} tasks remaining, ${archived.length} archived)`);
+  // --- Structured diagnostic dump ---
+  console.log("[inspection] DIAGNOSTIC", JSON.stringify({
+    projectPath,
+    totalTasks: allTasks.length,
+    closedEpics: closedEpics.map(e => e.id),
+    openEpics: openEpics.map(e => e.id),
+    activeAgentTaskIds: [...activeTaskIds],
+    closeAttempts: toArchive.size,
+    closeSucceeded: archived.length,
+    closeFailed,
+    finalState: state,
+    remainingCount: remaining.length,
+    remainingIds: remaining.map(t => `${t.id}[${t.status}]`),
+  }, null, 2));
 
   // --- Build state context for the system prompt ---
   const ctxLines: string[] = [
@@ -227,7 +257,7 @@ export async function inspectExistingProject(
 
   if (archived.length > 0) {
     ctxLines.push("### Auto-Cleanup Performed");
-    ctxLines.push(`Archived ${archived.length} zombie/duplicate task(s):`);
+    ctxLines.push(`Closed ${archived.length} zombie/duplicate task(s):`);
     for (const n of cleanupNotes) ctxLines.push(`- ${n}`);
     ctxLines.push("");
   }
@@ -300,44 +330,44 @@ export async function inspectExistingProject(
 /**
  * Top-level inspection. Runs before the WM LLM turn.
  *
- * Detects project from canvas layouts, starts Dolt, and delegates to
+ * Detects project from canvas layouts or MetaDb, starts Dolt, and delegates to
  * inspectExistingProject for the heavy lifting.
  */
 export async function inspectProject(layouts: SessionLayout[]): Promise<InspectionResult> {
   let projectPath = detectProjectPath(layouts);
   let fromMetaDb = false;
 
-  // Fallback: if no beads card on canvas, check MetaDb for a previously stored project path
   if (!projectPath) {
     try {
       const stored = await invoke<string | null>("get_beads_project_path");
       if (stored) {
         projectPath = stored;
         fromMetaDb = true;
-        console.log(`[inspection] No canvas card, but MetaDb has stored project: ${projectPath}`);
       }
     } catch {
-      // MetaDb unavailable — proceed as NEW
+      // MetaDb unavailable
     }
   }
 
+  const pathSource = projectPath ? (fromMetaDb ? "metadb" : "canvas") : "none";
+  console.log(`[inspection] Path detection: source=${pathSource}, path=${projectPath ?? "null"}`);
+
   if (!projectPath) {
-    console.log("[inspection] No beads card and no stored project — treating as NEW");
+    console.log("[inspection] DIAGNOSTIC", JSON.stringify({ pathSource, projectPath: null, finalState: "NEW" }));
     return newResult(null);
   }
 
-  console.log(`[inspection] Inspecting project: ${projectPath} (source: ${fromMetaDb ? "MetaDb" : "canvas"})`);
-
-  // Dolt must be running — for MetaDb fallback, treat Dolt failure as NEW (stale path)
   try {
     await invoke("beads_dolt_start", { projectPath, agentId: null });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (fromMetaDb) {
-      console.warn(`[inspection] MetaDb project path but Dolt failed — treating as NEW: ${msg}`);
+      console.warn(`[inspection] MetaDb path but Dolt failed — treating as NEW: ${msg}`);
+      console.log("[inspection] DIAGNOSTIC", JSON.stringify({ pathSource, projectPath, doltOk: false, doltError: msg, finalState: "NEW" }));
       return newResult(null);
     }
     console.error("[inspection] Dolt failed to start:", msg);
+    console.log("[inspection] DIAGNOSTIC", JSON.stringify({ pathSource, projectPath, doltOk: false, doltError: msg, finalState: "ERROR" }));
     return {
       state: ProjectState.ERROR,
       projectPath,
@@ -350,6 +380,7 @@ export async function inspectProject(layouts: SessionLayout[]): Promise<Inspecti
     };
   }
 
+  console.log(`[inspection] Dolt started OK for ${projectPath}`);
   const activeTaskIds = getActiveTaskIds(layouts);
   return inspectExistingProject(projectPath, activeTaskIds);
 }

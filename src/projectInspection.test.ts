@@ -64,6 +64,7 @@ describe("inspectProject", () => {
     ];
     mockInvoke.mockResolvedValueOnce("/tmp/stored-proj"); // get_beads_project_path
     mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause (inside inspectExistingProject)
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks)); // beads_run list
 
     const result = await inspectProject([]);
@@ -82,6 +83,7 @@ describe("inspectProject", () => {
 
   it("returns NEW when beads card exists but no tasks", async () => {
     mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce("[]"); // beads_run list
     const result = await inspectProject([beadsLayout("/tmp/proj")]);
     expect(result.state).toBe(ProjectState.NEW);
@@ -97,6 +99,7 @@ describe("inspectProject", () => {
 
   it("returns ERROR when beads_run fails", async () => {
     mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockRejectedValueOnce(new Error("bd not found"));
     const result = await inspectProject([beadsLayout("/tmp/proj")]);
     expect(result.state).toBe(ProjectState.ERROR);
@@ -110,6 +113,7 @@ describe("inspectProject", () => {
       { id: "task-2", title: "Create style.css", type: "task", status: "done", parent: "epic-1" },
     ];
     mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks)); // beads_run list
 
     const result = await inspectProject([beadsLayout("/tmp/proj")]);
@@ -126,7 +130,8 @@ describe("inspectProject", () => {
       { id: "epic-1", title: "Build app", type: "epic", status: "in_progress" },
       { id: "task-1", title: "Create index.html", type: "task", status: "open", parent: "epic-1" },
     ];
-    mockInvoke.mockResolvedValueOnce(undefined);
+    mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
 
     const result = await inspectProject([beadsLayout("/tmp/proj")]);
@@ -144,9 +149,9 @@ describe("inspectProject", () => {
       { id: "epic-3", title: "Build app v3", type: "epic", status: "in_progress" },
     ];
     mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks)); // beads_run list
-    // Archive calls for epic-2, task-2, epic-3
-    mockInvoke.mockResolvedValue("ok");
+    mockInvoke.mockResolvedValue("ok"); // close calls
 
     const result = await inspectProject([beadsLayout("/tmp/proj")]);
     expect(result.state).toBe(ProjectState.COMPLETED);
@@ -161,7 +166,8 @@ describe("inspectProject", () => {
       { id: "epic-1", title: "Build app", type: "epic", status: "closed" },
       { id: "epic-2", title: "Build app again", type: "epic", status: "in_progress" },
     ];
-    mockInvoke.mockResolvedValueOnce(undefined);
+    mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
 
     const layouts = [
@@ -177,9 +183,10 @@ describe("inspectProject", () => {
       { id: "epic-old", title: "Old epic", type: "epic", status: "in_progress", updated_at: "2024-01-01T00:00:00Z" },
       { id: "epic-new", title: "New epic", type: "epic", status: "in_progress", updated_at: "2025-12-01T00:00:00Z" },
     ];
-    mockInvoke.mockResolvedValueOnce(undefined);
+    mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
-    mockInvoke.mockResolvedValue("ok"); // archive call
+    mockInvoke.mockResolvedValue("ok"); // close call
 
     const result = await inspectProject([beadsLayout("/tmp/proj")]);
     expect(result.state).toBe(ProjectState.IN_PROGRESS);
@@ -194,7 +201,8 @@ describe("inspectProject", () => {
       { id: "child-1", title: "Child task", type: "task", status: "open", parent: "epic-2" },
       { id: "grandchild", title: "Grandchild", type: "task", status: "open", parent: "child-1" },
     ];
-    mockInvoke.mockResolvedValueOnce(undefined);
+    mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
     mockInvoke.mockResolvedValue("ok");
 
@@ -210,7 +218,8 @@ describe("inspectProject", () => {
       { id: "task-a", title: "Create index.html", type: "task", status: "done", parent: "epic-1" },
       { id: "task-b", title: "Create index.html", type: "task", status: "open", parent: "epic-1" },
     ];
-    mockInvoke.mockResolvedValueOnce(undefined);
+    mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
     mockInvoke.mockResolvedValue("ok");
 
@@ -223,7 +232,8 @@ describe("inspectProject", () => {
     const tasks = [
       { id: "epic-1", title: "App", type: "epic", status: "in_progress" },
     ];
-    mockInvoke.mockResolvedValueOnce(undefined);
+    mockInvoke.mockResolvedValueOnce(undefined); // beads_dolt_start
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
 
     const result = await inspectProject([beadsLayout("/tmp/myapp")]);
@@ -233,7 +243,18 @@ describe("inspectProject", () => {
 });
 
 describe("inspectExistingProject", () => {
+  it("calls orch_pause before listing tasks", async () => {
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
+    mockInvoke.mockResolvedValueOnce("[]"); // beads_run list
+
+    await inspectExistingProject("/tmp/proj", new Set());
+    expect(mockInvoke).toHaveBeenCalledWith("orch_pause");
+    const calls = mockInvoke.mock.calls.map((c: any[]) => c[0]);
+    expect(calls.indexOf("orch_pause")).toBeLessThan(calls.indexOf("beads_run"));
+  });
+
   it("returns ERROR when beads_run list fails", async () => {
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockRejectedValueOnce(new Error("bd crashed"));
     const result = await inspectExistingProject("/tmp/proj", new Set());
     expect(result.state).toBe(ProjectState.ERROR);
@@ -241,6 +262,7 @@ describe("inspectExistingProject", () => {
   });
 
   it("returns NEW when project has no tasks", async () => {
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce("[]");
     const result = await inspectExistingProject("/tmp/proj", new Set());
     expect(result.state).toBe(ProjectState.NEW);
@@ -252,6 +274,7 @@ describe("inspectExistingProject", () => {
       { id: "epic-1", title: "Build site", type: "epic", status: "closed" },
       { id: "task-1", title: "Create index.html", type: "task", status: "done", parent: "epic-1" },
     ];
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
     const result = await inspectExistingProject("/tmp/proj", new Set());
     expect(result.state).toBe(ProjectState.COMPLETED);
@@ -266,8 +289,9 @@ describe("inspectExistingProject", () => {
       { id: "epic-zombie", title: "Zombie", type: "epic", status: "in_progress" },
       { id: "child", title: "Zombie child", type: "task", status: "open", parent: "epic-zombie" },
     ];
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks)); // list
-    mockInvoke.mockResolvedValue("ok"); // archive calls
+    mockInvoke.mockResolvedValue("ok"); // close calls
 
     const result = await inspectExistingProject("/tmp/proj", new Set());
     expect(result.state).toBe(ProjectState.COMPLETED);
@@ -275,11 +299,12 @@ describe("inspectExistingProject", () => {
     expect(result.zombiesArchived).toContain("child");
   });
 
-  it("does not archive active tasks", async () => {
+  it("does not archive active epics (epic-level guard)", async () => {
     const tasks = [
       { id: "epic-done", title: "Done", type: "epic", status: "closed" },
       { id: "epic-active", title: "Active", type: "epic", status: "in_progress" },
     ];
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
 
     const activeIds = new Set(["epic-active"]);
@@ -287,11 +312,48 @@ describe("inspectExistingProject", () => {
     expect(result.zombiesArchived).not.toContain("epic-active");
   });
 
+  it("force-closes active children of zombie epics when completed epic exists", async () => {
+    const tasks = [
+      { id: "epic-done", title: "Done", type: "epic", status: "closed" },
+      { id: "epic-zombie", title: "Zombie", type: "epic", status: "in_progress" },
+      { id: "child-active", title: "Active child", type: "task", status: "open", parent: "epic-zombie" },
+    ];
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
+    mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks)); // list
+    mockInvoke.mockResolvedValue("ok"); // close calls
+
+    // child-active has an active agent, but should still be closed because
+    // its parent epic is a zombie (completed epic exists)
+    const activeIds = new Set(["child-active"]);
+    const result = await inspectExistingProject("/tmp/proj", activeIds);
+    expect(result.zombiesArchived).toContain("epic-zombie");
+    expect(result.zombiesArchived).toContain("child-active");
+    expect(result.state).toBe(ProjectState.COMPLETED);
+  });
+
+  it("respects activeTaskIds for cascade when no completed epic (open-epic dedup)", async () => {
+    const tasks = [
+      { id: "epic-new", title: "New", type: "epic", status: "in_progress", updated_at: "2025-12-01T00:00:00Z" },
+      { id: "epic-old", title: "Old", type: "epic", status: "in_progress", updated_at: "2024-01-01T00:00:00Z" },
+      { id: "child-active", title: "Active child", type: "task", status: "open", parent: "epic-old" },
+    ];
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
+    mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks)); // list
+    mockInvoke.mockResolvedValue("ok"); // close calls
+
+    // child-active is protected during open-epic dedup (no completed epic)
+    const activeIds = new Set(["child-active"]);
+    const result = await inspectExistingProject("/tmp/proj", activeIds);
+    expect(result.zombiesArchived).toContain("epic-old");
+    expect(result.zombiesArchived).not.toContain("child-active");
+  });
+
   it("returns IN_PROGRESS for open epics", async () => {
     const tasks = [
       { id: "epic-1", title: "WIP", type: "epic", status: "in_progress" },
       { id: "task-1", title: "Do thing", type: "task", status: "open", parent: "epic-1" },
     ];
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks));
 
     const result = await inspectExistingProject("/tmp/proj", new Set());
@@ -305,6 +367,7 @@ describe("inspectExistingProject", () => {
       { id: "epic-done", title: "Done", type: "epic", status: "closed" },
       { id: "epic-zombie", title: "Zombie", type: "epic", status: "in_progress" },
     ];
+    mockInvoke.mockResolvedValueOnce(undefined); // orch_pause
     mockInvoke.mockResolvedValueOnce(JSON.stringify(tasks)); // list
     mockInvoke.mockResolvedValueOnce("ok"); // close
 
