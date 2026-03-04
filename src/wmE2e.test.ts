@@ -67,18 +67,20 @@ async function runWmLoop(events: WmEvent[]): Promise<WmUiState> {
 
     if (event.type === "RunLlm") {
       const config = event;
-      const messages = state.conversation.map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
 
       try {
         const text: string = await mockRunAgent({
           systemPrompt: config.system_prompt + config.state_context,
-          messages,
+          messages: config.messages,
           removeTools: config.remove_tools,
         });
         await mockInvoke("wm_llm_done", { responseText: text });
+        // Backend emits MessageAdded before LlmDone
+        state = wmReducer(state, {
+          type: "MessageAdded",
+          role: "assistant",
+          content: text,
+        });
         state = wmReducer(state, { type: "LlmDone" });
       } catch (e) {
         await mockInvoke("wm_llm_error", { error: String(e) });
@@ -151,6 +153,7 @@ describe("WM E2E frontend integration", () => {
         remove_tools: [],
         prompt_variant: "standard",
         diagnostics: makeDiagnostics({ final_state: "NEW" }),
+        messages: [{ role: "user", content: "Build me an app" }],
       },
     ];
 
@@ -158,6 +161,11 @@ describe("WM E2E frontend integration", () => {
 
     expect(finalState.phase).toBe("monitoring");
     expect(finalState.isProcessing).toBe(false);
+    expect(finalState.conversation).toHaveLength(2);
+    expect(finalState.conversation[1]).toEqual({
+      role: "assistant",
+      content: "I've created the project structure.",
+    });
 
     expect(mockRunAgent).toHaveBeenCalledOnce();
     expect(mockRunAgent).toHaveBeenCalledWith(
@@ -188,6 +196,7 @@ describe("WM E2E frontend integration", () => {
         remove_tools: [],
         prompt_variant: "standard",
         diagnostics: makeDiagnostics({ final_state: "NEW" }),
+        messages: [{ role: "user", content: "Build me an app" }],
       },
     ];
 
@@ -229,16 +238,22 @@ describe("WM E2E frontend integration", () => {
         remove_tools: [],
         prompt_variant: "completed",
         diagnostics: makeDiagnostics({ final_state: "COMPLETED" }),
+        messages: [
+          { role: "user", content: "Build me an app" },
+          { role: "assistant", content: "Already complete." },
+          { role: "user", content: "Add dark mode" },
+        ],
       },
     ];
 
     const finalState = await runWmLoop(events);
 
     expect(finalState.phase).toBe("monitoring");
-    expect(finalState.conversation).toHaveLength(3);
+    expect(finalState.conversation).toHaveLength(4);
     expect(finalState.conversation[0].content).toBe("Build me an app");
     expect(finalState.conversation[1].content).toBe("Already complete.");
     expect(finalState.conversation[2].content).toBe("Add dark mode");
+    expect(finalState.conversation[3].content).toBe("Adding dark mode support.");
 
     expect(mockRunAgent).toHaveBeenCalledOnce();
     const runAgentCall = mockRunAgent.mock.calls[0][0];

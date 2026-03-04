@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { SessionLayout } from "../types";
+import type { InlineOperatorState } from "../App";
 import {
   PROMPT_CARD_MIN_W,
   PROMPT_CARD_MIN_H,
@@ -17,6 +18,22 @@ import {
 } from "../constants/phases";
 
 export type { WMPhase };
+
+function summarizeToolCalls(
+  calls: Array<{ name: string; status: string }>,
+): Array<{ name: string; count: number; allDone: boolean }> {
+  const map = new Map<string, { count: number; allDone: boolean }>();
+  for (const tc of calls) {
+    const entry = map.get(tc.name);
+    if (entry) {
+      entry.count++;
+      if (tc.status !== "done") entry.allDone = false;
+    } else {
+      map.set(tc.name, { count: 1, allDone: tc.status === "done" });
+    }
+  }
+  return Array.from(map, ([name, v]) => ({ name, ...v }));
+}
 
 export interface WMChatMessage {
   id: string;
@@ -50,6 +67,8 @@ interface WMChatCardProps {
   streamingToolCalls?: Array<{ name: string; status: string }>;
   taskProgress?: { done: number; total: number };
   orchStatus?: "running" | "paused" | "idle";
+  inlineAgents?: InlineOperatorState[];
+  onToggleInlineAgent?: (agentId: string) => void;
   onSendMessage?: (text: string) => void;
   onPause?: () => void;
   onResume?: () => void;
@@ -73,6 +92,8 @@ export function WMChatCard({
   streamingToolCalls,
   taskProgress = { done: 0, total: 0 },
   orchStatus = "idle",
+  inlineAgents = [],
+  onToggleInlineAgent,
   onSendMessage,
   onPause,
   onResume,
@@ -428,6 +449,77 @@ export function WMChatCard({
                 </div>
               )}
             </div>
+          </div>
+        )}
+        {inlineAgents.length > 0 && (
+          <div className="wm-inline-agents">
+            {inlineAgents.map((agent) => {
+              const toolSummary = summarizeToolCalls(agent.toolCalls);
+              return (
+                <div
+                  key={agent.agentId}
+                  className={`wm-inline-agent wm-inline-agent--${agent.status}`}
+                >
+                  <button
+                    type="button"
+                    className="wm-inline-agent-header"
+                    onClick={() => onToggleInlineAgent?.(agent.agentId)}
+                  >
+                    <span className="wm-inline-agent-indicator">
+                      {agent.status === "running" && (
+                        <span className="wm-inline-agent-spinner" />
+                      )}
+                      {agent.status === "done" && "\u2713"}
+                      {agent.status === "error" && "\u2717"}
+                    </span>
+                    <span className="wm-inline-agent-title">
+                      {agent.taskDescription.length > 60
+                        ? agent.taskDescription.slice(0, 60) + "\u2026"
+                        : agent.taskDescription}
+                    </span>
+                    <span className="wm-inline-agent-toggle">
+                      {agent.collapsed ? "\u25B8" : "\u25BE"}
+                    </span>
+                  </button>
+                  {!agent.collapsed && (
+                    <div className="wm-inline-agent-body">
+                      {toolSummary.length > 0 && (
+                        <div className="wm-inline-agent-tools">
+                          {toolSummary.map((ts) => (
+                            <span
+                              key={ts.name}
+                              className={`wm-inline-agent-tool-pill wm-inline-agent-tool-pill--${ts.allDone ? "done" : "active"}`}
+                            >
+                              {ts.name}{ts.count > 1 ? ` \u00d7${ts.count}` : ""}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {agent.status === "running" && agent.streamingContent ? (
+                        <div className="wm-inline-agent-content">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {agent.streamingContent}
+                          </ReactMarkdown>
+                        </div>
+                      ) : agent.answer ? (
+                        <div className="wm-inline-agent-content">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {agent.answer}
+                          </ReactMarkdown>
+                        </div>
+                      ) : agent.status === "running" ? (
+                        <div className="wm-chat-card-typing">
+                          <span></span><span></span><span></span>
+                        </div>
+                      ) : null}
+                      {agent.errorMessage && (
+                        <div className="wm-inline-agent-error">{agent.errorMessage}</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
         {!isAtBottom && (

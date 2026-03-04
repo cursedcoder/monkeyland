@@ -698,6 +698,8 @@ pub async fn full_reset(
         let _ = pool.kill(id);
     }
     meta_db.set_setting("beads_project_path", "")?;
+    meta_db.set_setting("wm_state", "")?;
+    meta_db.set_setting("wm_conversation", "")?;
     Ok(())
 }
 
@@ -2221,13 +2223,23 @@ mod tests {
         orch_start(orch.clone()).await.unwrap();
         reg.spawn("worker", Some("t-1".into()), None, None).unwrap();
 
-        full_reset(orch.clone(), reg.clone(), pool, db)
+        db.set_setting("wm_state", r#"{"phase":"monitoring","conversation":[]}"#)
+            .unwrap();
+        db.set_setting("wm_conversation", r#"{"messages":[]}"#)
+            .unwrap();
+
+        full_reset(orch.clone(), reg.clone(), pool, db.clone())
             .await
             .unwrap();
 
         assert_eq!(orch_get_state(orch).await.unwrap(), 2);
         let snap = debug_snapshot(reg).await.unwrap();
         assert!(snap.agents.is_empty());
+
+        let wm = db.get_setting("wm_state").unwrap().unwrap();
+        assert_eq!(wm, "");
+        let conv = db.get_setting("wm_conversation").unwrap().unwrap();
+        assert_eq!(conv, "");
     }
 
     #[tokio::test]

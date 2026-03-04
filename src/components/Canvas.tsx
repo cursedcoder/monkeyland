@@ -11,6 +11,7 @@ import { ValidatorCard } from "./ValidatorCard";
 import { WMChatCard, type WMChatMessage, type WMPhase } from "./WMChatCard";
 import type { SessionLayout } from "../types";
 import { CULL_MARGIN } from "../types";
+import type { InlineOperatorState } from "../App";
 
 interface CanvasProps {
   layouts: SessionLayout[];
@@ -29,6 +30,8 @@ interface CanvasProps {
   wmStreamingToolCalls?: Array<{ name: string; status: string }>;
   wmTaskProgress?: { done: number; total: number };
   wmOrchStatus?: "running" | "paused" | "idle";
+  wmInlineAgents?: InlineOperatorState[];
+  onWMToggleInlineAgent?: (agentId: string) => void;
   onWMSendMessage?: (text: string) => void;
   onWMPause?: () => void;
   onWMResume?: () => void;
@@ -82,6 +85,8 @@ export function Canvas({
   wmStreamingToolCalls,
   wmTaskProgress = { done: 0, total: 0 },
   wmOrchStatus = "idle",
+  wmInlineAgents = [],
+  onWMToggleInlineAgent,
   onWMSendMessage,
   onWMPause,
   onWMResume,
@@ -356,6 +361,8 @@ export function Canvas({
                 streamingToolCalls={wmStreamingToolCalls}
                 taskProgress={wmTaskProgress}
                 orchStatus={wmOrchStatus}
+                inlineAgents={wmInlineAgents}
+                onToggleInlineAgent={onWMToggleInlineAgent}
                 onSendMessage={onWMSendMessage}
                 onPause={onWMPause}
                 onResume={onWMResume}

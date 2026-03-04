@@ -74,6 +74,7 @@ describe("wmReducer", () => {
           remove_tools: [],
           prompt_variant: "standard",
           diagnostics: makeDiagnostics({ final_state: "NEW" }),
+          messages: [],
         },
         { type: "LlmDone" },
       ];
@@ -95,21 +96,22 @@ describe("wmReducer", () => {
     });
   });
 
-  describe("in_progress_removes_tools", () => {
-    it("sets remove_tools when project is in progress", () => {
+  describe("in_progress_keeps_all_tools", () => {
+    it("does not remove open_project_with_beads for in-progress projects", () => {
       const events: WmEvent[] = [
         {
           type: "RunLlm",
           system_prompt: "",
           state_context: "",
-          remove_tools: ["open_project_with_beads"],
+          remove_tools: [],
           prompt_variant: "standard",
           diagnostics: makeDiagnostics({ final_state: "IN_PROGRESS" }),
+          messages: [],
         },
       ];
 
       const final = applyEvents(initialWmUiState, events);
-      expect(final.llmConfig?.removeTools).toContain("open_project_with_beads");
+      expect(final.llmConfig?.removeTools).toEqual([]);
     });
   });
 
@@ -155,6 +157,7 @@ describe("wmReducer", () => {
           remove_tools: [],
           prompt_variant: "completed",
           diagnostics: makeDiagnostics({ final_state: "COMPLETED" }),
+          messages: [],
         },
       ];
 

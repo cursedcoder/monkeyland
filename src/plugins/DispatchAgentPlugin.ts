@@ -3,7 +3,7 @@ import { Plugin, type PluginParameter, type PluginExecutionContext } from "./Plu
 export type DispatchAgentFn = (params: {
   role: "operator" | "developer" | "worker";
   taskDescription: string;
-  parentAgentId: string;
+  parentAgentId: string | null;
 }) => Promise<string>;
 
 /**
@@ -12,10 +12,10 @@ export type DispatchAgentFn = (params: {
  * The spawned agent gets its full tool set (browser, terminal, files).
  */
 export class DispatchAgentPlugin extends Plugin {
-  private agentNodeId: string;
+  private agentNodeId: string | null;
   private dispatchAgent: DispatchAgentFn;
 
-  constructor(agentNodeId: string, dispatchAgent: DispatchAgentFn) {
+  constructor(agentNodeId: string | null, dispatchAgent: DispatchAgentFn) {
     super();
     this.agentNodeId = agentNodeId;
     this.dispatchAgent = dispatchAgent;

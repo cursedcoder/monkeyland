@@ -48,6 +48,7 @@ export type WmEvent =
       remove_tools: string[];
       prompt_variant: string;
       diagnostics: Diagnostics;
+      messages: WmChatMessage[];
     }
   | { type: "LlmDone" }
   | { type: "ShowError"; message: string; diagnostics: Diagnostics | null }
@@ -100,18 +101,20 @@ export function wmReducer(state: WmUiState, action: WmReducerAction): WmUiState 
     case "PhaseChanged":
       return { ...state, phase: action.phase };
 
-    case "ShortCircuit":
+    case "ShortCircuit": {
+      const lastSc = state.conversation[state.conversation.length - 1];
+      const alreadyHas = lastSc && lastSc.role === "assistant" && lastSc.content === action.message;
       return {
         ...state,
         phase: "completed",
         isProcessing: false,
-        conversation: [
-          ...state.conversation,
-          { role: "assistant", content: action.message },
-        ],
+        conversation: alreadyHas
+          ? state.conversation
+          : [...state.conversation, { role: "assistant", content: action.message }],
         diagnostics: action.diagnostics,
         llmConfig: null,
       };
+    }
 
     case "RunLlm":
       return {
@@ -154,7 +157,11 @@ export function wmReducer(state: WmUiState, action: WmReducerAction): WmUiState 
         orchStatus: action.status as WmUiState["orchStatus"],
       };
 
-    case "MessageAdded":
+    case "MessageAdded": {
+      const last = state.conversation[state.conversation.length - 1];
+      if (last && last.role === action.role && last.content === action.content) {
+        return state;
+      }
       return {
         ...state,
         conversation: [
@@ -162,6 +169,7 @@ export function wmReducer(state: WmUiState, action: WmReducerAction): WmUiState 
           { role: action.role as "user" | "assistant", content: action.content },
         ],
       };
+    }
 
     case "HYDRATE":
       return {

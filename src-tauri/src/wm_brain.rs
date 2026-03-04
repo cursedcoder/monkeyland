@@ -53,6 +53,9 @@ pub enum WmEvent {
         remove_tools: Vec<String>,
         prompt_variant: String,
         diagnostics: Diagnostics,
+        /// Full conversation to send to the LLM. Populated by the command layer
+        /// so the frontend doesn't rely on its own (potentially stale) React state.
+        messages: Vec<WmMessage>,
     },
     LlmDone {},
     ShowError {
@@ -390,6 +393,28 @@ pub fn inspect_and_decide(
         frontier = next;
     }
 
+    // Orphan cleanup: close non-active, non-closed tasks whose parent epic is
+    // already closed. These are stragglers from previous sessions (e.g. an
+    // IN_PROGRESS task left behind after the epic was completed).
+    let closed_epic_ids: HashSet<String> = closed_epics.iter().map(|e| e.id.clone()).collect();
+    for t in &all_tasks {
+        if to_close.contains(&t.id) || t.is_epic() || t.is_closed() {
+            continue;
+        }
+        if active_agent_task_ids.contains(&t.id) {
+            continue;
+        }
+        if let Some(pid) = t.parent_effective() {
+            if closed_epic_ids.contains(pid) {
+                to_close.insert(t.id.clone());
+                cleanup_notes.push(format!(
+                    "Closed orphan task \"{}\" ({}) — parent epic {} is already closed",
+                    t.title, t.id, pid
+                ));
+            }
+        }
+    }
+
     // Title-based dedup for surviving non-epic tasks
     let surviving: Vec<&BeadsTask> = all_tasks
         .iter()
@@ -471,7 +496,12 @@ pub fn inspect_and_decide(
         .copied()
         .collect();
 
-    let state = if !final_closed_epics.is_empty() && final_open_epics.is_empty() {
+    let has_active_work = remaining
+        .iter()
+        .any(|t| !t.is_closed() && !t.is_epic() && active_agent_task_ids.contains(&t.id));
+
+    let state = if !final_closed_epics.is_empty() && final_open_epics.is_empty() && !has_active_work
+    {
         ProjectState::Completed
     } else if !final_open_epics.is_empty() || !remaining.is_empty() {
         ProjectState::InProgress
@@ -626,15 +656,17 @@ pub fn decide_events(result: &InspectionResult) -> Vec<WmEvent> {
                 remove_tools: vec![],
                 prompt_variant: "standard".to_string(),
                 diagnostics: result.diagnostics.clone(),
+                messages: vec![],
             });
         }
         ProjectState::InProgress => {
             events.push(WmEvent::RunLlm {
                 system_prompt: String::new(),
                 state_context: result.state_context.clone(),
-                remove_tools: vec!["open_project_with_beads".to_string()],
+                remove_tools: vec![],
                 prompt_variant: "standard".to_string(),
                 diagnostics: result.diagnostics.clone(),
+                messages: vec![],
             });
         }
         ProjectState::Error => {
@@ -1024,6 +1056,55 @@ mod tests {
     }
 
     #[test]
+    fn orphan_tasks_under_closed_epic_are_cleaned() {
+        let env = TestWmEnv::new();
+        let tasks = serde_json::json!([
+            task_json("epic-1", "Create HTML site", "epic", "done"),
+            task_with_parent("task-1", "Create index.html", "task", "done", "epic-1"),
+            task_with_parent(
+                "task-2",
+                "Create style.css",
+                "task",
+                "in-progress",
+                "epic-1"
+            ),
+        ]);
+        env.set_list_response(&tasks.to_string());
+
+        let active = HashSet::new();
+        let result = inspect_and_decide(&env, Some("/tmp/testmerge14"), &active);
+
+        assert_eq!(result.state, ProjectState::Completed);
+        assert!(result.zombies_closed.contains(&"task-2".to_string()));
+        assert!(!result.zombies_closed.contains(&"task-1".to_string()));
+        assert!(result.completion_summary.is_some());
+    }
+
+    #[test]
+    fn orphan_task_with_active_agent_is_protected() {
+        let env = TestWmEnv::new();
+        let tasks = serde_json::json!([
+            task_json("epic-1", "Create HTML site", "epic", "done"),
+            task_with_parent(
+                "task-1",
+                "Create style.css",
+                "task",
+                "in-progress",
+                "epic-1"
+            ),
+        ]);
+        env.set_list_response(&tasks.to_string());
+
+        let mut active = HashSet::new();
+        active.insert("task-1".to_string());
+
+        let result = inspect_and_decide(&env, Some("/tmp/proj"), &active);
+
+        assert_eq!(result.state, ProjectState::InProgress);
+        assert!(!result.zombies_closed.contains(&"task-1".to_string()));
+    }
+
+    #[test]
     fn title_dedup_keeps_closed() {
         let env = TestWmEnv::new();
         let tasks = serde_json::json!([
@@ -1148,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn decide_in_progress_removes_beads_tool() {
+    fn decide_in_progress_keeps_all_tools() {
         let env = TestWmEnv::new();
         let tasks = serde_json::json!([task_json("epic-1", "Build app", "epic", "open"),]);
         env.set_list_response(&tasks.to_string());
@@ -1159,7 +1240,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         match &events[0] {
             WmEvent::RunLlm { remove_tools, .. } => {
-                assert!(remove_tools.contains(&"open_project_with_beads".to_string()));
+                assert!(remove_tools.is_empty());
             }
             _ => panic!("Expected RunLlm"),
         }

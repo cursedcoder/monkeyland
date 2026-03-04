@@ -55,9 +55,12 @@ pub fn wm_launch_inner(
         content: prompt_text.to_string(),
     });
 
-    let project_path = meta_db
+    let mut project_path = meta_db
         .get_setting("beads_project_path")?
         .filter(|p| !p.is_empty());
+    if project_path.is_none() {
+        project_path = detect_project_path_from_prompt(prompt_text);
+    }
     let active = registry.active_task_ids()?;
 
     let result = wm_brain::inspect_and_decide(env, project_path.as_deref(), &active);
@@ -82,7 +85,7 @@ pub fn wm_launch_inner(
             _ => {}
         }
     }
-    events.extend(decision_events);
+    events.extend(inject_conversation(decision_events, &wm.conversation));
 
     persist_wm_state(meta_db, &wm)?;
     Ok(WmCommandResult {
@@ -116,13 +119,34 @@ pub fn wm_handle_message_inner(
         content: text.to_string(),
     });
 
-    let project_path = meta_db
+    let mut project_path = meta_db
         .get_setting("beads_project_path")?
         .filter(|p| !p.is_empty());
+    if project_path.is_none() {
+        project_path = wm.project_path.clone().filter(|p| !p.is_empty());
+    }
+    if project_path.is_none() {
+        project_path = detect_project_path_from_prompt(text);
+    }
     let active = registry.active_task_ids()?;
 
     let result = wm_brain::inspect_and_decide(env, project_path.as_deref(), &active);
-    let decision_events = wm_brain::decide_events(&result);
+
+    // For follow-up messages, never short-circuit — the user is asking for something
+    // new (e.g. "open it in browser", "add dark mode"). Route through RunLlm so the
+    // LLM can act on the request with full project context.
+    let decision_events = if result.state == wm_brain::ProjectState::Completed {
+        vec![WmEvent::RunLlm {
+            system_prompt: String::new(),
+            state_context: result.state_context.clone(),
+            remove_tools: vec![],
+            prompt_variant: "standard".to_string(),
+            diagnostics: result.diagnostics.clone(),
+            messages: vec![],
+        }]
+    } else {
+        wm_brain::decide_events(&result)
+    };
 
     wm.project_path = result.project_path.clone();
     wm.last_inspection = Some(result);
@@ -143,13 +167,58 @@ pub fn wm_handle_message_inner(
             _ => {}
         }
     }
-    events.extend(decision_events);
+    events.extend(inject_conversation(decision_events, &wm.conversation));
 
     persist_wm_state(meta_db, &wm)?;
     Ok(WmCommandResult {
         wm_state: wm,
         events,
     })
+}
+
+/// Scan the user's prompt for absolute paths that contain a `.beads` directory,
+/// indicating an already-initialized project. Returns the first match.
+fn detect_project_path_from_prompt(prompt: &str) -> Option<String> {
+    use std::path::Path;
+
+    for word in prompt.split_whitespace() {
+        let candidate = word.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == '.');
+        if !candidate.starts_with('/') {
+            continue;
+        }
+        let p = Path::new(candidate);
+        if p.join(".beads").is_dir() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// Fill the `messages` field of any RunLlm events with the current conversation.
+/// This ensures the frontend has the authoritative conversation from the backend
+/// and doesn't need to rely on its own (potentially stale) React state.
+fn inject_conversation(events: Vec<WmEvent>, conversation: &[wm_brain::WmMessage]) -> Vec<WmEvent> {
+    events
+        .into_iter()
+        .map(|event| match event {
+            WmEvent::RunLlm {
+                system_prompt,
+                state_context,
+                remove_tools,
+                prompt_variant,
+                diagnostics,
+                ..
+            } => WmEvent::RunLlm {
+                system_prompt,
+                state_context,
+                remove_tools,
+                prompt_variant,
+                diagnostics,
+                messages: conversation.to_vec(),
+            },
+            other => other,
+        })
+        .collect()
 }
 
 pub fn wm_llm_done_inner(
@@ -164,6 +233,10 @@ pub fn wm_llm_done_inner(
     orch_state.set_running();
 
     let events = vec![
+        WmEvent::MessageAdded {
+            role: "assistant".to_string(),
+            content: response_text.to_string(),
+        },
         WmEvent::LlmDone {},
         WmEvent::PhaseChanged {
             phase: WmPhase::Monitoring,
@@ -276,7 +349,7 @@ mod tests {
             .any(|m| m.role == "assistant" && m.content.contains("already complete")));
     }
 
-    // #3 — In-progress launch removes open_project_with_beads tool
+    // #3 — In-progress launch keeps open_project_with_beads available
     #[test]
     fn in_progress_launch() {
         let (db, _f) = make_meta_db();
@@ -297,7 +370,7 @@ mod tests {
         assert!(has_event(&r.events, |e| matches!(
             e,
             WmEvent::RunLlm { remove_tools, .. }
-                if remove_tools.contains(&"open_project_with_beads".to_string())
+                if remove_tools.is_empty()
         )));
     }
 
@@ -321,6 +394,11 @@ mod tests {
             .conversation
             .iter()
             .any(|m| m.role == "assistant" && m.content == "I've set up the project."));
+        assert!(has_event(&r.events, |e| matches!(
+            e,
+            WmEvent::MessageAdded { role, content }
+                if role == "assistant" && content == "I've set up the project."
+        )));
     }
 
     // #5 — Launch → LLM error → Error
@@ -347,7 +425,7 @@ mod tests {
         )));
     }
 
-    // #6 — Follow-up after completed
+    // #6 — Follow-up after completed: routes to RunLlm, not ShortCircuit
     #[test]
     fn followup_after_completed() {
         let (db, _f) = make_meta_db();
@@ -361,15 +439,27 @@ mod tests {
 
         let r1 = wm_launch_inner(&env, &db, &orch, &reg, "Check status").unwrap();
         assert_eq!(r1.wm_state.phase, WmPhase::Completed);
+        assert!(has_event(&r1.events, |e| matches!(
+            e,
+            WmEvent::ShortCircuit { .. }
+        )));
 
-        let r2 = wm_handle_message_inner(&env, &db, &orch, &reg, "Add dark mode").unwrap();
+        let r2 = wm_handle_message_inner(&env, &db, &orch, &reg, "Open it in browser").unwrap();
 
-        assert!(r2.wm_state.conversation.len() > r1.wm_state.conversation.len());
+        assert_eq!(r2.wm_state.phase, WmPhase::SettingUp);
+        assert!(has_event(&r2.events, |e| matches!(
+            e,
+            WmEvent::RunLlm { .. }
+        )));
+        assert!(!has_event(&r2.events, |e| matches!(
+            e,
+            WmEvent::ShortCircuit { .. }
+        )));
         assert!(r2
             .wm_state
             .conversation
             .iter()
-            .any(|m| m.role == "user" && m.content == "Add dark mode"));
+            .any(|m| m.role == "user" && m.content == "Open it in browser"));
     }
 
     // #7 — Zombie cleanup during launch
@@ -458,5 +548,54 @@ mod tests {
             .iter()
             .any(|c| c.get(1).map(|s| s.as_str()) == Some("epic-2")));
         assert_eq!(r.wm_state.phase, WmPhase::SettingUp);
+    }
+
+    // #11 — Path detected from prompt when beads_project_path is empty
+    #[test]
+    fn prompt_path_detection_triggers_inspection() {
+        let (db, _f) = make_meta_db();
+        let orch = OrchestrationState::new();
+        let reg = AgentRegistry::new();
+        let env = TestWmEnv::new();
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".beads")).unwrap();
+        let proj_path = tmp.path().to_str().unwrap();
+
+        let tasks = serde_json::json!([
+            task_json("epic-1", "Create HTML site", "epic", "done"),
+            task_with_parent("task-1", "Create index.html", "task", "done", "epic-1"),
+        ]);
+        env.set_list_response(&tasks.to_string());
+
+        let prompt = format!("Create a site in {}", proj_path);
+        let r = wm_launch_inner(&env, &db, &orch, &reg, &prompt).unwrap();
+
+        assert_eq!(r.wm_state.phase, WmPhase::Completed);
+        assert!(has_event(&r.events, |e| matches!(
+            e,
+            WmEvent::ShortCircuit { .. }
+        )));
+    }
+
+    // #12 — No .beads dir means prompt path is ignored
+    #[test]
+    fn prompt_path_without_beads_dir_ignored() {
+        let (db, _f) = make_meta_db();
+        let orch = OrchestrationState::new();
+        let reg = AgentRegistry::new();
+        let env = TestWmEnv::new();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let proj_path = tmp.path().to_str().unwrap();
+
+        let prompt = format!("Create a site in {}", proj_path);
+        let r = wm_launch_inner(&env, &db, &orch, &reg, &prompt).unwrap();
+
+        assert_eq!(r.wm_state.phase, WmPhase::SettingUp);
+        assert!(has_event(&r.events, |e| matches!(
+            e,
+            WmEvent::RunLlm { .. }
+        )));
     }
 }

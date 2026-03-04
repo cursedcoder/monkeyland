@@ -104,6 +104,17 @@ function getStoredTheme(): Theme {
   return stored === "dark" || stored === "light" ? stored : "light";
 }
 
+export interface InlineOperatorState {
+  agentId: string;
+  taskDescription: string;
+  status: "running" | "done" | "error";
+  toolCalls: Array<{ name: string; status: string }>;
+  streamingContent: string;
+  answer: string;
+  errorMessage?: string;
+  collapsed: boolean;
+}
+
 export default function App() {
   const costStore = useMemo(() => createCostStore(), []);
   const [layouts, setLayouts] = useState<SessionLayout[]>([]);
@@ -141,6 +152,9 @@ export default function App() {
   const [wmStreamingContent, setWmStreamingContent] = useState<string>("");
   const [wmStreamingToolCalls, setWmStreamingToolCalls] = useState<Array<{ name: string; status: string }>>([]);
   const [wmTaskProgress, _setWmTaskProgress] = useState({ done: 0, total: 0 });
+
+  // Inline operators — dispatched by WM, rendered inside the WM chat card
+  const [wmInlineAgents, setWmInlineAgents] = useState<InlineOperatorState[]>([]);
 
   const persistLayouts = useCallback((next: SessionLayout[]) => {
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
@@ -523,7 +537,7 @@ export default function App() {
    * Dispatch an agent directly from the WM (no Beads, no orchestration loop).
    * Uses a ref so it can call startAgentConversation which is defined later.
    */
-  const dispatchAgentRef = useRef<(p: { role: "operator" | "developer" | "worker"; taskDescription: string; parentAgentId: string }) => Promise<string>>(
+  const dispatchAgentRef = useRef<(p: { role: "operator" | "developer" | "worker"; taskDescription: string; parentAgentId: string | null }) => Promise<string>>(
     async () => { throw new Error("dispatchAgent not ready"); },
   );
 
@@ -532,7 +546,7 @@ export default function App() {
    * Only includes tools the role is permitted to use (per ROLE_TOOLS).
    */
   const buildPlugins = useCallback(
-    (role: AgentRole, canvasNodeId: string, backendAgentId: string, taskId: string | null, projectPath?: string | null, removeTools?: Set<ToolName>): Plugin[] => {
+    (role: AgentRole, canvasNodeId: string, backendAgentId: string | null, taskId: string | null, projectPath?: string | null, removeTools?: Set<ToolName>): Plugin[] => {
       const allowed = new Set<ToolName>(ROLE_TOOLS[role] ?? []);
       if (removeTools) {
         for (const t of removeTools) allowed.delete(t);
@@ -566,13 +580,10 @@ export default function App() {
       if (allowed.has("read_file")) {
         plugins.push(new ReadFileToolPlugin(backendAgentId));
       }
-      if (allowed.has("yield_for_review") && taskId) {
+      if (allowed.has("yield_for_review") && taskId && backendAgentId) {
         plugins.push(new YieldForReviewPlugin(backendAgentId, taskId));
       }
-      if (allowed.has("complete_task") && taskId) {
-        // merge_agents must NOT mark the Beads task "done" — the orchestration
-        // loop does that after a successful git merge.  Passing null skips the
-        // Beads update while still allowing the agent state transition.
+      if (allowed.has("complete_task") && taskId && backendAgentId) {
         plugins.push(new CompleteTaskPlugin(backendAgentId, role === "merge_agent" ? null : taskId));
       }
 
@@ -1151,8 +1162,11 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
     [persistLayouts, buildPlugins, costStore],
   );
 
+  const wmLaunchInFlight = useRef(false);
   const handleLaunch = useCallback(
     async (nodeId: string) => {
+      if (wmLaunchInFlight.current) return;
+
       const promptLayout = layoutsRef.current.find(
         (l) => l.session_id === nodeId && (l.node_type ?? "agent") === "prompt"
       );
@@ -1168,6 +1182,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
 
       if (!promptText) return;
 
+      wmLaunchInFlight.current = true;
       wmCardSessionId.current = nodeId;
 
       // Transform prompt card into wm_chat card
@@ -1186,8 +1201,12 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         return next;
       });
 
-      // Backend handles: orch_pause, inspection, classification, event emission
-      await invoke("wm_launch", { promptText });
+      try {
+        // Backend handles: orch_pause, inspection, classification, event emission
+        await invoke("wm_launch", { promptText });
+      } finally {
+        wmLaunchInFlight.current = false;
+      }
     },
     [persistLayouts],
   );
@@ -1196,10 +1215,16 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
    * Handle sending a message to the WM in the chat interface.
    * Backend handles: orch_pause, inspection, classification, event emission.
    */
+  const wmMessageInFlight = useRef(false);
   const handleWMMessage = useCallback(
     async (text: string) => {
-      if (!text.trim()) return;
-      await invoke("wm_handle_message", { text: text.trim() });
+      if (!text.trim() || wmMessageInFlight.current) return;
+      wmMessageInFlight.current = true;
+      try {
+        await invoke("wm_handle_message", { text: text.trim() });
+      } finally {
+        wmMessageInFlight.current = false;
+      }
     },
     [],
   );
@@ -1249,6 +1274,15 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         } catch { /* */ }
         return l;
       }),
+    );
+    setWmInlineAgents((prev) =>
+      prev.map((a) => a.status === "running" ? { ...a, status: "error", errorMessage: "Cancelled", streamingContent: "" } : a),
+    );
+  }, []);
+
+  const handleToggleInlineAgent = useCallback((agentId: string) => {
+    setWmInlineAgents((prev) =>
+      prev.map((a) => (a.agentId === agentId ? { ...a, collapsed: !a.collapsed } : a)),
     );
   }, []);
 
@@ -1551,33 +1585,27 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
   const wmDispatchRef = useRef(wmDispatch);
   wmDispatchRef.current = wmDispatch;
 
+  const wmLlmRunning = useRef(false);
   const startWmLlmStream = useCallback(
     async (config: Extract<WmEvent, { type: "RunLlm" }>) => {
-      let currentWmNodeId = wmNodeId;
+      if (wmLlmRunning.current) {
+        console.warn("[WM] Ignoring RunLlm — already streaming");
+        return;
+      }
+      wmLlmRunning.current = true;
+
+      let currentWmNodeId = activeWmNodeId.current ?? wmNodeId;
 
       if (!currentWmNodeId) {
-        try {
-          const result = await invoke<{ agent_id: string }>("agent_spawn", {
-            payload: {
-              role: "workforce_manager",
-              task_id: null,
-              parent_agent_id: null,
-            },
-          });
-          currentWmNodeId = result.agent_id;
-          setWmNodeId(currentWmNodeId);
-          activeWmNodeId.current = currentWmNodeId;
-        } catch (e) {
-          console.error("Failed to spawn WM agent:", e);
-          await invoke("wm_llm_error", { error: `Failed to spawn WM: ${e}` }).catch(() => {});
-          return;
-        }
+        currentWmNodeId = `wm-${Date.now()}`;
+        setWmNodeId(currentWmNodeId);
+        activeWmNodeId.current = currentWmNodeId;
       }
 
       const canvasCardId = wmCardSessionId.current ?? currentWmNodeId;
       const removeToolSet = new Set<ToolName>(config.remove_tools as ToolName[]);
       const plugins = buildPlugins(
-        "workforce_manager", canvasCardId, currentWmNodeId, null, null,
+        "workforce_manager", canvasCardId, null, null, null,
         removeToolSet.size > 0 ? removeToolSet : undefined,
       );
 
@@ -1592,7 +1620,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       let accumulatedText = "";
       const toolCalls: Array<{ name: string; status: string }> = [];
 
-      const messages: ModelMessage[] = wmState.conversation.map((m) => ({
+      const messages: ModelMessage[] = config.messages.map((m) => ({
         role: m.role,
         content: m.content,
       }));
@@ -1650,9 +1678,11 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         abortControllers.current.delete(currentWmNodeId);
 
         await invoke("wm_llm_error", { error: String(e) }).catch(() => {});
+      } finally {
+        wmLlmRunning.current = false;
       }
     },
-    [wmNodeId, wmState.conversation, buildPlugins, costStore],
+    [wmNodeId, buildPlugins, costStore],
   );
   const startWmLlmStreamRef = useRef(startWmLlmStream);
   startWmLlmStreamRef.current = startWmLlmStream;
@@ -1669,6 +1699,85 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
     return () => { safeUnlisten(unlisten); };
   }, []);
 
+  // Run an operator inline inside the WM chat card (no separate SessionCard).
+  const runInlineOperator = async (agentId: string, role: AgentRole, taskDescription: string) => {
+    const entry: InlineOperatorState = {
+      agentId,
+      taskDescription,
+      status: "running",
+      toolCalls: [],
+      streamingContent: "",
+      answer: "",
+      collapsed: false,
+    };
+    setWmInlineAgents((prev) => [...prev, entry]);
+
+    const updateInline = (patch: Partial<InlineOperatorState>) => {
+      setWmInlineAgents((prev) =>
+        prev.map((a) => (a.agentId === agentId ? { ...a, ...patch } : a)),
+      );
+    };
+
+    const plugins = buildPlugins(role, agentId, agentId, null, null);
+    let accumulatedText = "";
+    const toolCalls: Array<{ name: string; status: string }> = [];
+    const controller = new AbortController();
+    abortControllers.current.set(agentId, controller);
+
+    const maxTurnMs = MAX_TURN_MS[role] ?? DEFAULT_MAX_TURN_MS;
+    const turnTimer = setTimeout(() => {
+      console.warn(`[InlineOperator ${agentId}] Turn exceeded ${maxTurnMs / 1000}s — aborting`);
+      controller.abort();
+    }, maxTurnMs);
+
+    try {
+      await runAgent({
+        systemPrompt: getPromptForRole(role),
+        userMessage: taskDescription,
+        plugins,
+        signal: controller.signal,
+        abortController: controller,
+        layouts: layoutsRef.current,
+        callbacks: {
+          onChunk: (c) => {
+            if ((c.type === "content" || c.type === "reasoning") && c.text) {
+              accumulatedText += c.text;
+              updateInline({ streamingContent: accumulatedText });
+            }
+            if (c.type === "tool") {
+              if (c.state === "running" || c.state === "preparing") {
+                toolCalls.push({ name: c.name ?? "unknown", status: "running" });
+              } else if ((c.state === "done" || c.state === "completed") && c.name) {
+                const tc = toolCalls.find((t) => t.name === c.name && t.status === "running");
+                if (tc) tc.status = "done";
+              }
+              updateInline({ toolCalls: [...toolCalls] });
+            }
+          },
+          onUsage: (usage) => {
+            costStore.reportUsage(agentId, role, "unknown", usage.prompt_tokens, usage.completion_tokens, 0, 0);
+            invoke("agent_report_tokens", { agentId, delta: usage.prompt_tokens + usage.completion_tokens }).catch(() => {});
+          },
+          onDone: async () => {
+            invoke("agent_turn_ended", { agentId, role }).catch(() => {});
+            updateInline({ status: "done", answer: accumulatedText, streamingContent: "", toolCalls: [...toolCalls] });
+          },
+          onError: (err) => {
+            updateInline({ status: "error", errorMessage: String(err), streamingContent: "", toolCalls: [...toolCalls] });
+          },
+          onStopped: () => {
+            updateInline({ status: "error", errorMessage: "Operator stopped", answer: accumulatedText, streamingContent: "", toolCalls: [...toolCalls] });
+          },
+        },
+      });
+    } catch (e) {
+      updateInline({ status: "error", errorMessage: String(e), answer: accumulatedText, streamingContent: "" });
+    } finally {
+      clearTimeout(turnTimer);
+      abortControllers.current.delete(agentId);
+    }
+  };
+
   // Wire up dispatchAgentRef so WM's dispatch_agent tool can spawn agents.
   dispatchAgentRef.current = async (p) => {
     const result = await invoke<{ agent_id: string }>("agent_spawn", {
@@ -1679,13 +1788,19 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       },
     });
     const agentId = result.agent_id;
-    startAgentConversationRef.current({
-      agentNodeId: agentId,
-      role: p.role as AgentRole,
-      userMessage: p.taskDescription,
-      taskId: null,
-      parentAgentId: p.parentAgentId,
-    });
+
+    if (p.role === "operator") {
+      runInlineOperator(agentId, p.role as AgentRole, p.taskDescription);
+    } else {
+      startAgentConversationRef.current({
+        agentNodeId: agentId,
+        role: p.role as AgentRole,
+        userMessage: p.taskDescription,
+        taskId: null,
+        sourcePromptId: wmCardSessionId.current ?? activeWmNodeId.current ?? undefined,
+        parentAgentId: p.parentAgentId ?? undefined,
+      });
+    }
     return agentId;
   };
 
@@ -2565,6 +2680,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
     // 3. Clear WM conversation state
     wmDispatch({ type: "HYDRATE", state: { phase: "idle" as WmReducerPhase, conversation: [] } });
     setWmNodeId(null);
+    setWmInlineAgents([]);
     try {
       await invoke("clear_wm_conversation");
     } catch { /* ignore */ }
@@ -2609,6 +2725,9 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         } catch { /* */ }
         return l;
       }),
+    );
+    setWmInlineAgents((prev) =>
+      prev.map((a) => a.status === "running" ? { ...a, status: "error", errorMessage: "Stopped", streamingContent: "" } : a),
     );
   }, []);
 
@@ -2809,6 +2928,8 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
           wmStreamingToolCalls={wmStreamingToolCalls}
           wmTaskProgress={wmTaskProgress}
           wmOrchStatus={wmOrchStatus}
+          wmInlineAgents={wmInlineAgents}
+          onWMToggleInlineAgent={handleToggleInlineAgent}
           onWMSendMessage={handleWMMessage}
           onWMPause={handleWMPause}
           onWMResume={handleWMResume}

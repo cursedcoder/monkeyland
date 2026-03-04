@@ -11,14 +11,14 @@ export type UpdateBeadsStatusFn = (nodeId: string, status: BeadsStatus) => void;
  */
 export class BeadsToolPlugin extends Plugin {
   private canvasNodeId: string;
-  private backendAgentId: string;
+  private backendAgentId: string | null;
   private addBeadsNode: AddBeadsNodeFn;
   private updateStatus: UpdateBeadsStatusFn;
   private beadsNodeId: string | null = null;
 
   constructor(
     canvasNodeId: string,
-    backendAgentId: string,
+    backendAgentId: string | null,
     addBeadsNode: AddBeadsNodeFn,
     updateStatus: UpdateBeadsStatusFn,
   ) {
@@ -154,9 +154,12 @@ export class BeadsToolPlugin extends Plugin {
               t.status !== "done" && t.status !== "closed"
             );
             if (closedEpics.length > 0 && openEpics.length === 0) {
+              // Don't force-abort — the WM brain already did the authoritative
+              // inspection before the LLM ran. If the LLM still chose to call
+              // this tool, it's doing so intentionally (e.g. to create new work
+              // on a completed project). Return a hint but let it proceed.
               return {
-                result: `[TERMINAL] Project "${path}" is already complete. All epics are closed. Do NOT create new epics or tasks.`,
-                stopAgent: true,
+                result: `Project "${path}" has completed epics and no open ones. Previous work is finished — create new tasks if the user requested additional work.`,
               };
             }
           }
@@ -168,6 +171,7 @@ export class BeadsToolPlugin extends Plugin {
       return { result: steps.join(" ") };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[BeadsToolPlugin] open_project_with_beads failed for "${path}":`, msg);
 
       this.updateStatus(this.beadsNodeId, {
         projectPath: path,

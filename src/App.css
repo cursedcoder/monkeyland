@@ -2684,6 +2684,172 @@
   }
 }
 
+/* Inline operator agents inside WM chat */
+.wm-inline-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 12px 10px;
+}
+
+.wm-inline-agent {
+  border: 1px solid var(--ml-border);
+  border-radius: 10px;
+  background: var(--ml-bg-card);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.wm-inline-agent--running {
+  border-color: var(--ml-text-accent);
+}
+
+.wm-inline-agent--done {
+  border-color: #9ece6a;
+}
+
+.wm-inline-agent--error {
+  border-color: #f7768e;
+}
+
+.wm-inline-agent-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--ml-bg-card-header);
+  border: none;
+  border-bottom: 1px solid var(--ml-border);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ml-text);
+  text-align: left;
+  border-radius: 10px 10px 0 0;
+  transition: background 0.15s;
+}
+
+.wm-inline-agent-header:hover {
+  background: var(--ml-bg-input);
+}
+
+.wm-inline-agent-indicator {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.wm-inline-agent-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--ml-border);
+  border-top-color: var(--ml-text-accent);
+  border-radius: 50%;
+  animation: wm-inline-spin 0.8s linear infinite;
+}
+
+@keyframes wm-inline-spin {
+  to { transform: rotate(360deg); }
+}
+
+.wm-inline-agent--done .wm-inline-agent-indicator {
+  color: #9ece6a;
+}
+
+.wm-inline-agent--error .wm-inline-agent-indicator {
+  color: #f7768e;
+}
+
+.wm-inline-agent-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ml-text);
+}
+
+.wm-inline-agent-toggle {
+  flex-shrink: 0;
+  color: var(--ml-text-muted);
+  font-size: 10px;
+  transition: transform 0.15s;
+}
+
+.wm-inline-agent-body {
+  padding: 8px 12px 10px;
+  font-size: 12px;
+}
+
+.wm-inline-agent-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.wm-inline-agent-tool-pill {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+.wm-inline-agent-tool-pill--active {
+  background: color-mix(in srgb, var(--ml-text-accent) 15%, transparent);
+  color: var(--ml-text-accent);
+}
+
+.wm-inline-agent-tool-pill--done {
+  background: var(--ml-bg-input);
+  color: var(--ml-text-muted);
+}
+
+.wm-inline-agent-content {
+  color: var(--ml-text);
+  line-height: 1.55;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.wm-inline-agent-content p {
+  margin: 0 0 6px;
+}
+
+.wm-inline-agent-content p:last-child {
+  margin-bottom: 0;
+}
+
+.wm-inline-agent-content pre {
+  background: var(--ml-bg-input);
+  padding: 8px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 11px;
+  margin: 4px 0;
+}
+
+.wm-inline-agent-content ol,
+.wm-inline-agent-content ul {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+
+.wm-inline-agent-error {
+  margin-top: 6px;
+  padding: 4px 8px;
+  background: color-mix(in srgb, #f7768e 10%, transparent);
+  color: #f7768e;
+  font-size: 11px;
+  border-radius: 6px;
+}
+
 .wm-chat-card-scroll-btn {
   position: sticky;
   bottom: 8px;

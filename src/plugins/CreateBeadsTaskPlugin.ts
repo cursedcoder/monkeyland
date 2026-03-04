@@ -192,21 +192,12 @@ export class CreateBeadsTaskPlugin extends Plugin {
         // If listing fails, proceed without guard
       }
 
-      // HARD BLOCK: When creating an epic, refuse if ANY epic already exists
-      // for this project. The LLM generates different titles each time, so
-      // title matching is unreliable. One project = one epic.
+      // Block duplicate in-progress epics. Closed epics are fine — the user
+      // may be requesting genuinely new work that warrants a fresh epic + PM.
       if (issueType === "epic" && existingTasks.length > 0) {
         const existingEpics = existingTasks.filter(
           (t: any) => t.type === "epic" || t.issue_type === "epic",
         );
-        const closedEpic = existingEpics.find(
-          (e: any) => e.status === "done" || e.status === "closed",
-        );
-        if (closedEpic) {
-          return {
-            result: `[TERMINAL] Cannot create epic — project already has completed epic "${closedEpic.title}" (ID: ${closedEpic.id}). The work is finished. To add changes, create tasks under the existing epic with parent_id: "${closedEpic.id}".`,
-          };
-        }
         const openEpic = existingEpics.find(
           (e: any) => e.status !== "done" && e.status !== "closed",
         );
