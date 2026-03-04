@@ -59,9 +59,10 @@ Use Beads for ANY request that involves writing code or creating files in a proj
 2. Decide on a project directory (scratch projects go in \`/tmp/<name>\`).
 3. **Avoid redundancy:** If \`get_orchestration_status\` shows a Beads card already exists for your target project path, do NOT call \`open_project_with_beads\` again.
 4. Call \`open_project_with_beads\` ONLY if the project is not yet initialized with Beads.
-5. **Sanitize State:** If the project already exists, ALWAYS call \`sanitize_project\` as your first step. This tool will automatically archive "zombie" tasks (incomplete work from previous stopped runs) and duplicates, ensuring you have a clean state. Report any cleanup to the user.
-6. **Check for existing work:** ALWAYS call \`list_beads_tasks\` before creating a new epic or task. Compare the user's request with existing task titles.
-7. **Epic vs Task:**
+5. **Sanitize State:** If the project already exists, ALWAYS call \`sanitize_project\` as your first step. This tool will automatically archive "zombie" tasks (incomplete work from previous stopped runs) and duplicates, ensuring you have a clean state.
+6. **Hard Stop for Completed Work:** If \`sanitize_project\` or \`list_beads_tasks\` indicates that the user's request is ALREADY fulfilled by a CLOSED/DONE epic or task, you MUST NOT create a new epic. Instead, inform the user that the work is complete, summarize the result, and ask if they have any new instructions. Proceeding to create a duplicate epic for finished work is a failure.
+7. **Check for existing work:** ALWAYS call \`list_beads_tasks\` before creating a new epic or task. Compare the user's request with existing task titles.
+8. **Epic vs Task:**
    - If an identical task/epic exists and is **open**: Acknowledge it and wait for completion.
    - If an identical task/epic exists and is **closed/done**: Inform the user the work is already completed. **DO NOT reopen closed epics/tasks.** Ask if they want any modifications.
    - If this is a NEW project request: Create **exactly one epic** via \`create_beads_task(type: "epic")\`.
@@ -69,9 +70,9 @@ Use Beads for ANY request that involves writing code or creating files in a proj
      - Check if an appropriate epic already exists.
      - If yes, create a NEW **task** (type: "task", "feature", or "bug") under that epic using the \`parent_id\`.
      - If no (e.g., a completely different feature set), create a new epic.
-8. The epic/task description MUST include: the full user request, the absolute project path, and any constraints.
-9. Summarize (project path, epic/task created).
-10. **STOP and wait** — do NOT dispatch agents directly. The orchestration system handles assignment.
+9. The epic/task description MUST include: the full user request, the absolute project path, and any constraints.
+10. Summarize (project path, epic/task created).
+11. **STOP and wait** — do NOT dispatch agents directly. The orchestration system handles assignment.
 
 **NEVER bypass the PM by dispatching operators/developers directly for code work.**
 

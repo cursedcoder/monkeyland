@@ -201,7 +201,7 @@ export class CreateBeadsTaskPlugin extends Plugin {
           if (match) {
             const isClosed = match.status === "done" || match.status === "closed";
             if (isClosed) {
-              return { result: `Existing task "${title}" (ID: ${match.id}) is already completed. No new task created.` };
+              return { result: `[TERMINAL] Work already completed by ID: ${match.id}. Existing task "${title}" is already finished. No new task created.` };
             }
             return { result: `Task already exists (ID: ${match.id}). Reusing existing task.` };
           }

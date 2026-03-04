@@ -180,10 +180,39 @@ export class SanitizeProjectPlugin extends Plugin {
         await invoke("orch_resume");
       }
 
+      // 8. Check if work is already completed by a "Winner"
+      let workAlreadyCompleted = false;
+      let completedTaskId = "";
+      for (const group of groups.values()) {
+        const winner = group.sort((a, b) => {
+          const aClosed = a.status === "done" || a.status === "closed";
+          const bClosed = b.status === "done" || b.status === "closed";
+          if (aClosed && !bClosed) return -1;
+          if (!aClosed && bClosed) return 1;
+          return 0;
+        })[0];
+
+        if (winner && (winner.status === "done" || winner.status === "closed")) {
+          workAlreadyCompleted = true;
+          completedTaskId = winner.id;
+          break;
+        }
+      }
+
       const actionWord = parameters.dry_run ? "Would have archived" : "Archived";
-      const resultMsg = toArchive.size > 0 
+      let resultMsg = toArchive.size > 0 
         ? `${actionWord} ${toArchive.size} zombie/duplicate tasks.\n${summaries.join("\n")}`
         : "Project is clean. No zombie or duplicate tasks found.";
+
+      if (workAlreadyCompleted) {
+        resultMsg = `[TERMINAL] Work already completed by ID: ${completedTaskId}. ${resultMsg}`;
+        return { 
+          result: resultMsg,
+          // @ts-ignore - adding custom field for LLM branching
+          work_already_completed: true,
+          completed_task_id: completedTaskId
+        };
+      }
 
       return { result: resultMsg };
     } catch (e) {
