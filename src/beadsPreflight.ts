@@ -40,6 +40,14 @@ export async function runBeadsPreflight(layouts: SessionLayout[]): Promise<Prefl
   if (!projectPath) return result;
   result.projectPath = projectPath;
 
+  // Dolt must be running before beads_run works
+  try {
+    await invoke("beads_dolt_start", { projectPath, agentId: null });
+  } catch (e) {
+    console.warn("[preflight] Could not start Dolt, skipping preflight:", e);
+    return result;
+  }
+
   let tasks: any[];
   try {
     const listOutput = await invoke<string>("beads_run", {
@@ -49,7 +57,8 @@ export async function runBeadsPreflight(layouts: SessionLayout[]): Promise<Prefl
     });
     tasks = JSON.parse(listOutput.trim());
     if (!Array.isArray(tasks)) return result;
-  } catch {
+  } catch (e) {
+    console.warn("[preflight] beads_run failed:", e);
     return result;
   }
 
