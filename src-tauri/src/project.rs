@@ -304,6 +304,24 @@ impl Project {
             let _ = std::fs::remove_file(&agents_md);
         }
 
+        // Commit the .beads directory so worktrees inherit the Beads config.
+        let _ = Command::new("git")
+            .args(["add", ".beads"])
+            .current_dir(&self.path)
+            .output();
+        let commit_out = Command::new("git")
+            .args(["commit", "-m", "chore: init beads"])
+            .current_dir(&self.path)
+            .output()
+            .map_err(|e| ProjectError::GitError(format!("Failed to commit .beads: {e}")))?;
+        if !commit_out.status.success() {
+            let stderr = String::from_utf8_lossy(&commit_out.stderr);
+            return Err(ProjectError::GitError(format!(
+                "git commit for .beads failed: {}",
+                stderr.trim()
+            )));
+        }
+
         self.state = ProjectState::BeadsReady;
         Ok(())
     }
@@ -564,5 +582,49 @@ mod tests {
         assert!(msg.contains("create worktree"));
         assert!(msg.contains("GitOnly"));
         assert!(msg.contains("Ready"));
+    }
+
+    #[test]
+    fn test_ensure_beads_commits_beads_dir() {
+        // Skip if bd is not installed
+        if Command::new("bd").arg("--version").output().is_err() {
+            return;
+        }
+
+        let dir = setup_git_repo();
+        let mut project = Project::open(dir.path()).unwrap();
+        assert_eq!(project.state(), ProjectState::Ready);
+
+        project.ensure_beads().unwrap();
+
+        assert_eq!(project.state(), ProjectState::BeadsReady);
+        assert!(
+            dir.path().join(".beads").exists(),
+            ".beads dir should exist"
+        );
+
+        // .beads must be committed — git status should be clean
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let output = String::from_utf8_lossy(&status.stdout);
+        assert!(
+            output.trim().is_empty(),
+            ".beads must be committed after ensure_beads; got: {output}"
+        );
+
+        // The commit message should reference beads
+        let log = Command::new("git")
+            .args(["log", "--oneline", "-1"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let log_str = String::from_utf8_lossy(&log.stdout);
+        assert!(
+            log_str.contains("beads"),
+            "last commit should mention beads; got: {log_str}"
+        );
     }
 }
