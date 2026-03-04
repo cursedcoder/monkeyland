@@ -973,6 +973,15 @@ pub async fn tick(
                 let close_args = vec!["close".to_string(), epic_id.clone()];
                 if env.run_bd(path, &close_args).is_ok() {
                     eprintln!("[orch] auto-closed epic {} via `bd close`", epic_id);
+                    // Notify workforce manager with structured event
+                    if let Ok(Some(wm_id)) = registry.get_workforce_manager_id() {
+                        let event = crate::agent_registry::SystemEvent::EpicClosed {
+                            epic_id: epic_id.clone(),
+                        };
+                        if let Ok(payload) = serde_json::to_string(&event) {
+                            let _ = registry.message("system", &wm_id, payload);
+                        }
+                    }
                     continue;
                 }
 
@@ -984,6 +993,15 @@ pub async fn tick(
                 ];
                 if env.run_bd(path, &done_args).is_ok() {
                     eprintln!("[orch] auto-closed epic {} via status fallback", epic_id);
+                    // Notify workforce manager with structured event
+                    if let Ok(Some(wm_id)) = registry.get_workforce_manager_id() {
+                        let event = crate::agent_registry::SystemEvent::EpicClosed {
+                            epic_id: epic_id.clone(),
+                        };
+                        if let Ok(payload) = serde_json::to_string(&event) {
+                            let _ = registry.message("system", &wm_id, payload);
+                        }
+                    }
                     continue;
                 }
 

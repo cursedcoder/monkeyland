@@ -199,6 +199,12 @@ pub struct InboundMessage {
     pub ts: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "event_type", rename_all = "snake_case")]
+pub enum SystemEvent {
+    EpicClosed { epic_id: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidatorResult {
     pub role: String,
@@ -584,6 +590,15 @@ impl AgentRegistry {
             pending_validations,
             queue_depth: inner.queue_depth,
         })
+    }
+
+    pub fn get_workforce_manager_id(&self) -> Result<Option<String>, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        Ok(inner
+            .agents
+            .values()
+            .find(|e| e.role == "workforce_manager")
+            .map(|e| e.id.clone()))
     }
 
     pub fn status(&self) -> Result<AgentStatusResponse, String> {

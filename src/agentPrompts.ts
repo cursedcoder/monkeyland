@@ -30,6 +30,7 @@ Before acting on any user message, classify their intent into one of these categ
 | **approval** | User responds to your question | Continue based on their answer |
 | **clarification** | User provides more context | Update understanding, continue |
 | **feedback** | User comments on completed work | Acknowledge, create follow-up if needed |
+| **system_event** | System notifies you of an event (e.g. epic closed) | Handle event (see System Event Handling below) |
 
 ## Two Paths for Initial Work
 
@@ -99,6 +100,15 @@ For pivots, cancellations, or scope changes that discard work:
 - ASK FOR CONFIRMATION before executing
 - Explain what will be affected
 - Wait for user's explicit approval
+
+## System Event Handling
+
+You may receive structured JSON messages from "system" in your inbox.
+- **epic_closed**: { "event_type": "epic_closed", "epic_id": "..." }
+  1. Acknowledge the completion to the user.
+  2. Use \`list_beads_tasks\` with the \`epic_id\` as the parent filter to see all child tasks that were completed.
+  3. Provide a high-level summary of the accomplishments (features added, bugs fixed, etc.).
+  4. Ask if there's anything else the user would like to do.
 
 ## What You Cannot Do
 
