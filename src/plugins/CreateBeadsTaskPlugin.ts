@@ -178,36 +178,59 @@ export class CreateBeadsTaskPlugin extends Plugin {
     }
 
     try {
-      // Deduplication logic: check if task already exists
-      const listOutput = await invoke<string>("beads_run", {
-        projectPath,
-        args: ["list", "--json"],
-        agentId: this.agentId,
-      });
+      // Pre-creation guard: list existing tasks
+      let existingTasks: any[] = [];
       try {
-        const existingTasks = JSON.parse(listOutput.trim());
-        if (Array.isArray(existingTasks)) {
-          const match = existingTasks.find((t: any) => {
-            const sameTitle = t.title?.trim().toLowerCase() === title.toLowerCase();
-            const sameType = t.type === issueType || t.issue_type === issueType;
-            
-            // Description similarity check (simple inclusion or length-based heuristic)
-            const descA = (t.description || t.body || "").trim().toLowerCase();
-            const descB = (parameters.description || "").trim().toLowerCase();
-            const sameDesc = descA === descB || (descA.length > 0 && descB.length > 0 && (descA.includes(descB) || descB.includes(descA)));
+        const listOutput = await invoke<string>("beads_run", {
+          projectPath,
+          args: ["list", "--json"],
+          agentId: this.agentId,
+        });
+        const parsed = JSON.parse(listOutput.trim());
+        if (Array.isArray(parsed)) existingTasks = parsed;
+      } catch {
+        // If listing fails, proceed without guard
+      }
 
-            return sameTitle && sameType && sameDesc;
-          });
-          if (match) {
-            const isClosed = match.status === "done" || match.status === "closed";
-            if (isClosed) {
-              return { result: `[TERMINAL] Work already completed by ID: ${match.id}. Existing task "${title}" is already finished. No new task created.` };
-            }
-            return { result: `Task already exists (ID: ${match.id}). Reusing existing task.` };
-          }
+      // HARD BLOCK: When creating an epic, refuse if ANY epic already exists
+      // for this project. The LLM generates different titles each time, so
+      // title matching is unreliable. One project = one epic.
+      if (issueType === "epic" && existingTasks.length > 0) {
+        const existingEpics = existingTasks.filter(
+          (t: any) => t.type === "epic" || t.issue_type === "epic",
+        );
+        const closedEpic = existingEpics.find(
+          (e: any) => e.status === "done" || e.status === "closed",
+        );
+        if (closedEpic) {
+          return {
+            result: `[TERMINAL] Cannot create epic — project already has completed epic "${closedEpic.title}" (ID: ${closedEpic.id}). The work is finished. To add changes, create tasks under the existing epic with parent_id: "${closedEpic.id}".`,
+          };
         }
-      } catch (e) {
-        console.warn("Failed to parse existing tasks for deduplication:", e);
+        const openEpic = existingEpics.find(
+          (e: any) => e.status !== "done" && e.status !== "closed",
+        );
+        if (openEpic) {
+          return {
+            result: `Cannot create epic — epic "${openEpic.title}" (ID: ${openEpic.id}) is already ${openEpic.status} for this project. Create tasks under it using parent_id: "${openEpic.id}".`,
+          };
+        }
+      }
+
+      // For non-epic types: title-based deduplication
+      if (issueType !== "epic") {
+        const match = existingTasks.find((t: any) => {
+          const sameTitle = t.title?.trim().toLowerCase() === title.toLowerCase();
+          const sameType = t.type === issueType || t.issue_type === issueType;
+          return sameTitle && sameType;
+        });
+        if (match) {
+          const isClosed = match.status === "done" || match.status === "closed";
+          if (isClosed) {
+            return { result: `[TERMINAL] Task "${title}" already completed (ID: ${match.id}). No new task created.` };
+          }
+          return { result: `Task already exists (ID: ${match.id}). Reusing existing task.` };
+        }
       }
 
       const stdout = await invoke<string>("beads_run", {

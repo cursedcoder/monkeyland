@@ -27,6 +27,7 @@ import {
   ReprioritizeTaskPlugin,
 } from "./plugins/OrchestrationControlPlugins";
 import { runAgent, type Attachment, type ModelMessage } from "./agentRunner";
+import { runBeadsPreflight } from "./beadsPreflight";
 import { getPromptForRole, ROLE_TOOLS } from "./agentPrompts";
 import type { ToolName } from "./agentPrompts";
 import { createCostStore, CostStoreContext } from "./costStore";
@@ -1182,13 +1183,17 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       const toolCalls: Array<{ name: string; status: string }> = [];
 
       try {
+        // Pre-flight: auto-sanitize zombies and build state context BEFORE the LLM turn
+        const preflight = await runBeadsPreflight(layoutsRef.current);
+        const systemPrompt = getPromptForRole("workforce_manager") + preflight.stateContext;
+
         const messages: ModelMessage[] = [userMsg].map((m) => ({
           role: m.role,
           content: m.content,
         }));
 
         await runAgent({
-          systemPrompt: getPromptForRole("workforce_manager"),
+          systemPrompt,
           messages,
           plugins,
           signal: controller.signal,
@@ -1363,13 +1368,17 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       };
 
       try {
+        // Pre-flight: auto-sanitize zombies and build state context BEFORE the LLM turn
+        const preflight = await runBeadsPreflight(layoutsRef.current);
+        const systemPrompt = getPromptForRole("workforce_manager") + preflight.stateContext;
+
         const messages: ModelMessage[] = wmConversation.map((m) => ({
           role: m.role,
           content: m.content,
         }));
 
         await runAgent({
-          systemPrompt: getPromptForRole("workforce_manager"),
+          systemPrompt,
           messages,
           plugins,
           signal: controller.signal,
