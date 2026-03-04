@@ -187,10 +187,17 @@ export class CreateBeadsTaskPlugin extends Plugin {
       try {
         const existingTasks = JSON.parse(listOutput.trim());
         if (Array.isArray(existingTasks)) {
-          const match = existingTasks.find((t: any) => 
-            t.title?.trim().toLowerCase() === title.toLowerCase() && 
-            (t.type === issueType || t.issue_type === issueType)
-          );
+          const match = existingTasks.find((t: any) => {
+            const sameTitle = t.title?.trim().toLowerCase() === title.toLowerCase();
+            const sameType = t.type === issueType || t.issue_type === issueType;
+            
+            // Description similarity check (simple inclusion or length-based heuristic)
+            const descA = (t.description || t.body || "").trim().toLowerCase();
+            const descB = (parameters.description || "").trim().toLowerCase();
+            const sameDesc = descA === descB || (descA.length > 0 && descB.length > 0 && (descA.includes(descB) || descB.includes(descA)));
+
+            return sameTitle && sameType && sameDesc;
+          });
           if (match) {
             const isClosed = match.status === "done" || match.status === "closed";
             if (isClosed) {

@@ -107,15 +107,46 @@ export class ListBeadsTasksPlugin extends Plugin {
           return { result: JSON.stringify({ tasks: [tasks] }) };
         }
 
+        // Get orchestration status to identify zombies
+        let activeTaskIds: Set<string> = new Set();
+        if (_context.layouts) {
+          _context.layouts.forEach(l => {
+            try {
+              const p = JSON.parse(l.payload ?? "{}");
+              if (p.task_id && p.status === "loading") {
+                activeTaskIds.add(p.task_id);
+              }
+            } catch { /* ignore */ }
+          });
+        }
+
+        const now = Date.now();
+        const ZOMBIE_GRACE_PERIOD_MS = 5 * 60 * 1000;
+
         // Format task summary for easier reading
-        const summary = tasks.map((t: Record<string, unknown>) => ({
-          id: t.id,
-          title: t.title,
-          type: t.type ?? t.issue_type,
-          status: t.status,
-          parent: t.parent ?? t.parent_id,
-          deps: extractDeps(t),
-        }));
+        const summary = tasks.map((t: Record<string, unknown>) => {
+          const id = String(t.id ?? "");
+          const status = String(t.status ?? "");
+          const updatedAt = t.updated_at ? new Date(String(t.updated_at)).getTime() : 0;
+          
+          let displayStatus = status;
+          const isStale = updatedAt > 0 && (now - updatedAt) > ZOMBIE_GRACE_PERIOD_MS;
+          const isOpen = status === "open" || status === "in-progress" || status === "ready";
+          
+          if (isOpen && !activeTaskIds.has(id) && isStale) {
+            displayStatus = `${status} (ZOMBIE)`;
+          }
+
+          return {
+            id,
+            title: t.title,
+            type: t.type ?? t.issue_type,
+            status: displayStatus,
+            parent: t.parent ?? t.parent_id,
+            deps: extractDeps(t),
+            description: t.description ?? t.body,
+          };
+        });
 
         return { result: JSON.stringify({ count: tasks.length, tasks: summary }, null, 2) };
       } catch {
