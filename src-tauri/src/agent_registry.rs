@@ -1475,7 +1475,10 @@ impl AgentRegistry {
 
     /// Returns developers stuck in InReview state longer than `max_secs`.
     /// Validators may have failed to spawn or errored out without submitting results.
-    pub fn stuck_in_review_developers(&self, max_secs: u64) -> Result<Vec<String>, String> {
+    pub fn stuck_in_review_developers(
+        &self,
+        max_secs: u64,
+    ) -> Result<Vec<(String, Option<String>)>, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         let cutoff = Duration::from_secs(max_secs);
         let mut out = Vec::new();
@@ -1484,7 +1487,7 @@ impl AgentRegistry {
                 continue;
             }
             if entry.state_entered_at.elapsed() > cutoff {
-                out.push(id.clone());
+                out.push((id.clone(), entry.task_id.clone()));
             }
         }
         Ok(out)

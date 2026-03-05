@@ -293,6 +293,9 @@ pub struct MergeQueue {
     recently_merged: Mutex<HashSet<String>>,
     /// (task_id, args) pairs where bd unclaim failed. Retried each tick.
     failed_unclaims: Mutex<Vec<(String, Vec<String>)>>,
+    /// Tracks how many full merge-failure cycles a task has been through.
+    /// After MAX_MERGE_CYCLES, the task is permanently blocked instead of reset to ready.
+    merge_fail_cycles: Mutex<HashMap<String, u8>>,
 }
 
 impl MergeQueue {
@@ -304,6 +307,7 @@ impl MergeQueue {
             retry_counts: Mutex::new(HashMap::new()),
             recently_merged: Mutex::new(HashSet::new()),
             failed_unclaims: Mutex::new(Vec::new()),
+            merge_fail_cycles: Mutex::new(HashMap::new()),
         }
     }
 
@@ -380,6 +384,24 @@ impl MergeQueue {
     /// Drain all pending failed unclaims for retry.
     pub fn take_failed_unclaims(&self) -> Vec<(String, Vec<String>)> {
         std::mem::take(&mut *self.failed_unclaims.lock().unwrap())
+    }
+
+    /// Increment and return the merge-failure cycle count for a task.
+    pub fn inc_merge_fail_cycle(&self, task_id: &str) -> u8 {
+        let mut cycles = self.merge_fail_cycles.lock().unwrap();
+        let count = cycles.entry(task_id.to_string()).or_insert(0);
+        *count += 1;
+        *count
+    }
+
+    /// Get the current merge-failure cycle count for a task.
+    pub fn merge_fail_cycle_count(&self, task_id: &str) -> u8 {
+        self.merge_fail_cycles
+            .lock()
+            .unwrap()
+            .get(task_id)
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -791,14 +813,42 @@ pub async fn tick(
 
     // 4c. SAFETY NET: Force-block developers stuck in InReview for > 5 minutes.
     // Validators may have failed to spawn/complete without submitting results.
+    // Also cleans up the task (reset to ready) and worktree to prevent orphaned tasks.
     let stuck_review = registry.stuck_in_review_developers(300)?;
-    for agent_id in stuck_review {
+    for (agent_id, task_id) in stuck_review {
         eprintln!(
             "[orch] SAFETY NET: Force-blocking developer {} stuck in InReview for >5min",
             agent_id
         );
         metrics.inc_validation_timeout_block();
+        if let Ok(Some(_wt)) = registry.get_worktree_path(&agent_id) {
+            let rm_path = path.to_path_buf();
+            let rm_agent = agent_id.clone();
+            let _ =
+                tokio::task::spawn_blocking(move || crate::worktree::remove(&rm_path, &rm_agent))
+                    .await;
+        }
+        if let Some(tid) = &task_id {
+            let del_path = path.to_path_buf();
+            let del_task = tid.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::worktree::delete_task_branch(&del_path, &del_task)
+            })
+            .await;
+            let ready_args = vec![
+                "update".to_string(),
+                tid.clone(),
+                "--status".to_string(),
+                "ready".to_string(),
+            ];
+            if let Err(e) = env.run_bd(path, &ready_args) {
+                eprintln!(
+                    "[orch] WARNING: failed to reset task {tid} to ready after validation timeout: {e}"
+                );
+            }
+        }
         let _ = registry.force_block_validation(&agent_id);
+        let _ = env.kill_pty(&agent_id);
     }
 
     // 4d. SAFETY NET: Force-yield PMs stuck in Running state for > 5 minutes.
@@ -1200,8 +1250,9 @@ fn role_for_task(issue_type: &str, _priority: u8) -> String {
 }
 
 const MAX_MERGE_RETRIES: u8 = 2;
+const MAX_MERGE_CYCLES: u8 = 2;
 
-/// Handle a merge or rebase conflict: spawn merge agent (if retries remain) or mark blocked.
+/// Handle a merge or rebase conflict: spawn merge agent (if retries remain) or reset/block.
 async fn handle_merge_conflict(
     env: &dyn OrchEnv,
     project_path: &Path,
@@ -1215,25 +1266,61 @@ async fn handle_merge_conflict(
     let agent_id = entry.agent_id.clone();
 
     if entry.retry_count >= MAX_MERGE_RETRIES {
+        let cycle = merge_queue.inc_merge_fail_cycle(&task_id);
+
+        if cycle >= MAX_MERGE_CYCLES {
+            eprintln!(
+                "[orch] merge permanently failed for task {task_id} after {cycle} full cycles",
+            );
+            let block_args = vec![
+                "update".to_string(),
+                task_id.clone(),
+                "--status".to_string(),
+                "blocked".to_string(),
+            ];
+            let _ = env.run_bd(project_path, &block_args);
+            kill_agent(env, registry, &agent_id, "merge_blocked");
+            let _ = env_emit(
+                env,
+                "merge_status",
+                &MergeStatusPayload {
+                    task_id,
+                    status: "failed".to_string(),
+                    detail: Some(detail.to_string()),
+                },
+            );
+            return;
+        }
+
         eprintln!(
-            "[orch] merge permanently failed for task {task_id} after {} retries",
-            entry.retry_count
+            "[orch] merge failed for task {task_id} (cycle {cycle}/{MAX_MERGE_CYCLES}); \
+             deleting branch and resetting to ready for fresh retry",
         );
-        let block_args = vec![
+
+        let del_path = project_path.to_path_buf();
+        let del_task = task_id.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::worktree::delete_task_branch(&del_path, &del_task)
+        })
+        .await;
+
+        let ready_args = vec![
             "update".to_string(),
             task_id.clone(),
             "--status".to_string(),
-            "blocked".to_string(),
+            "ready".to_string(),
         ];
-        let _ = env.run_bd(project_path, &block_args);
-        kill_agent(env, registry, &agent_id, "merge_blocked");
+        let _ = env.run_bd(project_path, &ready_args);
+        kill_agent(env, registry, &agent_id, "merge_reset");
         let _ = env_emit(
             env,
             "merge_status",
             &MergeStatusPayload {
                 task_id,
-                status: "failed".to_string(),
-                detail: Some(detail.to_string()),
+                status: "reset".to_string(),
+                detail: Some(format!(
+                    "Merge conflicts unresolvable (cycle {cycle}); task reset for fresh attempt"
+                )),
             },
         );
         return;
@@ -1443,6 +1530,11 @@ mod tests {
                 .filter(|e| e.event == name)
                 .map(|e| e.payload.clone())
                 .collect()
+        }
+
+        fn clear_events(&self) {
+            self.events.lock().unwrap().clear();
+            self.bd_calls.lock().unwrap().clear();
         }
 
         fn bd_calls(&self) -> Vec<BdCall> {
@@ -2155,6 +2247,16 @@ mod tests {
             agent.unwrap().state,
             "Blocked",
             "agent should be in Blocked state after force_block_validation"
+        );
+
+        // --- Beads task should be reset to ready (not orphaned) ---
+
+        let ready_calls = env.bd_calls_matching("bd-partial").iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"ready".to_string())
+        });
+        assert!(
+            ready_calls,
+            "task should be reset to ready in Beads after validation timeout"
         );
 
         // --- Validation state cleaned up (no pending_validations entry) ---
@@ -3401,7 +3503,7 @@ mod tests {
         git(repo.path(), &["add", "clash.txt"]);
         git(repo.path(), &["commit", "-m", "base conflict"]);
 
-        // Enqueue with retry_count at the limit
+        // --- Cycle 1: retries exhausted → task reset to "ready" ---
         merge_queue.push(MergeEntry {
             agent_id: "dead-agent".to_string(),
             task_id: "bd-exhaust".to_string(),
@@ -3417,8 +3519,43 @@ mod tests {
         assert!(
             statuses
                 .iter()
+                .any(|e| e["status"] == "reset" && e["task_id"] == "bd-exhaust"),
+            "first cycle: task should be reset (not blocked) after retry exhaustion"
+        );
+
+        let ready_calls = env.bd_calls_matching("bd-exhaust").iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"ready".to_string())
+        });
+        assert!(
+            ready_calls,
+            "first cycle: task should be reset to ready in Beads"
+        );
+
+        // --- Cycle 2: retries exhausted again → NOW blocked permanently ---
+        // Re-create the conflicting branch (it was deleted in cycle 1)
+        git(repo.path(), &["checkout", "-b", "task/bd-exhaust"]);
+        std::fs::write(repo.path().join("clash.txt"), "task version v2").unwrap();
+        git(repo.path(), &["add", "clash.txt"]);
+        git(repo.path(), &["commit", "-m", "task change v2"]);
+        git(repo.path(), &["checkout", "main"]);
+
+        env.clear_events();
+        merge_queue.push(MergeEntry {
+            agent_id: "dead-agent-2".to_string(),
+            task_id: "bd-exhaust".to_string(),
+            retry_count: MAX_MERGE_RETRIES,
+        });
+
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let statuses2 = env.events_named("merge_status");
+        assert!(
+            statuses2
+                .iter()
                 .any(|e| e["status"] == "failed" && e["task_id"] == "bd-exhaust"),
-            "merge should be marked permanently failed after retry exhaustion"
+            "second cycle: task should be permanently failed"
         );
 
         let blocked_calls = env.bd_calls_matching("bd-exhaust").iter().any(|args| {
@@ -3426,7 +3563,7 @@ mod tests {
         });
         assert!(
             blocked_calls,
-            "task should be marked blocked in Beads after retry exhaustion"
+            "second cycle: task should be blocked in Beads"
         );
 
         let ma_spawns: Vec<_> = env
