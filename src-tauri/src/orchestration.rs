@@ -3858,6 +3858,403 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // E2E: 1 Epic + 5 Tasks with Dependencies (DAG: parallel + convergence)
+    // -----------------------------------------------------------------------
+    //
+    // Simulates bd ready: only returns tasks whose deps are closed.
+    // Dependency enforcement is Beads' responsibility; we simulate correct bd ready output.
+    //
+    // DAG: epic-main → task-1 → task-2, task-3 (parallel) → task-4 (convergence) → task-5
+    // Test runs with safety_mode disabled (default).
+
+    #[tokio::test]
+    async fn e2e_full_epic_plus_five_tasks_with_dependencies() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        // Seed all 5 files in initial commit so each task modifies a distinct file (no merge conflicts)
+        for i in 1..=5 {
+            std::fs::write(
+                repo.path().join(format!("file{i}.txt")),
+                format!("placeholder{i}"),
+            )
+            .unwrap();
+        }
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "seed"]);
+
+        use crate::pm_phases::PMPhaseEvent;
+
+        // --- Phase 1: Epic + Task 1 (1 tick) ---
+        // Simulates bd ready: only returns tasks whose deps are closed.
+        env.set_ready_tasks(
+            r#"[
+            {"id":"epic-main","issue_type":"epic","priority":1},
+            {"id":"task-1","issue_type":"task","priority":2}
+        ]"#,
+        );
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let spawned = env.events_named("agent_spawned");
+        assert_eq!(spawned.len(), 2, "Phase 1: PM + dev1 spawned");
+
+        let pm = spawned
+            .iter()
+            .find(|e| e["role"] == "project_manager")
+            .unwrap();
+        let dev1 = spawned.iter().find(|e| e["role"] == "developer").unwrap();
+        let pm_id = pm["agent_id"].as_str().unwrap().to_string();
+        let dev1_id = dev1["agent_id"].as_str().unwrap().to_string();
+
+        // PM: transition phases, yield
+        registry
+            .transition_pm_phase(&pm_id, PMPhaseEvent::ExplorationComplete)
+            .unwrap();
+        registry
+            .transition_pm_phase(&pm_id, PMPhaseEvent::DraftingComplete)
+            .unwrap();
+        registry
+            .transition_pm_phase(&pm_id, PMPhaseEvent::ReviewComplete)
+            .unwrap();
+        let yp = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some("task/epic-main".to_string()),
+        };
+        registry.yield_for_review(&pm_id, yp).unwrap();
+
+        // Dev1: write file1.txt, commit, yield
+        let wt1 = registry.get_worktree_path(&dev1_id).unwrap().unwrap();
+        std::fs::write(format!("{wt1}/file1.txt"), "dev1 work").unwrap();
+        git_in(&wt1, &["add", "file1.txt"]);
+        git_in(&wt1, &["commit", "-m", "dev1"]);
+        let yp1 = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some("task/task-1".to_string()),
+        };
+        registry.yield_for_review(&dev1_id, yp1).unwrap();
+
+        // --- Phase 2: Validation + Merge task-1 (2 ticks) ---
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let pm_val = env.events_named("pm_validation_requested");
+        assert_eq!(pm_val.len(), 1, "pm_validation_requested emitted");
+        registry
+            .complete_pm_validation(&pm_id, true, true, vec![])
+            .unwrap();
+
+        let val_events = env.events_named("validation_requested");
+        assert_eq!(val_events.len(), 1, "dev1 validation_requested");
+        for role in &["code_review", "business_logic", "scope"] {
+            registry
+                .validation_submit(&dev1_id, role, true, vec![])
+                .unwrap();
+        }
+
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let content1 = std::fs::read_to_string(repo.path().join("file1.txt")).unwrap();
+        assert_eq!(content1, "dev1 work", "file1.txt merged to main");
+
+        let task1_close = env.bd_calls_matching("task-1").iter().any(|args| {
+            args.contains(&"close".to_string())
+                || (args.contains(&"update".to_string()) && args.contains(&"done".to_string()))
+        });
+        assert!(task1_close, "bd close for task-1");
+
+        // --- Phase 3: Tasks 2 and 3 PARALLEL (both unblocked after task-1) ---
+        // Simulates bd ready: task-2 and task-3 only; task-4 and task-5 still blocked.
+        env.set_ready_tasks(
+            r#"[
+            {"id":"task-2","issue_type":"task","priority":2},
+            {"id":"task-3","issue_type":"task","priority":2}
+        ]"#,
+        );
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let spawned2 = env.events_named("agent_spawned");
+        assert_eq!(spawned2.len(), 4, "Phase 3: dev2 + dev3 spawned (4 total)");
+
+        let dev2 = spawned2
+            .iter()
+            .filter(|e| e["role"] == "developer")
+            .find(|e| e["task_id"] == "task-2")
+            .unwrap();
+        let dev3 = spawned2
+            .iter()
+            .filter(|e| e["role"] == "developer")
+            .find(|e| e["task_id"] == "task-3")
+            .unwrap();
+        let dev2_id = dev2["agent_id"].as_str().unwrap().to_string();
+        let dev3_id = dev3["agent_id"].as_str().unwrap().to_string();
+
+        let wt2 = registry.get_worktree_path(&dev2_id).unwrap().unwrap();
+        let wt3 = registry.get_worktree_path(&dev3_id).unwrap().unwrap();
+        // Dev2: first attempt (will fail code_review)
+        std::fs::write(format!("{wt2}/file2.txt"), "dev2 v1 buggy").unwrap();
+        std::fs::write(format!("{wt3}/file3.txt"), "dev3 work").unwrap();
+        git_in(&wt2, &["add", "file2.txt"]);
+        git_in(&wt2, &["commit", "-m", "dev2 first"]);
+        git_in(&wt3, &["add", "file3.txt"]);
+        git_in(&wt3, &["commit", "-m", "dev3"]);
+
+        let yp2 = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some("task/task-2".to_string()),
+        };
+        let yp3 = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some("task/task-3".to_string()),
+        };
+        registry.yield_for_review(&dev2_id, yp2).unwrap();
+        registry.yield_for_review(&dev3_id, yp3).unwrap();
+
+        // --- Phase 4: Validation + Merge (3 ticks; task-2 fails first validation, retries) ---
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let val2 = env.events_named("validation_requested");
+        assert!(val2.len() >= 2, "validation_requested for dev2 and dev3");
+
+        // Task-2: code_review FAILS first, others pass → dev2 back to Running
+        registry
+            .validation_submit(
+                &dev2_id,
+                "code_review",
+                false,
+                vec!["Missing error handling".to_string()],
+            )
+            .unwrap();
+        registry
+            .validation_submit(&dev2_id, "business_logic", true, vec![])
+            .unwrap();
+        registry
+            .validation_submit(&dev2_id, "scope", true, vec![])
+            .unwrap();
+
+        // Task-3: all pass → dev3 Done
+        for role in &["code_review", "business_logic", "scope"] {
+            registry
+                .validation_submit(&dev3_id, role, true, vec![])
+                .unwrap();
+        }
+
+        let snap = registry.debug_snapshot().unwrap();
+        let agent2 = snap.agents.iter().find(|a| a.id == dev2_id).unwrap();
+        assert_eq!(
+            agent2.state, "Running",
+            "dev2 back to Running after validation fail"
+        );
+
+        // Dev2: fix and re-yield (retry)
+        std::fs::write(format!("{wt2}/file2.txt"), "dev2 work").unwrap();
+        git_in(&wt2, &["add", "file2.txt"]);
+        git_in(&wt2, &["commit", "-m", "dev2 fixed"]);
+        let yp2_retry = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some("task/task-2".to_string()),
+        };
+        registry.yield_for_review(&dev2_id, yp2_retry).unwrap();
+
+        // Tick 2: dev2 re-yield → validation_requested; dev3 (Done) gets merged
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        // All validators pass for dev2 on retry
+        for role in &["code_review", "business_logic", "scope"] {
+            registry
+                .validation_submit(&dev2_id, role, true, vec![])
+                .unwrap();
+        }
+
+        // Tick 3: merge dev2
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let content2 = std::fs::read_to_string(repo.path().join("file2.txt")).unwrap();
+        let content3 = std::fs::read_to_string(repo.path().join("file3.txt")).unwrap();
+        assert_eq!(content2, "dev2 work", "file2.txt merged (fixed version)");
+        assert_eq!(content3, "dev3 work", "file3.txt merged");
+
+        for task_id in &["task-2", "task-3"] {
+            let closed = env.bd_calls_matching(task_id).iter().any(|args| {
+                args.contains(&"close".to_string())
+                    || (args.contains(&"update".to_string()) && args.contains(&"done".to_string()))
+            });
+            assert!(closed, "bd close for {task_id}");
+        }
+
+        // --- Phase 5: Task 4 (blocked until task-2 and task-3 done) — 3 ticks ---
+        // Simulates bd ready: task-4 only (convergence point now unblocked).
+        env.set_ready_tasks(r#"[{"id":"task-4","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let spawned4 = env.events_named("agent_spawned");
+        let dev4 = spawned4
+            .iter()
+            .filter(|e| e["role"] == "developer")
+            .find(|e| e["task_id"] == "task-4")
+            .unwrap();
+        let dev4_id = dev4["agent_id"].as_str().unwrap().to_string();
+
+        let wt4 = registry.get_worktree_path(&dev4_id).unwrap().unwrap();
+        std::fs::write(format!("{wt4}/file4.txt"), "dev4 work").unwrap();
+        git_in(&wt4, &["add", "file4.txt"]);
+        git_in(&wt4, &["commit", "-m", "dev4"]);
+        let yp4 = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some("task/task-4".to_string()),
+        };
+        registry.yield_for_review(&dev4_id, yp4).unwrap();
+
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        for role in &["code_review", "business_logic", "scope"] {
+            registry
+                .validation_submit(&dev4_id, role, true, vec![])
+                .unwrap();
+        }
+
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let content4 = std::fs::read_to_string(repo.path().join("file4.txt")).unwrap();
+        assert_eq!(content4, "dev4 work", "file4.txt merged");
+        let task4_close = env.bd_calls_matching("task-4").iter().any(|args| {
+            args.contains(&"close".to_string())
+                || (args.contains(&"update".to_string()) && args.contains(&"done".to_string()))
+        });
+        assert!(task4_close, "bd close for task-4");
+
+        // --- Phase 6: Task 5 (3 ticks) ---
+        env.set_ready_tasks(r#"[{"id":"task-5","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let spawned5 = env.events_named("agent_spawned");
+        let dev5 = spawned5
+            .iter()
+            .filter(|e| e["role"] == "developer")
+            .find(|e| e["task_id"] == "task-5")
+            .unwrap();
+        let dev5_id = dev5["agent_id"].as_str().unwrap().to_string();
+
+        let wt5 = registry.get_worktree_path(&dev5_id).unwrap().unwrap();
+        std::fs::write(format!("{wt5}/file5.txt"), "dev5 work").unwrap();
+        git_in(&wt5, &["add", "file5.txt"]);
+        git_in(&wt5, &["commit", "-m", "dev5"]);
+        let yp5 = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some("task/task-5".to_string()),
+        };
+        registry.yield_for_review(&dev5_id, yp5).unwrap();
+
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        for role in &["code_review", "business_logic", "scope"] {
+            registry
+                .validation_submit(&dev5_id, role, true, vec![])
+                .unwrap();
+        }
+
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let content5 = std::fs::read_to_string(repo.path().join("file5.txt")).unwrap();
+        assert_eq!(content5, "dev5 work", "file5.txt merged");
+        let task5_close = env.bd_calls_matching("task-5").iter().any(|args| {
+            args.contains(&"close".to_string())
+                || (args.contains(&"update".to_string()) && args.contains(&"done".to_string()))
+        });
+        assert!(task5_close, "bd close for task-5");
+
+        // --- Final assertions ---
+        let all_spawned = env.events_named("agent_spawned");
+        assert_eq!(
+            all_spawned.len(),
+            6,
+            "agent_spawned count = 6 (1 PM + 5 devs)"
+        );
+
+        let killed = env.events_named("agent_killed");
+        let killed_ids: std::collections::HashSet<_> = killed
+            .iter()
+            .filter_map(|e| e["agent_id"].as_str())
+            .collect();
+        assert_eq!(killed_ids.len(), 6, "agent_killed for all 6");
+
+        let merge_dones: Vec<_> = env
+            .events_named("merge_status")
+            .into_iter()
+            .filter(|e| e["status"] == "done")
+            .collect();
+        assert!(
+            merge_dones.len() >= 5,
+            "merge_status=done for task-1..5 (epic does not merge)"
+        );
+
+        for task_id in &["task-1", "task-2", "task-3", "task-4", "task-5"] {
+            let closed = env.bd_calls_matching(task_id).iter().any(|args| {
+                args.contains(&"close".to_string())
+                    || (args.contains(&"update".to_string()) && args.contains(&"done".to_string()))
+            });
+            assert!(closed, "bd close for {task_id}");
+        }
+
+        let snap = registry.debug_snapshot().unwrap();
+        assert_eq!(snap.agents.len(), 0, "registry empty at end");
+        assert_eq!(merge_queue.depth(), 0, "merge queue drained");
+
+        let expected: [&str; 5] = [
+            "dev1 work",
+            "dev2 work",
+            "dev3 work",
+            "dev4 work",
+            "dev5 work",
+        ];
+        for (i, exp) in expected.iter().enumerate() {
+            let content =
+                std::fs::read_to_string(repo.path().join(format!("file{}.txt", i + 1))).unwrap();
+            assert_eq!(content, *exp, "file{} on main", i + 1);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // E2E: Safety mode throttles merges to 1 per tick
     // -----------------------------------------------------------------------
 
