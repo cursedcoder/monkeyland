@@ -145,6 +145,9 @@ pub fn wm_launch_inner(
                 wm.transition_to(WmPhase::Error);
                 wm.add_message("assistant", message);
             }
+            WmEvent::MessageAdded { role, content } => {
+                wm.add_message(role, content);
+            }
             _ => {}
         }
     }
@@ -229,6 +232,9 @@ pub fn wm_handle_message_inner(
             WmEvent::ShowError { message, .. } => {
                 wm.transition_to(WmPhase::Error);
                 wm.add_message("assistant", message);
+            }
+            WmEvent::MessageAdded { role, content } => {
+                wm.add_message(role, content);
             }
             _ => {}
         }

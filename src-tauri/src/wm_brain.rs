@@ -206,6 +206,105 @@ pub struct InspectionResult {
 // inspect_and_decide — the core brain function
 // ---------------------------------------------------------------------------
 
+/// Summarise previously-built beads projects found on disk (when no project is
+/// currently active). Scans directories via `env.scan_beads_dirs()`, queries
+/// each one with `bd list --json --all`, and returns a human-readable context
+/// block that the WM LLM can use to suggest resuming existing work.
+fn build_existing_projects_context(
+    env: &dyn OrchEnv,
+    active_agent_task_ids: &HashSet<String>,
+) -> String {
+    let dirs = env.scan_beads_dirs();
+    if dirs.is_empty() {
+        return String::new();
+    }
+
+    let list_args: Vec<String> = ["list", "--json", "--all"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("### PREVIOUSLY BUILT PROJECTS".to_string());
+    lines.push(
+        "The following projects were found on disk. Before creating a new project, check whether \
+         the user's request matches one of these — if so, suggest resuming it instead."
+            .to_string(),
+    );
+    lines.push(String::new());
+
+    for dir in &dirs {
+        let path_str = dir.to_string_lossy();
+        let tasks: Vec<BeadsTask> = match env.run_bd(dir, &list_args) {
+            Ok(stdout) => {
+                let trimmed = stdout.trim();
+                if trimmed.is_empty() {
+                    vec![]
+                } else {
+                    serde_json::from_str::<Vec<BeadsTask>>(trimmed).unwrap_or_default()
+                }
+            }
+            Err(_) => vec![],
+        };
+
+        let epics: Vec<&BeadsTask> = tasks.iter().filter(|t| t.is_epic()).collect();
+        if epics.is_empty() && tasks.is_empty() {
+            continue;
+        }
+
+        let mut dir_header = format!("**{}**", path_str);
+        // Check for common viewable entry points
+        let has_index_html = dir.join("index.html").is_file();
+        let has_package_json = dir.join("package.json").is_file();
+        if has_index_html {
+            dir_header.push_str(" — has `index.html` (can open in browser)");
+        } else if has_package_json {
+            dir_header.push_str(" — has `package.json` (Node.js project)");
+        }
+        lines.push(dir_header);
+
+        if epics.is_empty() {
+            lines.push("  (no epics found)".to_string());
+        } else {
+            for epic in &epics {
+                let active_marker = if active_agent_task_ids.contains(&epic.id) {
+                    " [ACTIVE AGENT]"
+                } else {
+                    ""
+                };
+                let child_count = tasks
+                    .iter()
+                    .filter(|t| t.parent_effective() == Some(&epic.id))
+                    .count();
+                lines.push(format!(
+                    "  - Epic {}: \"{}\" [{}{}] ({} tasks)",
+                    epic.id,
+                    epic.title,
+                    epic.status.to_uppercase(),
+                    active_marker,
+                    child_count
+                ));
+            }
+        }
+        lines.push(String::new());
+    }
+
+    if lines.len() <= 3 {
+        // Nothing useful was found (all dirs had no epics)
+        return String::new();
+    }
+
+    lines.push(
+        "If the user's request matches an existing project, respond with something like: \
+         \"It looks like we already have a similar application built — <summary>. \
+         Would you like to open/play it, modify it, or start fresh?\" \
+         If a project has index.html and the user wants to try it, use dispatch_agent to open it in the browser immediately."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
 /// Inspect the project and decide what the WM should do.
 ///
 /// This is a pure function of its inputs (env + data) — no Tauri state, no frontend.
@@ -224,6 +323,8 @@ pub fn inspect_and_decide(
     let project_path_str = match project_path {
         Some(p) if !p.is_empty() => p,
         _ => {
+            // No known project path — scan for previously-built projects and inform the LLM
+            let state_context = build_existing_projects_context(env, active_agent_task_ids);
             return InspectionResult {
                 state: ProjectState::New,
                 project_path: None,
@@ -232,7 +333,7 @@ pub fn inspect_and_decide(
                 remaining_tasks: vec![],
                 zombies_closed: vec![],
                 error_message: None,
-                state_context: String::new(),
+                state_context,
                 completion_summary: None,
                 diagnostics: Diagnostics {
                     path_source: path_source.to_string(),
@@ -518,9 +619,9 @@ pub fn inspect_and_decide(
     ];
 
     if !closed_ids.is_empty() {
-        ctx_lines.push("### Auto-Cleanup Performed".to_string());
+        ctx_lines.push("### Auto-Cleanup Performed (already reported to the user)".to_string());
         ctx_lines.push(format!(
-            "Closed {} zombie/duplicate task(s):",
+            "Closed {} zombie/duplicate task(s). The user has already been told about this — do NOT repeat or re-describe the cleanup.",
             closed_ids.len()
         ));
         for n in &cleanup_notes {
@@ -638,6 +739,17 @@ pub fn inspect_and_decide(
 pub fn decide_events(result: &InspectionResult) -> Vec<WmEvent> {
     let mut events = Vec::new();
 
+    // When cleanup was performed, report it directly to the user as a system
+    // message BEFORE the LLM runs. This guarantees the user sees what happened
+    // regardless of what the LLM decides to say.
+    if !result.zombies_closed.is_empty() {
+        let cleanup_msg = build_cleanup_report(result);
+        events.push(WmEvent::MessageAdded {
+            role: "assistant".to_string(),
+            content: cleanup_msg,
+        });
+    }
+
     match result.state {
         ProjectState::Completed => {
             let message = result
@@ -684,6 +796,37 @@ pub fn decide_events(result: &InspectionResult) -> Vec<WmEvent> {
     events
 }
 
+/// Build a user-facing cleanup report from the inspection result.
+fn build_cleanup_report(result: &InspectionResult) -> String {
+    let n = result.zombies_closed.len();
+    let path_note = result
+        .project_path
+        .as_deref()
+        .map(|p| format!(" in `{}`", p))
+        .unwrap_or_default();
+
+    let mut msg = format!(
+        "Auto-cleanup: closed {} duplicate/zombie task(s){}.",
+        n, path_note
+    );
+
+    let remaining_count = result.remaining_tasks.len();
+    let open_count = result
+        .remaining_tasks
+        .iter()
+        .filter(|t| !t.is_closed())
+        .count();
+
+    if remaining_count > 0 {
+        msg.push_str(&format!(
+            " {} task(s) remain ({} open).",
+            remaining_count, open_count
+        ));
+    }
+
+    msg
+}
+
 // ---------------------------------------------------------------------------
 // State machine transitions
 // ---------------------------------------------------------------------------
@@ -721,6 +864,9 @@ pub mod test_support {
     pub struct TestWmEnv {
         bd_responses: StdMutex<HashMap<String, Result<String, String>>>,
         bd_calls: Arc<StdMutex<Vec<BdCall>>>,
+        scan_dirs: StdMutex<Vec<std::path::PathBuf>>,
+        /// Per-path list responses: path_str -> json response
+        path_bd_responses: StdMutex<HashMap<String, HashMap<String, Result<String, String>>>>,
     }
 
     impl TestWmEnv {
@@ -728,6 +874,8 @@ pub mod test_support {
             Self {
                 bd_responses: StdMutex::new(HashMap::new()),
                 bd_calls: Arc::new(StdMutex::new(Vec::new())),
+                scan_dirs: StdMutex::new(Vec::new()),
+                path_bd_responses: StdMutex::new(HashMap::new()),
             }
         }
 
@@ -752,6 +900,20 @@ pub mod test_support {
                 .insert(format!("close:{}", id), Err(err.to_string()));
         }
 
+        /// Register a directory as a scan result and provide a list response for it.
+        pub fn add_scan_dir(&self, path: &str, list_json: &str) {
+            self.scan_dirs
+                .lock()
+                .unwrap()
+                .push(std::path::PathBuf::from(path));
+            self.path_bd_responses
+                .lock()
+                .unwrap()
+                .entry(path.to_string())
+                .or_default()
+                .insert("list".to_string(), Ok(list_json.to_string()));
+        }
+
         pub fn bd_calls(&self) -> Vec<BdCall> {
             self.bd_calls.lock().unwrap().clone()
         }
@@ -772,10 +934,31 @@ pub mod test_support {
             Ok(())
         }
 
-        fn run_bd(&self, _project_path: &Path, args: &[String]) -> Result<String, String> {
+        fn run_bd(&self, project_path: &Path, args: &[String]) -> Result<String, String> {
             self.bd_calls.lock().unwrap().push(BdCall {
                 args: args.to_vec(),
             });
+
+            // Check per-path overrides first
+            let path_str = project_path.to_string_lossy().to_string();
+            {
+                let per_path = self.path_bd_responses.lock().unwrap();
+                if let Some(path_responses) = per_path.get(&path_str) {
+                    if args.first().map(|a| a.as_str()) == Some("close") {
+                        if let Some(id) = args.get(1) {
+                            let key = format!("close:{}", id);
+                            if let Some(resp) = path_responses.get(&key) {
+                                return resp.clone();
+                            }
+                        }
+                    }
+                    if let Some(cmd) = args.first() {
+                        if let Some(resp) = path_responses.get(cmd.as_str()) {
+                            return resp.clone();
+                        }
+                    }
+                }
+            }
 
             let responses = self.bd_responses.lock().unwrap();
 
@@ -809,6 +992,10 @@ pub mod test_support {
 
         fn kill_pty(&self, _id: &str) -> Result<(), String> {
             Ok(())
+        }
+
+        fn scan_beads_dirs(&self) -> Vec<std::path::PathBuf> {
+            self.scan_dirs.lock().unwrap().clone()
         }
     }
 
@@ -1191,6 +1378,7 @@ mod tests {
     #[test]
     fn decide_completed_emits_short_circuit() {
         let env = TestWmEnv::new();
+        // Single completed epic, no zombies → only ShortCircuit
         let tasks = serde_json::json!([task_json("epic-1", "Build app", "epic", "done"),]);
         env.set_list_response(&tasks.to_string());
 
@@ -1203,6 +1391,46 @@ mod tests {
                 assert!(message.contains("already complete"));
             }
             _ => panic!("Expected ShortCircuit"),
+        }
+    }
+
+    #[test]
+    fn decide_cleanup_emits_message_before_llm() {
+        let env = TestWmEnv::new();
+        // zombie epic (open while completed exists) → cleanup + ShortCircuit
+        let tasks = serde_json::json!([
+            task_json("epic-1", "Build app", "epic", "done"),
+            task_json("epic-2", "Build app v2", "epic", "open"),
+        ]);
+        env.set_list_response(&tasks.to_string());
+
+        let result = inspect_and_decide(&env, Some("/tmp/proj"), &HashSet::new());
+        assert!(!result.zombies_closed.is_empty());
+
+        let events = decide_events(&result);
+        assert!(
+            events.len() >= 2,
+            "expected cleanup message + decision event"
+        );
+
+        match &events[0] {
+            WmEvent::MessageAdded { role, content } => {
+                assert_eq!(role, "assistant");
+                assert!(
+                    content.contains("Auto-cleanup"),
+                    "cleanup message should describe what was done: {}",
+                    content
+                );
+                assert!(
+                    content.contains("/tmp/proj"),
+                    "cleanup message should include project path: {}",
+                    content
+                );
+            }
+            _ => panic!(
+                "First event should be MessageAdded for cleanup, got {:?}",
+                events[0]
+            ),
         }
     }
 
@@ -1324,5 +1552,105 @@ mod tests {
         assert_eq!(state.conversation.len(), 2);
         assert_eq!(state.conversation[0].role, "user");
         assert_eq!(state.conversation[1].content, "I'll set that up for you.");
+    }
+
+    // -----------------------------------------------------------------------
+    // Existing-projects scan tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn no_project_path_no_scan_dirs_returns_empty_context() {
+        let env = TestWmEnv::new();
+        // No scan dirs registered → state_context should be empty
+        let active = HashSet::new();
+        let result = inspect_and_decide(&env, None, &active);
+        assert_eq!(result.state, ProjectState::New);
+        assert!(result.state_context.is_empty());
+    }
+
+    #[test]
+    fn no_project_path_with_scan_dir_injects_context() {
+        let env = TestWmEnv::new();
+        let tasks_json = serde_json::to_string(&vec![
+            task_json("epic-1", "Create Snake Game", "epic", "done"),
+            task_with_parent("task-1", "Draw board", "task", "done", "epic-1"),
+        ])
+        .unwrap();
+        env.add_scan_dir("/tmp/snake-game", &tasks_json);
+
+        let active = HashSet::new();
+        let result = inspect_and_decide(&env, None, &active);
+
+        assert_eq!(result.state, ProjectState::New);
+        assert!(
+            result.state_context.contains("PREVIOUSLY BUILT PROJECTS"),
+            "state_context should mention existing projects"
+        );
+        assert!(
+            result.state_context.contains("/tmp/snake-game"),
+            "state_context should include the project path"
+        );
+        assert!(
+            result.state_context.contains("Create Snake Game"),
+            "state_context should include the epic title"
+        );
+        assert!(
+            result.state_context.contains("DONE"),
+            "state_context should include the epic status"
+        );
+    }
+
+    #[test]
+    fn no_project_path_scan_dir_with_no_tasks_excluded_from_context() {
+        let env = TestWmEnv::new();
+        // Directory with no tasks should not appear in context
+        env.add_scan_dir("/tmp/empty-project", "[]");
+
+        let active = HashSet::new();
+        let result = inspect_and_decide(&env, None, &active);
+
+        assert_eq!(result.state, ProjectState::New);
+        assert!(
+            result.state_context.is_empty(),
+            "empty project should not appear in context"
+        );
+    }
+
+    #[test]
+    fn no_project_path_scan_shows_multiple_projects() {
+        let env = TestWmEnv::new();
+        let snake_tasks =
+            serde_json::to_string(&vec![task_json("epic-1", "Snake Game", "epic", "done")])
+                .unwrap();
+        let todo_tasks =
+            serde_json::to_string(&vec![task_json("epic-2", "Todo App", "epic", "open")]).unwrap();
+        env.add_scan_dir("/tmp/snake-game", &snake_tasks);
+        env.add_scan_dir("/tmp/todo-app", &todo_tasks);
+
+        let active = HashSet::new();
+        let result = inspect_and_decide(&env, None, &active);
+
+        assert!(result.state_context.contains("/tmp/snake-game"));
+        assert!(result.state_context.contains("/tmp/todo-app"));
+        assert!(result.state_context.contains("Snake Game"));
+        assert!(result.state_context.contains("Todo App"));
+    }
+
+    #[test]
+    fn scan_context_includes_suggest_resuming_message() {
+        let env = TestWmEnv::new();
+        let tasks_json =
+            serde_json::to_string(&vec![task_json("epic-1", "Build CLI Tool", "epic", "done")])
+                .unwrap();
+        env.add_scan_dir("/tmp/cli-tool", &tasks_json);
+
+        let active = HashSet::new();
+        let result = inspect_and_decide(&env, None, &active);
+
+        assert!(
+            result.state_context.contains("similar application"),
+            "context should instruct WM to suggest resuming: {}",
+            result.state_context
+        );
     }
 }

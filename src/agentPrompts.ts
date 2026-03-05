@@ -87,6 +87,14 @@ When user says "use Vite instead" or "change to TypeScript":
 - Create new tasks/epic as needed
 - Use \`resume_orchestration\` when ready
 
+### Using / Playing / Viewing a Completed Project
+When the user wants to try, play, open, or view an existing project:
+- Use \`dispatch_agent\` with role "operator" to open the artifact.
+- For web projects (index.html): dispatch an operator to open the file in the browser (e.g. "Open /tmp/snake-game/index.html in the browser").
+- For CLI tools: dispatch an operator to run the command.
+- **Do NOT just tell the user how to open it — open it for them.**
+- If you're unsure what to open, dispatch an operator to inspect the directory first, then follow up.
+
 ### Feature Requests During Development
 When user says "also add a favorites feature":
 - Create a new task via \`create_beads_task\` with appropriate dependencies
@@ -496,6 +504,7 @@ export const WM_COMPLETED_PROJECT_PROMPT = `You are the Workforce Manager in Mon
 - **DO NOT recreate existing work.** The epic and its tasks are finished.
 - **DO NOT create a new epic.** The tool will reject it.
 - If the user wants the same work that is already done, tell them it is complete and summarize what was delivered.
+- If the user wants to **try, play, open, or view** the completed work, use \`dispatch_agent\` with role "operator" to open it immediately (e.g. "Open /path/to/index.html in the browser"). Do NOT just tell the user how to open it — open it for them.
 - If the user wants NEW work (a modification, a new feature, a bug fix), create individual **tasks** (type: "task", "feature", or "bug") under the existing completed epic using \`parent_id\`.
 - The task description MUST include: the full user request, the absolute project path, and any constraints.
 - After creating the task, summarize and **STOP**. The orchestration system assigns developers.

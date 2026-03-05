@@ -1911,6 +1911,8 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
       // Use wmCardSessionId for connection lines (card session_id, not backend agent ID)
       const wmCardId = wmCardSessionId.current;
       const parentRef = parent_agent_id ?? wmCardId ?? undefined;
+      // Set sourcePromptId so the Canvas WM→agent connection line (line 300) fires
+      const sourceRef = parent_agent_id ? undefined : wmCardId ?? undefined;
 
       startAgentConversationRef.current({
         agentNodeId: agent_id,
@@ -1918,6 +1920,7 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         userMessage: taskDescription,
         taskId: task_id,
         taskMeta,
+        sourcePromptId: sourceRef,
         parentAgentId: parentRef,
         projectPath: resolvedProjectPath,
       });

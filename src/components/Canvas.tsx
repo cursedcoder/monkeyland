@@ -367,21 +367,25 @@ export function Canvas({
         }
 
         if ((layout.node_type === "agent" || layout.node_type === "worker" || layout.node_type === "validator") && parentId) {
-          const parentLayout = effectiveLayoutById.get(parentId);
-          const child = sourceOrTargetLayout;
-          if (parentLayout && child && parentLayout.session_id !== child.session_id) {
-            const colorMap: Record<string, string> = {
-              worker: "#e0af68",
-              validator: "#7dcfff",
-              agent: "#ff9e64",
-            };
-            lines.push({
-              x1: parentLayout.x + parentLayout.w / 2,
-              y1: parentLayout.y + parentLayout.h,
-              x2: child.x + child.w / 2,
-              y2: child.y,
-              color: colorMap[layout.node_type ?? "agent"] ?? "#ff9e64",
-            });
+          // Skip if sourcePromptId already drew a line to the same parent (avoid duplicates)
+          const alreadyConnectedViaSource = p.sourcePromptId && p.sourcePromptId === parentId;
+          if (!alreadyConnectedViaSource) {
+            const parentLayout = effectiveLayoutById.get(parentId);
+            const child = sourceOrTargetLayout;
+            if (parentLayout && child && parentLayout.session_id !== child.session_id) {
+              const colorMap: Record<string, string> = {
+                worker: "#e0af68",
+                validator: "#7dcfff",
+                agent: "#ff9e64",
+              };
+              lines.push({
+                x1: parentLayout.x + parentLayout.w / 2,
+                y1: parentLayout.y + parentLayout.h,
+                x2: child.x + child.w / 2,
+                y2: child.y,
+                color: colorMap[layout.node_type ?? "agent"] ?? "#ff9e64",
+              });
+            }
           }
         }
       } catch {

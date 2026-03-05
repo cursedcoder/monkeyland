@@ -23,6 +23,28 @@ pub trait OrchEnv: Send + Sync {
     fn run_bd(&self, project_path: &Path, args: &[String]) -> Result<String, String>;
     fn spawn_pty(&self, id: &str, cols: u16, rows: u16, cwd: Option<&Path>) -> Result<(), String>;
     fn kill_pty(&self, id: &str) -> Result<(), String>;
+    /// Return paths of directories that contain a `.beads` subdirectory.
+    /// Used by the WM brain to detect previously-built projects when no current
+    /// project path is set. Default impl scans `/tmp` (one level deep).
+    fn scan_beads_dirs(&self) -> Vec<std::path::PathBuf> {
+        scan_beads_dirs_default()
+    }
+}
+
+/// Scan `/tmp` (one level deep) for directories that contain a `.beads` subdir.
+pub fn scan_beads_dirs_default() -> Vec<std::path::PathBuf> {
+    let tmp = std::path::Path::new("/tmp");
+    let mut found = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(tmp) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join(".beads").is_dir() {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 // Convenience helpers for calling env methods from async tick().
