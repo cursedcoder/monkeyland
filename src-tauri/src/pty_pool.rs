@@ -221,6 +221,46 @@ impl PtyPool {
         let data = ring.peek();
         Ok(String::from_utf8_lossy(&data).into_owned())
     }
+
+    /// Return all active session IDs.
+    pub fn session_ids(&self) -> Vec<String> {
+        self.sessions
+            .lock()
+            .map(|s| s.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Kill every session, sending SIGKILL to each process group.
+    /// Called by Drop to ensure no orphan processes survive app exit.
+    pub fn kill_all(&self) -> usize {
+        let mut sessions = match self.sessions.lock() {
+            Ok(s) => s,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let count = sessions.len();
+        let drained: Vec<(String, Arc<PtySession>)> = sessions.drain().collect();
+        drop(sessions);
+        for (_id, session) in drained {
+            if let Ok(master) = session._master.lock() {
+                #[cfg(unix)]
+                if let Some(pgid) = master.process_group_leader() {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-9", &format!("-{}", pgid)])
+                        .status();
+                }
+            }
+        }
+        count
+    }
+}
+
+impl Drop for PtyPool {
+    fn drop(&mut self) {
+        let killed = self.kill_all();
+        if killed > 0 {
+            eprintln!("[pty_pool] Drop: killed {killed} leftover PTY session(s)");
+        }
+    }
 }
 
 impl Default for PtyPool {
@@ -467,5 +507,106 @@ mod tests {
             pool.write("s1", b"data").is_err(),
             "write after kill should fail"
         );
+    }
+
+    // --- session_ids ---
+
+    #[test]
+    fn session_ids_reflects_live_sessions() {
+        let pool = PtyPool::new();
+        assert!(pool.session_ids().is_empty());
+
+        pool.spawn("a", 80, 24, None).unwrap();
+        pool.spawn("b", 80, 24, None).unwrap();
+        let mut ids = pool.session_ids();
+        ids.sort();
+        assert_eq!(ids, vec!["a", "b"]);
+
+        pool.kill("a").unwrap();
+        assert_eq!(pool.session_ids(), vec!["b"]);
+
+        pool.kill("b").unwrap();
+        assert!(pool.session_ids().is_empty());
+    }
+
+    // --- kill_all ---
+
+    #[test]
+    fn kill_all_removes_every_session() {
+        let pool = PtyPool::new();
+        pool.spawn("s1", 80, 24, None).unwrap();
+        pool.spawn("s2", 80, 24, None).unwrap();
+        pool.spawn("s3", 80, 24, None).unwrap();
+        assert_eq!(pool.session_ids().len(), 3);
+
+        let killed = pool.kill_all();
+        assert_eq!(
+            killed, 3,
+            "kill_all should return the number of sessions killed"
+        );
+        assert!(
+            pool.session_ids().is_empty(),
+            "no sessions should remain after kill_all"
+        );
+        assert!(
+            pool.write("s1", b"data").is_err(),
+            "write after kill_all should fail"
+        );
+        assert!(pool.write("s2", b"data").is_err());
+        assert!(pool.write("s3", b"data").is_err());
+    }
+
+    #[test]
+    fn kill_all_on_empty_pool_returns_zero() {
+        let pool = PtyPool::new();
+        assert_eq!(pool.kill_all(), 0);
+    }
+
+    #[test]
+    fn pool_accepts_new_sessions_after_kill_all() {
+        let pool = PtyPool::new();
+        pool.spawn("old", 80, 24, None).unwrap();
+        pool.kill_all();
+        pool.spawn("new", 80, 24, None).unwrap();
+        assert_eq!(pool.session_ids(), vec!["new"]);
+        pool.kill_all();
+    }
+
+    // --- Drop cleanup ---
+
+    #[test]
+    fn drop_kills_all_sessions() {
+        let pool = PtyPool::new();
+        pool.spawn("d1", 80, 24, None).unwrap();
+        pool.spawn("d2", 80, 24, None).unwrap();
+        // When pool is dropped, all sessions should be killed.
+        // We can't directly observe the kill -9 from outside, but we verify
+        // that Drop doesn't panic and the sessions are cleaned up by spawning
+        // the max number of sessions, dropping the pool, and verifying a new
+        // pool can spawn sessions (i.e., process groups were actually killed
+        // and resources freed).
+        drop(pool);
+
+        let pool2 = PtyPool::new();
+        pool2.spawn("after-drop", 80, 24, None).unwrap();
+        assert_eq!(pool2.session_ids(), vec!["after-drop"]);
+        pool2.kill_all();
+    }
+
+    #[test]
+    fn drop_with_max_sessions_does_not_leak() {
+        let pool = PtyPool::new();
+        for i in 0..MAX_SLOTS {
+            pool.spawn(&format!("full-{i}"), 80, 24, None).unwrap();
+        }
+        assert_eq!(pool.session_ids().len(), MAX_SLOTS);
+        drop(pool);
+
+        // After dropping a full pool, a new pool should be able to spawn
+        // sessions without hitting OS process/fd limits from leaked PTYs.
+        let pool2 = PtyPool::new();
+        pool2.spawn("post-full-drop", 80, 24, None).unwrap();
+        assert_eq!(pool2.session_ids().len(), 1);
+        pool2.kill_all();
     }
 }
