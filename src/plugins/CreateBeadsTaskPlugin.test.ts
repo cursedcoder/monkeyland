@@ -241,6 +241,17 @@ describe("CreateBeadsTaskPlugin", () => {
     expect(result.result).toContain("deferred");
   });
 
+  it("ignores deferred flag for epics to keep them visible to orchestration", async () => {
+    mockInvoke.mockResolvedValueOnce("[]"); // list (no existing epics)
+    mockInvoke.mockResolvedValueOnce("epic-99"); // create
+    const plugin = new CreateBeadsTaskPlugin("agent-1");
+    plugin.setProjectPath("/proj");
+    await plugin.execute({}, { title: "Big Feature", type: "epic", deferred: true });
+    const call = mockInvoke.mock.calls.find(c => c[0] === "beads_run" && (c[1] as any).args.includes("create"))!;
+    const args = (call[1] as { args: string[] }).args;
+    expect(args).not.toContain("--defer");
+  });
+
   it("deduplicates open tasks with same title, type, and description", async () => {
     mockInvoke.mockResolvedValueOnce(JSON.stringify([{ id: "bd-existing", title: "Setup", type: "task", status: "open", description: "desc" }]));
     const plugin = new CreateBeadsTaskPlugin("agent-1");

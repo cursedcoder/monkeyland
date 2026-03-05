@@ -101,7 +101,7 @@ export class CreateBeadsTaskPlugin extends Plugin {
       {
         name: "deferred",
         type: "boolean",
-        description: "Create as deferred/draft (hidden from bd ready until promoted). PM agents MUST set this to true for all tasks.",
+        description: "Create as deferred/draft (hidden from bd ready until promoted). PM agents should set this to true for subtasks. Never defer epics — they must stay visible for orchestration.",
         required: false,
       },
     ];
@@ -171,9 +171,9 @@ export class CreateBeadsTaskPlugin extends Plugin {
       args.push("--estimate", String(parameters.estimate_minutes));
     }
 
-    // Deferred tasks are hidden from bd ready until promoted
-    // PM agents should always use deferred=true for draft tasks
-    if (parameters.deferred) {
+    // Deferred tasks are hidden from bd ready until promoted.
+    // Never defer epics — they must be visible so the orchestration can spawn a PM.
+    if (parameters.deferred && issueType !== "epic") {
       args.push("--defer", "+100y");
     }
 

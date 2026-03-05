@@ -1101,13 +1101,20 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
                   updatePayload({ status: "error", errorMessage: `PM stuck: could not force-yield`, answer: accumulatedText, toolCalls: [] }, true, true);
                 }
               } else if (lastResult === "completed" || lastResult === "already_done") {
-                // PM/validator properly completed
-                updatePayload({ status: "done", answer: accumulatedText, toolActivity: "", toolCalls: [] }, true, true);
+                // PM/validator properly completed.
+                // Only overwrite answer if we have text — the validation handler
+                // may have already set a task summary as the answer.
+                const doneUpdate: Record<string, unknown> = { status: "done", toolActivity: "", toolCalls: [] };
+                if (accumulatedText.trim()) doneUpdate.answer = accumulatedText;
+                updatePayload(doneUpdate, true, true);
               } else if (lastResult === "error") {
-                updatePayload({ status: "error", errorMessage: "Agent ended with error", answer: accumulatedText, toolCalls: [] }, true, true);
+                const errUpdate: Record<string, unknown> = { status: "error", errorMessage: "Agent ended with error", toolCalls: [] };
+                if (accumulatedText.trim()) errUpdate.answer = accumulatedText;
+                updatePayload(errUpdate, true, true);
               } else {
-                // Unknown result - treat as done
-                updatePayload({ status: "done", answer: accumulatedText, toolActivity: "", toolCalls: [] }, true, true);
+                const fallbackUpdate: Record<string, unknown> = { status: "done", toolActivity: "", toolCalls: [] };
+                if (accumulatedText.trim()) fallbackUpdate.answer = accumulatedText;
+                updatePayload(fallbackUpdate, true, true);
               }
             } else {
               // Non-developer, non-PM roles (operator, worker, etc.) - can self-complete
@@ -2602,17 +2609,32 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
           }
           console.log(`[PM Validation] Promoted ${promotedCount}/${tasks.length} tasks`);
 
+          // Build a summary of the created tasks so the PM card shows useful
+          // content even when the LLM produced only tool calls (no text answer).
+          const taskSummaryLines = tasks.map(
+            (t) => `- **${t.title}** (\`${t.id}\`${t.priority != null ? `, P${t.priority}` : ""})`
+          );
+          const taskSummary = [
+            `**Task breakdown complete** — created ${tasks.length} task${tasks.length === 1 ? "" : "s"}:`,
+            "",
+            ...taskSummaryLines,
+          ].join("\n");
+
           // Update the PM card UI to show "done" status and clear pmExecutionPhase
           setLayouts((prev) => {
             const next = prev.map((layout) => {
               if (layout.session_id === pm_agent_id && layout.node_type === "agent") {
                 try {
                   const payload = JSON.parse(layout.payload || "{}");
-                  // Clear pmExecutionPhase so the phase footer doesn't show
                   const { pmExecutionPhase: _, ...rest } = payload;
+                  const existingAnswer = typeof rest.answer === "string" ? rest.answer.trim() : "";
                   return {
                     ...layout,
-                    payload: JSON.stringify({ ...rest, status: "done" }),
+                    payload: JSON.stringify({
+                      ...rest,
+                      status: "done",
+                      answer: existingAnswer || taskSummary,
+                    }),
                   };
                 } catch {
                   return layout;
