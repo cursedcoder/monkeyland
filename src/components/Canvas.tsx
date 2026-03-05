@@ -265,8 +265,24 @@ export function Canvas({
     return map;
   }, [layouts, draggingNodeId, liveDragLayout]);
 
+  // Build agent→task mapping for labeled connection lines
+  const agentTaskLinks = useMemo(() => {
+    const links: { agentId: string; taskId: string; beadsId: string | null }[] = [];
+    for (const l of layouts) {
+      if (l.node_type !== "agent" && l.node_type !== "worker") continue;
+      try {
+        const p = JSON.parse(l.payload ?? "{}") as { task_id?: string; status?: string };
+        if (p.task_id && p.status !== "stopped" && p.status !== "error" && p.status !== "done") {
+          const beadsLayout = layouts.find(bl => bl.node_type === "beads");
+          links.push({ agentId: l.session_id, taskId: p.task_id, beadsId: beadsLayout?.session_id ?? null });
+        }
+      } catch { /* ignore */ }
+    }
+    return links;
+  }, [layouts]);
+
   const connectionLines = useMemo(() => {
-    const lines: { x1: number; y1: number; x2: number; y2: number; color?: string }[] = [];
+    const lines: { x1: number; y1: number; x2: number; y2: number; color?: string; label?: string }[] = [];
 
     for (const layout of layouts) {
       const sourceOrTargetLayout = effectiveLayoutById.get(layout.session_id);
@@ -281,8 +297,6 @@ export function Canvas({
         };
         const parentId = p.parentAgentId ?? p.parent_agent_id ?? p.parentBeadsId;
 
-        // WM Chat / Prompt → Agent connection (use effective layout so lines follow dragged cards)
-        // sourcePromptId points to the original prompt card which may now be a wm_chat card
         if (layout.node_type === "agent" && p.sourcePromptId) {
           const wmOrPrompt = effectiveLayoutById.get(p.sourcePromptId);
           const agent = sourceOrTargetLayout;
@@ -296,7 +310,6 @@ export function Canvas({
           }
         }
 
-        // Agent → Terminal / TerminalLog connection
         if ((layout.node_type === "terminal" || layout.node_type === "terminal_log") && parentId) {
           const agent = effectiveLayoutById.get(parentId);
           const terminal = sourceOrTargetLayout;
@@ -311,7 +324,6 @@ export function Canvas({
           }
         }
 
-        // Agent → Browser connection
         if (layout.node_type === "browser" && parentId) {
           const agent = effectiveLayoutById.get(parentId);
           const browser = sourceOrTargetLayout;
@@ -326,7 +338,6 @@ export function Canvas({
           }
         }
 
-        // Agent → Beads connection
         if (layout.node_type === "beads" && parentId) {
           const agent = effectiveLayoutById.get(parentId);
           const beads = sourceOrTargetLayout;
@@ -341,7 +352,6 @@ export function Canvas({
           }
         }
 
-        // Beads → BeadsTask connection
         if (layout.node_type === "beads_task" && parentId) {
           const beads = effectiveLayoutById.get(parentId);
           const task = sourceOrTargetLayout;
@@ -356,7 +366,6 @@ export function Canvas({
           }
         }
 
-        // Agent → Agent / Worker / Validator (orchestration hierarchy)
         if ((layout.node_type === "agent" || layout.node_type === "worker" || layout.node_type === "validator") && parentId) {
           const parentLayout = effectiveLayoutById.get(parentId);
           const child = sourceOrTargetLayout;
@@ -379,8 +388,25 @@ export function Canvas({
         /* ignore */
       }
     }
+
+    // Agent → Beads task labeled lines (agent working on specific task)
+    for (const link of agentTaskLinks) {
+      const agentLayout = effectiveLayoutById.get(link.agentId);
+      const beadsLayout = link.beadsId ? effectiveLayoutById.get(link.beadsId) : null;
+      if (agentLayout && beadsLayout) {
+        lines.push({
+          x1: agentLayout.x + agentLayout.w,
+          y1: agentLayout.y + agentLayout.h * 0.35,
+          x2: beadsLayout.x,
+          y2: beadsLayout.y + (beadsLayout.collapsed ? 24 : beadsLayout.h * 0.35),
+          color: "#7aa2f7",
+          label: link.taskId,
+        });
+      }
+    }
+
     return lines;
-  }, [layouts, effectiveLayoutById]);
+  }, [layouts, effectiveLayoutById, agentTaskLinks]);
 
   const agentLikeIndexById = useMemo(() => {
     const map = new Map<string, number>();
@@ -429,17 +455,50 @@ export function Canvas({
             pointerEvents: "none",
           }}
         >
-          {connectionLines.map((line, i) => (
-            <path
-              key={i}
-              d={getCurvedPath(line.x1, line.y1, line.x2, line.y2)}
-              fill="none"
-              stroke={line.color ?? "var(--connection-stroke, #7aa2f7)"}
-              strokeWidth="2"
-              strokeOpacity="0.8"
-              strokeLinecap="round"
-            />
-          ))}
+          {connectionLines.map((line, i) => {
+            const pathD = getCurvedPath(line.x1, line.y1, line.x2, line.y2);
+            const midX = (line.x1 + line.x2) / 2;
+            const midY = (line.y1 + line.y2) / 2;
+            return (
+              <g key={i}>
+                <path
+                  d={pathD}
+                  fill="none"
+                  stroke={line.color ?? "var(--connection-stroke, #7aa2f7)"}
+                  strokeWidth="2"
+                  strokeOpacity="0.8"
+                  strokeLinecap="round"
+                />
+                {line.label && (
+                  <>
+                    <rect
+                      x={midX - 28}
+                      y={midY - 9}
+                      width={56}
+                      height={18}
+                      rx={4}
+                      fill="var(--ml-bg-card, #1a1b26)"
+                      stroke={line.color ?? "#7aa2f7"}
+                      strokeWidth="1"
+                      strokeOpacity="0.6"
+                    />
+                    <text
+                      x={midX}
+                      y={midY + 4}
+                      textAnchor="middle"
+                      fontSize="9"
+                      fontWeight="700"
+                      fontFamily="ui-monospace, monospace"
+                      fill={line.color ?? "#7aa2f7"}
+                      opacity="0.9"
+                    >
+                      {line.label.length > 8 ? line.label.slice(0, 7) + "…" : line.label}
+                    </text>
+                  </>
+                )}
+              </g>
+            );
+          })}
         </svg>
         {layouts.map((layout) => {
           if (!visibleIds.has(layout.session_id)) return null;

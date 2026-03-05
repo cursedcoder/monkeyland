@@ -18,6 +18,7 @@ import { CompleteTaskPlugin } from "./plugins/CompleteTaskPlugin";
 import { WriteFileToolPlugin } from "./plugins/WriteFileToolPlugin";
 import { ReadFileToolPlugin } from "./plugins/ReadFileToolPlugin";
 import { DispatchAgentPlugin } from "./plugins/DispatchAgentPlugin";
+import { BeadsStoreProvider } from "./stores/beadsStore";
 import {
   PauseOrchestrationPlugin,
   ResumeOrchestrationPlugin,
@@ -2943,30 +2944,32 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
             {theme === "light" ? "🌙" : "☀️"}
           </button>
         </header>
-        <Canvas
-          layouts={layouts}
-          onLayoutChange={handleLayoutChange}
-          onLayoutCommit={handleLayoutCommit}
-          onRemoveLayout={handleRemoveLayout}
-          onPromptChange={handlePromptChange}
-          onLaunch={handleLaunch}
-          onStopAgent={handleStopAgent}
-          onAddTaskCard={handleAddTaskCard}
-          onBeadsStatusChange={updateBeadsStatus}
-          wmChatMessages={wmConversation}
-          wmPhase={wmPhase}
-          wmIsProcessing={wmIsProcessing}
-          wmStreamingContent={wmStreamingContent}
-          wmStreamingToolCalls={wmStreamingToolCalls}
-          wmTaskProgress={wmTaskProgress}
-          wmOrchStatus={wmOrchStatus}
-          wmInlineAgents={wmInlineAgents}
-          onWMToggleInlineAgent={handleToggleInlineAgent}
-          onWMSendMessage={handleWMMessage}
-          onWMPause={handleWMPause}
-          onWMResume={handleWMResume}
-          onWMCancelAll={handleWMCancelAll}
-        />
+        <BeadsStoreProvider layouts={layouts}>
+          <Canvas
+            layouts={layouts}
+            onLayoutChange={handleLayoutChange}
+            onLayoutCommit={handleLayoutCommit}
+            onRemoveLayout={handleRemoveLayout}
+            onPromptChange={handlePromptChange}
+            onLaunch={handleLaunch}
+            onStopAgent={handleStopAgent}
+            onAddTaskCard={handleAddTaskCard}
+            onBeadsStatusChange={updateBeadsStatus}
+            wmChatMessages={wmConversation}
+            wmPhase={wmPhase}
+            wmIsProcessing={wmIsProcessing}
+            wmStreamingContent={wmStreamingContent}
+            wmStreamingToolCalls={wmStreamingToolCalls}
+            wmTaskProgress={wmTaskProgress}
+            wmOrchStatus={wmOrchStatus}
+            wmInlineAgents={wmInlineAgents}
+            onWMToggleInlineAgent={handleToggleInlineAgent}
+            onWMSendMessage={handleWMMessage}
+            onWMPause={handleWMPause}
+            onWMResume={handleWMResume}
+            onWMCancelAll={handleWMCancelAll}
+          />
+        </BeadsStoreProvider>
         <WorkforceOverlay wmPhase={wmPhase} orchStatus={wmOrchStatus} />
         <DebugPanel
           onCopyDebug={handleCopyDebug}
