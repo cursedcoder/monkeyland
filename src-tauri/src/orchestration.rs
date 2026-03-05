@@ -169,7 +169,50 @@ fn close_eligible_epic_ids_sync(project_path: &Path) -> Result<Vec<String>, Stri
     Ok(close_eligible_from_task_list(items))
 }
 
-/// Parse a full task list to find epic IDs whose children are ALL done.
+/// Like `close_eligible_epic_ids_sync` but routes all bd calls through `env.run_bd()`,
+/// enabling test mocking. Tries `bd epic close-eligible --json` first, then falls back
+/// to `bd list --json --all --limit 0` with in-process parsing.
+fn close_eligible_epic_ids_via_env(
+    env: &dyn OrchEnv,
+    project_path: &Path,
+) -> Result<Vec<String>, String> {
+    let preferred = vec![
+        "epic".to_string(),
+        "close-eligible".to_string(),
+        "--json".to_string(),
+    ];
+    if let Ok(stdout) = env.run_bd(project_path, &preferred) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(arr) = val.as_array() {
+                let mut ids: Vec<String> = arr
+                    .iter()
+                    .filter_map(|epic| epic.get("id").and_then(|v| v.as_str()))
+                    .map(|s| s.to_string())
+                    .collect();
+                ids.sort();
+                ids.dedup();
+                return Ok(ids);
+            }
+        }
+    }
+
+    // Fallback: derive close-eligible epics from full task list.
+    let list_args = vec![
+        "list".to_string(),
+        "--json".to_string(),
+        "--all".to_string(),
+        "--limit".to_string(),
+        "0".to_string(),
+    ];
+    let stdout = env.run_bd(project_path, &list_args)?;
+    let val: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse bd list json for epic fallback: {e}"))?;
+    let Some(items) = val.as_array() else {
+        return Ok(Vec::new());
+    };
+    Ok(close_eligible_from_task_list(items))
+}
+
 /// Extracted from `close_eligible_epic_ids_sync` for testability.
 fn close_eligible_from_task_list(items: &[serde_json::Value]) -> Vec<String> {
     let mut epics = HashSet::new();
@@ -1109,13 +1152,7 @@ pub async fn tick(
     //    If direct close is unavailable, fallback to status update.
     //    If both fail, append a PM nudge note.
     {
-        let path_epic = path.to_path_buf();
-        if let Ok(Ok(epic_ids)) = tokio::task::spawn_blocking({
-            let path_epic = path_epic.clone();
-            move || close_eligible_epic_ids_sync(&path_epic)
-        })
-        .await
-        {
+        if let Ok(epic_ids) = close_eligible_epic_ids_via_env(env, path) {
             for epic_id in epic_ids {
                 let close_args = vec!["close".to_string(), epic_id.clone()];
                 if env.run_bd(path, &close_args).is_ok() {
@@ -1500,6 +1537,8 @@ mod tests {
         bd_calls: Arc<StdMutex<Vec<BdCall>>>,
         /// Canned response for `bd ready --json`.  Set before calling tick().
         bd_ready_response: StdMutex<String>,
+        /// Canned response for `bd list --json --all --limit 0`.
+        bd_list_response: StdMutex<Option<String>>,
         /// If true, all bd calls succeed with empty string.  Otherwise errors.
         bd_default_ok: bool,
     }
@@ -1510,12 +1549,17 @@ mod tests {
                 events: Arc::new(StdMutex::new(Vec::new())),
                 bd_calls: Arc::new(StdMutex::new(Vec::new())),
                 bd_ready_response: StdMutex::new("[]".to_string()),
+                bd_list_response: StdMutex::new(None),
                 bd_default_ok: true,
             }
         }
 
         fn set_ready_tasks(&self, json: &str) {
             *self.bd_ready_response.lock().unwrap() = json.to_string();
+        }
+
+        fn set_list_tasks(&self, json: &str) {
+            *self.bd_list_response.lock().unwrap() = Some(json.to_string());
         }
 
         fn events(&self) -> Vec<EmittedEvent> {
@@ -1576,9 +1620,18 @@ mod tests {
             {
                 return Ok("{}".to_string());
             }
-            // Return empty array for epic commands
-            if args.first().map(|a| a.as_str()) == Some("epic") {
+            // Return empty array for epic commands, except close-eligible which is
+            // not supported in the mock (fall through to list-based fallback).
+            if args.first().map(|a| a.as_str()) == Some("epic")
+                && args.get(1).map(|a| a.as_str()) != Some("close-eligible")
+            {
                 return Ok("[]".to_string());
+            }
+            // Return canned response for `bd list --json --all --limit 0`
+            if args.first().map(|a| a.as_str()) == Some("list") {
+                if let Some(ref json) = *self.bd_list_response.lock().unwrap() {
+                    return Ok(json.clone());
+                }
             }
             if self.bd_default_ok {
                 Ok(String::new())
@@ -2418,6 +2471,7 @@ mod tests {
             bd_ready_response: StdMutex::new(
                 r#"[{"id":"bd-noclaim","issue_type":"task","priority":2}]"#.to_string(),
             ),
+            bd_list_response: StdMutex::new(None),
             bd_default_ok: false, // claim will fail
         };
 
@@ -5234,6 +5288,7 @@ mod tests {
             {"id": "task-1", "type": "task", "status": "done", "parent": "epic-1"}
         ]"#;
         env.set_ready_tasks(tasks_json);
+        env.set_list_tasks(tasks_json);
 
         // Pre-claim tasks so tick doesn't spawn agents for them
         registry
@@ -5261,7 +5316,8 @@ mod tests {
         // 3. Verify epic_closed event was emitted
         let closed_events = env.events_named("epic_closed");
         if closed_events.is_empty() {
-            let eligible = close_eligible_epic_ids_sync(Path::new(project_path)).unwrap();
+            let eligible =
+                close_eligible_epic_ids_sync(Path::new(project_path)).unwrap_or_default();
             eprintln!("[test] eligible epics: {:?}", eligible);
         }
         assert_eq!(

@@ -226,7 +226,9 @@ export default function App() {
         const filtered: SessionLayout[] = [
           ...withContent.map((x) => x.layout),
           ...keptEmpty,
-          ...others,
+          // Browser cards are transient — the server process doesn't survive restart,
+          // so drop them on load to avoid stale-port connection errors.
+          ...others.filter((l) => l.node_type !== "browser"),
         ];
         if (filtered.length > 0) {
           setLayouts(filtered);
