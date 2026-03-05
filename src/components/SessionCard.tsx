@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownLinkComponents } from "../utils/markdownLinks";
 import type { SessionLayout, AgentRole } from "../types";
 import {
   SESSION_CARD_MIN_W,
@@ -527,7 +528,7 @@ export const SessionCard = React.memo(function SessionCard({
                 )}
                 {parsed.answer ? (
                   <div className="session-card-response-text session-card-markdown">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>
                       {parsed.answer}
                     </ReactMarkdown>
                   </div>
@@ -538,7 +539,7 @@ export const SessionCard = React.memo(function SessionCard({
                 <p className="session-card-response-stopped">Stopped</p>
                 {parsed.answer ? (
                   <div className="session-card-response-text session-card-markdown">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>
                       {parsed.answer}
                     </ReactMarkdown>
                   </div>
@@ -551,7 +552,7 @@ export const SessionCard = React.memo(function SessionCard({
                 </p>
                 {parsed.answer ? (
                   <div className="session-card-response-text session-card-markdown">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>
                       {parsed.answer}
                     </ReactMarkdown>
                   </div>
@@ -564,7 +565,7 @@ export const SessionCard = React.memo(function SessionCard({
                 </p>
                 {parsed.answer ? (
                   <div className="session-card-response-text session-card-markdown">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>
                       {parsed.answer}
                     </ReactMarkdown>
                   </div>
@@ -573,7 +574,7 @@ export const SessionCard = React.memo(function SessionCard({
             ) : parsed.status === "done" && parsed.answer != null ? (
               <div className="session-card-response">
                 <div className="session-card-response-text session-card-markdown">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>
                     {parsed.answer}
                   </ReactMarkdown>
                 </div>

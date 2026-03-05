@@ -612,6 +612,7 @@ export function Canvas({
                 onLayoutChange={handleCardLayoutChange(layout.session_id)}
                 onLayoutCommit={handleCardLayoutCommit(layout.session_id)}
                 onDragStart={handleDragStart}
+                onClose={getStableClose(layout.session_id)}
                 scale={viewport.scale}
               />
             );

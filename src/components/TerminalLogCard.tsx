@@ -24,6 +24,7 @@ interface TerminalLogCardProps {
   onLayoutChange: (layout: SessionLayout) => void;
   onLayoutCommit: (layout: SessionLayout) => void;
   onDragStart?: (nodeId: string, layout: SessionLayout) => void;
+  onClose?: () => void;
   scale?: number;
 }
 
@@ -42,6 +43,7 @@ export const TerminalLogCard = React.memo(function TerminalLogCard({
   onLayoutChange,
   onLayoutCommit,
   onDragStart,
+  onClose,
   scale = 1,
 }: TerminalLogCardProps) {
   const [isDragging, setIsDragging] = useState(false);
@@ -291,6 +293,18 @@ export const TerminalLogCard = React.memo(function TerminalLogCard({
         >
           {layout.collapsed ? "▶" : "▼"}
         </button>
+        {onClose && (
+          <button
+            type="button"
+            className="terminal-log-card-collapse"
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
+            onPointerDown={(e) => e.stopPropagation()}
+            aria-label="Close"
+            title="Close"
+          >
+            ✕
+          </button>
+        )}
       </div>
       {!layout.collapsed && (
         <>

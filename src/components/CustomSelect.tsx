@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 
 interface Option {
   value: string;
@@ -19,6 +20,7 @@ const SEARCH_THRESHOLD = 10;
 export function CustomSelect({ value, options, onChange, placeholder, className = "" }: CustomSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
   const containerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -32,15 +34,40 @@ export function CustomSelect({ value, options, onChange, placeholder, className 
     [showSearch, query, options]
   );
 
+  const updateDropdownPosition = useCallback(() => {
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      setDropdownStyle({
+        position: "fixed",
+        top: `${rect.bottom + 4}px`,
+        left: `${rect.left}px`,
+        minWidth: `${rect.width}px`,
+        zIndex: 9999,
+      });
+    }
+  }, []);
+
   const handleOpen = useCallback(() => {
+    updateDropdownPosition();
     setOpen(true);
     setQuery("");
-  }, []);
+  }, [updateDropdownPosition]);
 
   const handleClose = useCallback(() => {
     setOpen(false);
     setQuery("");
   }, []);
+
+  useEffect(() => {
+    if (open) {
+      window.addEventListener("scroll", handleClose, true);
+      window.addEventListener("resize", handleClose);
+    }
+    return () => {
+      window.removeEventListener("scroll", handleClose, true);
+      window.removeEventListener("resize", handleClose);
+    };
+  }, [open, handleClose]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -59,11 +86,72 @@ export function CustomSelect({ value, options, onChange, placeholder, className 
     };
   }, [open, showSearch, handleClose]);
 
+  const dropdown = open && (
+    <div 
+      className="custom-select-dropdown" 
+      style={dropdownStyle}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      {showSearch && (
+        <div className="custom-select-search">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input
+            ref={searchRef}
+            type="text"
+            className="custom-select-search-input"
+            placeholder="Search..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") handleClose();
+              if (e.key === "Enter" && filtered.length > 0) {
+                onChange(filtered[0].value);
+                handleClose();
+              }
+            }}
+          />
+          {query && (
+            <button className="custom-select-search-clear" onClick={() => setQuery("")}>×</button>
+          )}
+        </div>
+      )}
+      <div className="custom-select-options">
+        {filtered.length === 0 ? (
+          <div className="custom-select-empty">No results</div>
+        ) : (
+          filtered.map((opt) => (
+            <div
+              key={opt.value}
+              className={`custom-select-option ${opt.value === value ? "selected" : ""} ${opt.className || ""}`}
+              onClick={() => {
+                onChange(opt.value);
+                handleClose();
+              }}
+            >
+              {opt.label}
+              {opt.value === value && (
+                <span className="custom-select-check">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                </span>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className={`custom-select ${className}`} ref={containerRef}>
       <div
         className={`custom-select-trigger ${open ? "open" : ""}`}
         onClick={() => (open ? handleClose() : handleOpen())}
+        onPointerDown={(e) => e.stopPropagation()}
       >
         <span className="custom-select-value">
           {selectedOption ? selectedOption.label : placeholder || "Select..."}
@@ -74,62 +162,7 @@ export function CustomSelect({ value, options, onChange, placeholder, className 
           </svg>
         </span>
       </div>
-
-      {open && (
-        <div className="custom-select-dropdown">
-          {showSearch && (
-            <div className="custom-select-search">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8"></circle>
-                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-              </svg>
-              <input
-                ref={searchRef}
-                type="text"
-                className="custom-select-search-input"
-                placeholder="Search..."
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") handleClose();
-                  if (e.key === "Enter" && filtered.length > 0) {
-                    onChange(filtered[0].value);
-                    handleClose();
-                  }
-                }}
-              />
-              {query && (
-                <button className="custom-select-search-clear" onClick={() => setQuery("")}>×</button>
-              )}
-            </div>
-          )}
-          <div className="custom-select-options">
-            {filtered.length === 0 ? (
-              <div className="custom-select-empty">No results</div>
-            ) : (
-              filtered.map((opt) => (
-                <div
-                  key={opt.value}
-                  className={`custom-select-option ${opt.value === value ? "selected" : ""} ${opt.className || ""}`}
-                  onClick={() => {
-                    onChange(opt.value);
-                    handleClose();
-                  }}
-                >
-                  {opt.label}
-                  {opt.value === value && (
-                    <span className="custom-select-check">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="20 6 9 17 4 12"></polyline>
-                      </svg>
-                    </span>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
+      {createPortal(dropdown, document.body)}
     </div>
   );
 }

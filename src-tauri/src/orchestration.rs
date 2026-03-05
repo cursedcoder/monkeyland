@@ -1048,6 +1048,12 @@ pub async fn tick(
                 let close_args = vec!["close".to_string(), epic_id.clone()];
                 if env.run_bd(path, &close_args).is_ok() {
                     eprintln!("[orch] auto-closed epic {} via `bd close`", epic_id);
+                    // Notify frontend to close the PM card if any
+                    let _ = env_emit(
+                        env,
+                        "epic_closed",
+                        &serde_json::json!({ "epic_id": epic_id.clone() }),
+                    );
                     // Notify workforce manager with structured event
                     if let Ok(Some(wm_id)) = registry.get_workforce_manager_id() {
                         let event = crate::agent_registry::SystemEvent::EpicClosed {
@@ -1068,6 +1074,12 @@ pub async fn tick(
                 ];
                 if env.run_bd(path, &done_args).is_ok() {
                     eprintln!("[orch] auto-closed epic {} via status fallback", epic_id);
+                    // Notify frontend to close the PM card if any
+                    let _ = env_emit(
+                        env,
+                        "epic_closed",
+                        &serde_json::json!({ "epic_id": epic_id.clone() }),
+                    );
                     // Notify workforce manager with structured event
                     if let Ok(Some(wm_id)) = registry.get_workforce_manager_id() {
                         let event = crate::agent_registry::SystemEvent::EpicClosed {
@@ -5036,9 +5048,86 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Helper: run git commands concisely in tests
+    // E2E: Epic auto-close emits epic_closed event
     // -----------------------------------------------------------------------
 
+    #[tokio::test]
+    async fn auto_close_epics_emits_epic_closed_event() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        // 1. Setup an epic that is eligible to close
+        meta_db
+            .set_setting(BEADS_PROJECT_PATH_KEY, project_path)
+            .unwrap();
+        // Mock bd init by creating .beads directory
+        std::fs::create_dir_all(repo.path().join(".beads")).unwrap();
+
+        // In our TestOrchEnv, close_eligible_epic_ids_sync will use close_eligible_from_task_list
+        // which parses the full task list.
+        let tasks_json = r#"[
+            {"id": "epic-1", "issue_type": "epic", "status": "in_progress"},
+            {"id": "task-1", "type": "task", "status": "done", "parent": "epic-1"}
+        ]"#;
+        env.set_ready_tasks(tasks_json);
+
+        // Pre-claim tasks so tick doesn't spawn agents for them
+        registry
+            .spawn(
+                "project_manager",
+                Some("epic-1".to_string()),
+                None,
+                Some(project_path.to_string()),
+            )
+            .unwrap();
+        registry
+            .spawn(
+                "developer",
+                Some("task-1".to_string()),
+                None,
+                Some(project_path.to_string()),
+            )
+            .unwrap();
+
+        // 2. Run tick
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        // 3. Verify epic_closed event was emitted
+        let closed_events = env.events_named("epic_closed");
+        if closed_events.is_empty() {
+            let eligible = close_eligible_epic_ids_sync(Path::new(project_path)).unwrap();
+            eprintln!("[test] eligible epics: {:?}", eligible);
+        }
+        assert_eq!(
+            closed_events.len(),
+            1,
+            "epic_closed event should be emitted when an epic is auto-closed"
+        );
+        assert_eq!(
+            closed_events[0]["epic_id"], "epic-1",
+            "epic_closed event should contain the correct epic_id"
+        );
+
+        // 4. Verify bd close was called
+        let bd_calls = env.bd_calls_matching("epic-1");
+        assert!(
+            bd_calls
+                .iter()
+                .any(|args| args.contains(&"close".to_string())),
+            "bd close should have been called for epic-1"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: run git commands concisely in tests
+    // -----------------------------------------------------------------------
     fn git(dir: &Path, args: &[&str]) -> std::process::Output {
         std::process::Command::new("git")
             .args(args)

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownLinkComponents } from "../utils/markdownLinks";
 import type { SessionLayout } from "../types";
 import type { InlineOperatorState } from "../App";
 import {
@@ -404,7 +405,7 @@ export const WMChatCard = React.memo(function WMChatCard({
             </div>
             <div className="wm-chat-card-message-content">
               {msg.role === "assistant" ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>
                   {msg.content}
                 </ReactMarkdown>
               ) : (
@@ -428,7 +429,7 @@ export const WMChatCard = React.memo(function WMChatCard({
             <div className="wm-chat-card-message-content">
               {streamingContent ? (
                 <>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>
                     {streamingContent}
                   </ReactMarkdown>
                   {streamingToolCalls && streamingToolCalls.length > 0 && (
@@ -497,13 +498,13 @@ export const WMChatCard = React.memo(function WMChatCard({
                       )}
                       {agent.status === "running" && agent.streamingContent ? (
                         <div className="wm-inline-agent-content">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>
                             {agent.streamingContent}
                           </ReactMarkdown>
                         </div>
                       ) : agent.answer ? (
                         <div className="wm-inline-agent-content">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>
                             {agent.answer}
                           </ReactMarkdown>
                         </div>

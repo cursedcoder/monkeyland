@@ -5,13 +5,12 @@ import type { SessionLayout, BeadsTask } from "../types";
 import {
   BEADS_CARD_MIN_W,
   BEADS_CARD_MIN_H,
-  BEADS_CARD_MAX_H,
-  GRID_STEP,
 } from "../types";
 import { cardColorsFromId } from "../utils/cardColors";
 import { snap } from "../utils/layoutHelpers";
 import { useBeadsStoreOptional } from "../stores/beadsStore";
 import { BeadsDependencyGraph } from "./BeadsDependencyGraph";
+import { CustomSelect } from "./CustomSelect";
 
 export interface BeadsStatus {
   projectPath: string;
@@ -347,22 +346,6 @@ export const BeadsCard = React.memo(function BeadsCard({
 
   const effectiveMergeStatuses = store ? mergeStatuses : localMergeStatuses;
 
-  useEffect(() => {
-    if (layout.collapsed || isResizing || !cardRef.current) return;
-    const el = cardRef.current;
-    const observer = new ResizeObserver(() => {
-      const renderedH = el.offsetHeight;
-      const clamped = Math.min(Math.max(renderedH, BEADS_CARD_MIN_H), BEADS_CARD_MAX_H);
-      const snapped = Math.round(clamped / GRID_STEP) * GRID_STEP;
-      if (snapped !== layoutRef.current.h) {
-        const next = { ...layoutRef.current, h: snapped };
-        onLayoutChangeRef.current(next);
-        onLayoutCommitRef.current(next);
-      }
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [layout.collapsed, isResizing]);
 
   // --- Drag/resize handlers (unchanged logic) ---
   const handlePointerDownDrag = useCallback(
@@ -644,8 +627,7 @@ export const BeadsCard = React.memo(function BeadsCard({
         left: displayLayout.x,
         top: displayLayout.y,
         width: displayLayout.w,
-        height: displayLayout.collapsed ? 48 : "auto",
-        maxHeight: displayLayout.collapsed ? 48 : BEADS_CARD_MAX_H,
+        height: displayLayout.collapsed ? 48 : displayLayout.h,
         cursor: "default",
         userSelect: isDragging ? "none" : "auto",
         ["--card-accent" as string]: cardColors.primary,
@@ -779,30 +761,28 @@ export const BeadsCard = React.memo(function BeadsCard({
                       onChange={e => setSearchQuery(e.target.value)}
                       onPointerDown={e => e.stopPropagation()}
                     />
-                    <select
+                    <CustomSelect
                       className="beads-filter-select"
                       value={statusFilter}
-                      onChange={e => setStatusFilter(e.target.value as StatusFilter)}
-                      onPointerDown={e => e.stopPropagation()}
-                    >
-                      <option value="all">All status</option>
-                      <option value="active">Active</option>
-                      <option value="ready">Ready</option>
-                      <option value="blocked">Blocked</option>
-                      <option value="done">Done</option>
-                    </select>
+                      options={[
+                        { value: "all", label: "All status" },
+                        { value: "active", label: "Active" },
+                        { value: "ready", label: "Ready" },
+                        { value: "blocked", label: "Blocked" },
+                        { value: "done", label: "Done" },
+                      ]}
+                      onChange={val => setStatusFilter(val as StatusFilter)}
+                    />
                     {availableTypes.length > 1 && (
-                      <select
+                      <CustomSelect
                         className="beads-filter-select"
                         value={typeFilter}
-                        onChange={e => setTypeFilter(e.target.value)}
-                        onPointerDown={e => e.stopPropagation()}
-                      >
-                        <option value="all">All types</option>
-                        {availableTypes.map(t => (
-                          <option key={t} value={t}>{t}</option>
-                        ))}
-                      </select>
+                        options={[
+                          { value: "all", label: "All types" },
+                          ...availableTypes.map(t => ({ value: t, label: t })),
+                        ]}
+                        onChange={val => setTypeFilter(val)}
+                      />
                     )}
                   </div>
                 )}
@@ -856,34 +836,31 @@ export const BeadsCard = React.memo(function BeadsCard({
                       autoFocus
                     />
                     <div className="beads-create-row">
-                      <select
+                      <CustomSelect
                         className="beads-create-select"
                         value={createType}
-                        onChange={e => setCreateType(e.target.value)}
-                        onPointerDown={e => e.stopPropagation()}
-                      >
-                        {TASK_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                      </select>
-                      <select
+                        options={TASK_TYPES.map(t => ({ value: t, label: t }))}
+                        onChange={val => setCreateType(val)}
+                      />
+                      <CustomSelect
                         className="beads-create-select"
-                        value={createPriority}
-                        onChange={e => setCreatePriority(Number(e.target.value))}
-                        onPointerDown={e => e.stopPropagation()}
-                      >
-                        {PRIORITY_OPTIONS.map(p => (
-                          <option key={p.value} value={p.value}>{p.icon} {p.label}</option>
-                        ))}
-                      </select>
+                        value={String(createPriority)}
+                        options={PRIORITY_OPTIONS.map(p => ({
+                          value: String(p.value),
+                          label: `${p.icon} ${p.label}`,
+                        }))}
+                        onChange={val => setCreatePriority(Number(val))}
+                      />
                       {epicId && (
-                        <select
+                        <CustomSelect
                           className="beads-create-select"
                           value={createParent}
-                          onChange={e => setCreateParent(e.target.value)}
-                          onPointerDown={e => e.stopPropagation()}
-                        >
-                          <option value="">No parent</option>
-                          <option value={epicId}>{epicId}</option>
-                        </select>
+                          options={[
+                            { value: "", label: "No parent" },
+                            { value: epicId, label: epicId },
+                          ]}
+                          onChange={val => setCreateParent(val)}
+                        />
                       )}
                     </div>
                     <div className="beads-create-actions">
@@ -961,8 +938,19 @@ export const BeadsCard = React.memo(function BeadsCard({
             className="beads-card-resize-handle e"
             data-resize-handle
             onPointerDown={e => handlePointerDownResize(e, "e")}
-            title="Drag to resize width"
-            aria-label="Resize card width"
+            aria-label="Resize width"
+          />
+          <div
+            className="beads-card-resize-handle s"
+            data-resize-handle
+            onPointerDown={e => handlePointerDownResize(e, "s")}
+            aria-label="Resize height"
+          />
+          <div
+            className="beads-card-resize-handle se"
+            data-resize-handle
+            onPointerDown={e => handlePointerDownResize(e, "se")}
+            aria-label="Resize"
           />
         </>
       )}

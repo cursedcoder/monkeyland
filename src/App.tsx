@@ -1289,10 +1289,34 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
   }, []);
 
   const handleToggleInlineAgent = useCallback((agentId: string) => {
-    setWmInlineAgents((prev) =>
-      prev.map((a) => (a.agentId === agentId ? { ...a, collapsed: !a.collapsed } : a)),
-    );
-  }, []);
+    setWmInlineAgents((prev) => {
+      const agent = prev.find((a) => a.agentId === agentId);
+      if (!agent) return prev;
+      if (agent.status === "done" || agent.status === "error") {
+        // Remove the agent and its associated terminal log card
+        const next = prev.filter((a) => a.agentId !== agentId);
+        
+        setLayouts((prevLayouts) => {
+          const nextLayouts = prevLayouts.filter((l) => {
+            if (l.node_type !== "terminal_log") return true;
+            try {
+              const p = JSON.parse(l.payload ?? "{}") as { parentAgentId?: string };
+              return p.parentAgentId !== agentId;
+            } catch {
+              return true;
+            }
+          });
+          if (loaded.current && nextLayouts.length < prevLayouts.length) {
+            persistLayouts(nextLayouts);
+          }
+          return nextLayouts;
+        });
+        
+        return next;
+      }
+      return prev.map((a) => (a.agentId === agentId ? { ...a, collapsed: !a.collapsed } : a));
+    });
+  }, [persistLayouts]);
 
   // Auto-remove completed tasks and their children
   const completionTimesRef = useRef<Map<string, number>>(new Map());
@@ -1896,6 +1920,31 @@ Please call \`yield_for_review\` now to submit your work for validation.`;
         taskMeta,
         parentAgentId: parentRef,
         projectPath: resolvedProjectPath,
+      });
+    });
+
+    return () => {
+      safeUnlisten(unlisten);
+    };
+  }, []);
+
+  // Listen for epic_closed events to close PM cards
+  useEffect(() => {
+    const unlisten = listen<{ epic_id: string }>("epic_closed", (event) => {
+      const { epic_id } = event.payload;
+      setLayouts((prev) => {
+        const next = prev.filter((l) => {
+          if (l.node_type !== "agent") return true;
+          try {
+            const p = JSON.parse(l.payload ?? "{}") as Record<string, unknown>;
+            // Close the card if it's a PM agent working on this epic
+            return !(p.role === "project_manager" && p.task_id === epic_id);
+          } catch {
+            return true;
+          }
+        });
+        if (loaded.current) persistLayoutsRef.current(next);
+        return next;
       });
     });
 

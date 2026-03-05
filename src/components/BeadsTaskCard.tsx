@@ -8,6 +8,7 @@ import {
 import { cardColorsFromId } from "../utils/cardColors";
 import { snap } from "../utils/layoutHelpers";
 import { useBeadsStoreOptional, type ActivityEvent } from "../stores/beadsStore";
+import { CustomSelect } from "./CustomSelect";
 
 interface BeadsTaskCardProps {
   layout: SessionLayout;
@@ -325,30 +326,25 @@ export const BeadsTaskCard = React.memo(function BeadsTaskCard({
       <div className="beads-task-card-fields" data-no-drag>
         <div className="beads-task-card-field-row">
           <span className="beads-task-card-field-label">Status</span>
-          <select
+          <CustomSelect
             className="beads-task-card-field-select"
             value={currentStatus}
-            onChange={e => void handleStatusChange(e.target.value)}
-            onPointerDown={e => e.stopPropagation()}
-          >
-            {STATUS_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
+            options={STATUS_OPTIONS}
+            onChange={val => void handleStatusChange(val)}
+          />
         </div>
         <div className="beads-task-card-field-row">
           <span className="beads-task-card-field-label">Priority</span>
-          <select
+          <CustomSelect
             className="beads-task-card-field-select"
-            value={typeof task.priority === "number" ? task.priority : ""}
-            onChange={e => void handlePriorityChange(Number(e.target.value))}
-            onPointerDown={e => e.stopPropagation()}
-          >
-            <option value="" disabled>—</option>
-            {PRIORITY_OPTIONS.map(p => (
-              <option key={p.value} value={p.value}>{p.icon} {p.label}</option>
-            ))}
-          </select>
+            value={typeof task.priority === "number" ? String(task.priority) : ""}
+            placeholder="—"
+            options={PRIORITY_OPTIONS.map(p => ({
+              value: String(p.value),
+              label: `${p.icon} ${p.label}`,
+            }))}
+            onChange={val => void handlePriorityChange(Number(val))}
+          />
         </div>
         {assignee && (
           <div className="beads-task-card-field-row">

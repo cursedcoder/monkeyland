@@ -89,11 +89,11 @@ export const WORKER_CARD_MIN_H = 48;
 export const VALIDATOR_CARD_DEFAULT_W = 300;
 export const VALIDATOR_CARD_DEFAULT_H = 200;
 /** Beads project/task-graph card. */
-export const BEADS_CARD_DEFAULT_W = 520;
-export const BEADS_CARD_DEFAULT_H = 360;
-export const BEADS_CARD_MIN_W = 360;
-export const BEADS_CARD_MIN_H = 200;
-export const BEADS_CARD_MAX_H = 720;
+export const BEADS_CARD_DEFAULT_W = 620;
+export const BEADS_CARD_DEFAULT_H = 460;
+export const BEADS_CARD_MIN_W = 380;
+export const BEADS_CARD_MIN_H = 220;
+export const BEADS_CARD_MAX_H = 1200;
 export const BEADS_TASK_CARD_DEFAULT_W = 380;
 export const BEADS_TASK_CARD_DEFAULT_H = 280;
 export const BEADS_TASK_CARD_MIN_W = 320;
