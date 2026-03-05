@@ -4341,6 +4341,626 @@ mod tests {
         assert_eq!(f2, "changed by task 2", "task 2 change on main");
     }
 
+    // ===================================================================
+    // Error-path tests — catching user-reported bugs
+    // ===================================================================
+
+    // -----------------------------------------------------------------------
+    // USER BUG: "Task was completed but then another agent started working
+    // on it again, producing duplicate commits on main."
+    //
+    // Root cause: merge succeeds (changes land on main), but bd close AND
+    // the fallback bd update --status done both fail (Beads is temporarily
+    // unreachable). The agent is killed, merge_status=done is emitted, and
+    // the task branch is deleted. Next tick, bd ready returns the task
+    // because Beads still thinks it's "ready". claimed_task_ids is empty
+    // (agent killed) and queued_tasks is empty (entry processed), so a new
+    // developer is spawned for already-merged work.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn bd_close_fails_after_merge_allows_duplicate_respawn() {
+        struct BdCloseFailsEnv {
+            inner: TestOrchEnv,
+        }
+        impl OrchEnv for BdCloseFailsEnv {
+            fn emit_event(&self, event: &str, payload: serde_json::Value) -> Result<(), String> {
+                self.inner.emit_event(event, payload)
+            }
+            fn run_bd(&self, _project_path: &Path, args: &[String]) -> Result<String, String> {
+                self.inner.bd_calls.lock().unwrap().push(BdCall {
+                    args: args.to_vec(),
+                });
+                if args.first().map(|a| a.as_str()) == Some("close") {
+                    return Err("bd close: connection refused".to_string());
+                }
+                if args.contains(&"update".to_string())
+                    && args.contains(&"--status".to_string())
+                    && args.contains(&"done".to_string())
+                {
+                    return Err("bd update --status done: connection refused".to_string());
+                }
+                if args.len() >= 2 && args[0] == "ready" && args[1] == "--json" {
+                    return Ok(self.inner.bd_ready_response.lock().unwrap().clone());
+                }
+                if args.len() >= 3
+                    && args[0] == "show"
+                    && args.last().map(|a| a.as_str()) == Some("--json")
+                {
+                    return Ok("{}".to_string());
+                }
+                if args.first().map(|a| a.as_str()) == Some("epic") {
+                    return Ok("[]".to_string());
+                }
+                Ok(String::new())
+            }
+            fn spawn_pty(
+                &self,
+                id: &str,
+                cols: u16,
+                rows: u16,
+                cwd: Option<&Path>,
+            ) -> Result<(), String> {
+                self.inner.spawn_pty(id, cols, rows, cwd)
+            }
+            fn kill_pty(&self, id: &str) -> Result<(), String> {
+                self.inner.kill_pty(id)
+            }
+        }
+
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = BdCloseFailsEnv {
+            inner: TestOrchEnv::new(),
+        };
+
+        std::fs::write(repo.path().join("dup.txt"), "original").unwrap();
+        git(repo.path(), &["add", "dup.txt"]);
+        git(repo.path(), &["commit", "-m", "seed"]);
+
+        // Tick 1: spawn developer
+        env.inner
+            .set_ready_tasks(r#"[{"id":"bd-dup","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let agent_id = env.inner.events_named("agent_spawned")[0]["agent_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let wt_path = registry.get_worktree_path(&agent_id).unwrap().unwrap();
+
+        std::fs::write(format!("{wt_path}/dup.txt"), "implemented").unwrap();
+        git_in(&wt_path, &["add", "dup.txt"]);
+        git_in(&wt_path, &["commit", "-m", "dev work"]);
+
+        let yp = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: None,
+            git_branch: Some("task/bd-dup".to_string()),
+        };
+        registry.yield_for_review(&agent_id, yp).unwrap();
+
+        // Tick 2: yield → validation
+        env.inner.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        for role in &["code_review", "business_logic", "scope"] {
+            registry
+                .validation_submit(&agent_id, role, true, vec![])
+                .unwrap();
+        }
+
+        // Tick 3: Done → merge (clean) → bd close FAILS → bd update --status done FAILS
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(repo.path().join("dup.txt")).unwrap();
+        assert_eq!(
+            content, "implemented",
+            "merge should have landed on main despite bd close failure"
+        );
+
+        let statuses = env.inner.events_named("merge_status");
+        assert!(
+            statuses
+                .iter()
+                .any(|e| e["status"] == "done" && e["task_id"] == "bd-dup"),
+            "merge_status=done should be emitted even when bd close fails"
+        );
+
+        let close_attempts: Vec<_> = env
+            .inner
+            .bd_calls_matching("bd-dup")
+            .iter()
+            .filter(|args| args.contains(&"close".to_string()))
+            .cloned()
+            .collect();
+        assert!(
+            !close_attempts.is_empty(),
+            "bd close should have been attempted"
+        );
+
+        // THE BUG: Beads still thinks the task is ready because bd close failed.
+        // Simulate bd returning the task again on the next tick.
+        env.inner
+            .set_ready_tasks(r#"[{"id":"bd-dup","issue_type":"task","priority":2}]"#);
+
+        // Tick 4: bd ready returns the already-merged task
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let dev_spawns: Vec<_> = env
+            .inner
+            .events_named("agent_spawned")
+            .into_iter()
+            .filter(|e| e["task_id"] == "bd-dup" && e["role"] == "developer")
+            .collect();
+
+        assert_eq!(
+            dev_spawns.len(),
+            1,
+            "BUG: task bd-dup was re-spawned after merge succeeded but bd close failed. \
+             Changes are already on main but a new developer was created for duplicate work. \
+             Fix: track recently-merged task IDs and skip them in the spawn loop."
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // USER BUG: "Task was being reviewed, then suddenly reset and a new
+    // agent started it from scratch — all the review progress was lost."
+    //
+    // Root cause: developer's absolute TTL (900s) expires while the agent
+    // is in InReview state waiting for validators. The orchestrator kills
+    // the developer and unclaims the task. Validators that already submitted
+    // results have their work discarded. The task returns to "ready" in
+    // Beads and is re-assigned from scratch.
+    //
+    // This test verifies: (a) pending validation state is cleaned up when
+    // the developer is killed, (b) late validator submissions don't corrupt
+    // state, (c) the task branch survives for potential resumption.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn developer_ttl_expires_in_review_cleanup_and_late_validators() {
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = TestOrchEnv::new();
+
+        std::fs::write(repo.path().join("reviewed.txt"), "original").unwrap();
+        git(repo.path(), &["add", "reviewed.txt"]);
+        git(repo.path(), &["commit", "-m", "seed"]);
+
+        // Tick 1: spawn developer
+        env.set_ready_tasks(r#"[{"id":"bd-review-ttl","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let agent_id = env.events_named("agent_spawned")[0]["agent_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let wt_path = registry.get_worktree_path(&agent_id).unwrap().unwrap();
+
+        std::fs::write(format!("{wt_path}/reviewed.txt"), "reviewed code").unwrap();
+        git_in(&wt_path, &["add", "reviewed.txt"]);
+        git_in(&wt_path, &["commit", "-m", "dev work"]);
+
+        let yp = crate::agent_registry::YieldPayload {
+            status: "done".to_string(),
+            diff_summary: Some("Work done".to_string()),
+            git_branch: Some("task/bd-review-ttl".to_string()),
+        };
+        registry.yield_for_review(&agent_id, yp).unwrap();
+
+        // Tick 2: yield → InReview
+        env.set_ready_tasks("[]");
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let snap = registry.debug_snapshot().unwrap();
+        let agent = snap.agents.iter().find(|a| a.id == agent_id).unwrap();
+        assert_eq!(agent.state, "InReview", "agent should be in InReview");
+
+        // 1 of 3 validators submits (partial validation in progress)
+        registry
+            .validation_submit(&agent_id, "code_review", true, vec![])
+            .unwrap();
+
+        // Developer TTL expires while in InReview (developer TTL = 900s)
+        registry.test_backdate_spawn(&agent_id, std::time::Duration::from_secs(901));
+
+        env.bd_calls.lock().unwrap().clear();
+
+        // Tick 3: TTL kills the developer mid-review
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        // --- Developer killed ---
+        let snap = registry.debug_snapshot().unwrap();
+        assert!(
+            !snap.agents.iter().any(|a| a.id == agent_id),
+            "developer should be killed after TTL expiry in InReview"
+        );
+
+        // --- Pending validation state cleaned up ---
+        let pending: Vec<_> = snap
+            .pending_validations
+            .iter()
+            .filter(|v| v.developer_agent_id == agent_id)
+            .collect();
+        assert_eq!(
+            pending.len(),
+            0,
+            "BUG: pending validation entry for killed developer should be cleaned up. \
+             Stale validation entries can cause late validator submissions to try to \
+             transition a dead agent's state, leading to panics or state corruption."
+        );
+
+        // --- Task unclaimed in Beads ---
+        let unclaim_calls = env.bd_calls_matching("bd-review-ttl").iter().any(|args| {
+            args.contains(&"update".to_string()) && args.contains(&"ready".to_string())
+        });
+        assert!(
+            unclaim_calls,
+            "task should be unclaimed after developer TTL in InReview"
+        );
+
+        // --- Late validator submissions must not panic or corrupt state ---
+        let r1 = registry.validation_submit(&agent_id, "business_logic", true, vec![]);
+        assert!(
+            r1.is_ok(),
+            "late validator submit after developer TTL kill should not panic: {:?}",
+            r1
+        );
+        let r2 = registry.validation_submit(&agent_id, "scope", false, vec!["issue".into()]);
+        assert!(
+            r2.is_ok(),
+            "second late validator submit should not panic: {:?}",
+            r2
+        );
+
+        // --- Task branch survives TTL kill (work is resumable) ---
+        let branch_check = git(
+            repo.path(),
+            &["rev-parse", "--verify", "task/bd-review-ttl"],
+        );
+        assert!(
+            branch_check.status.success(),
+            "task branch should survive TTL kill — the code was partially reviewed \
+             and a future developer can resume from the existing branch"
+        );
+
+        // --- Worktree cleaned up from disk ---
+        assert!(
+            !std::path::Path::new(&wt_path).exists(),
+            "worktree should be removed from disk after TTL kill"
+        );
+
+        // --- Registry fully clean (no ghost agents, no ghost validations) ---
+        let final_snap = registry.debug_snapshot().unwrap();
+        assert_eq!(
+            final_snap.agents.len(),
+            0,
+            "registry should be completely clean after TTL kill"
+        );
+        assert_eq!(
+            final_snap.pending_validations.len(),
+            0,
+            "no pending validation entries should remain"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // USER BUG: "My task says 'in progress' in the tracker but nothing is
+    // happening — no agent is working on it. It's been stuck for hours."
+    //
+    // Root cause: agent TTL expires, but bd update --status ready (the
+    // unclaim call) fails because Beads is temporarily unreachable. The
+    // error is silently swallowed (let _ = ...). The agent is removed from
+    // the registry, but Beads still thinks the task is "in_progress" with
+    // an assignee. On subsequent ticks, bd ready won't return it (it's not
+    // "ready"). No agent picks it up. The task is permanently stuck.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn bd_unclaim_fails_during_ttl_kill_task_permanently_stuck() {
+        struct BdUnclaimFailsEnv {
+            inner: TestOrchEnv,
+        }
+        impl OrchEnv for BdUnclaimFailsEnv {
+            fn emit_event(&self, event: &str, payload: serde_json::Value) -> Result<(), String> {
+                self.inner.emit_event(event, payload)
+            }
+            fn run_bd(&self, _project_path: &Path, args: &[String]) -> Result<String, String> {
+                self.inner.bd_calls.lock().unwrap().push(BdCall {
+                    args: args.to_vec(),
+                });
+                if args.contains(&"update".to_string())
+                    && args.contains(&"--status".to_string())
+                    && args.contains(&"ready".to_string())
+                {
+                    return Err("bd update --status ready: connection refused".to_string());
+                }
+                if args.len() >= 2 && args[0] == "ready" && args[1] == "--json" {
+                    return Ok(self.inner.bd_ready_response.lock().unwrap().clone());
+                }
+                if args.len() >= 3
+                    && args[0] == "show"
+                    && args.last().map(|a| a.as_str()) == Some("--json")
+                {
+                    return Ok("{}".to_string());
+                }
+                if args.first().map(|a| a.as_str()) == Some("epic") {
+                    return Ok("[]".to_string());
+                }
+                Ok(String::new())
+            }
+            fn spawn_pty(
+                &self,
+                id: &str,
+                cols: u16,
+                rows: u16,
+                cwd: Option<&Path>,
+            ) -> Result<(), String> {
+                self.inner.spawn_pty(id, cols, rows, cwd)
+            }
+            fn kill_pty(&self, id: &str) -> Result<(), String> {
+                self.inner.kill_pty(id)
+            }
+        }
+
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let env = BdUnclaimFailsEnv {
+            inner: TestOrchEnv::new(),
+        };
+
+        // Tick 1: spawn developer (claim succeeds)
+        env.inner
+            .set_ready_tasks(r#"[{"id":"bd-stuck","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let agent_id = env.inner.events_named("agent_spawned")[0]["agent_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Developer TTL expires
+        registry.test_backdate_spawn(&agent_id, std::time::Duration::from_secs(901));
+        env.inner.set_ready_tasks("[]");
+
+        // Tick 2: TTL kills agent, bd unclaim FAILS
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        // --- Agent killed from registry ---
+        let snap = registry.debug_snapshot().unwrap();
+        assert_eq!(snap.agents.len(), 0, "agent should be killed after TTL");
+
+        // --- bd unclaim was attempted (and failed) ---
+        let unclaim_attempts: Vec<_> = env
+            .inner
+            .bd_calls_matching("bd-stuck")
+            .iter()
+            .filter(|args| {
+                args.contains(&"update".to_string()) && args.contains(&"ready".to_string())
+            })
+            .cloned()
+            .collect();
+        assert!(
+            !unclaim_attempts.is_empty(),
+            "bd update --status ready should have been attempted"
+        );
+
+        // --- Registry has no record of the task ---
+        let claimed = registry.claimed_task_ids().unwrap();
+        assert!(
+            !claimed.contains(&"bd-stuck".to_string()),
+            "registry no longer tracks the task"
+        );
+
+        // THE BUG: Task is permanently stuck in Beads as "in_progress".
+        // bd ready won't return it (it's not "ready"), so no agent picks it up.
+        // Simulate: next ticks return empty (Beads won't list in_progress tasks as ready).
+        for _ in 0..3 {
+            env.inner.set_ready_tasks("[]");
+            tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+                .await
+                .unwrap();
+        }
+
+        let total_spawns = env.inner.events_named("agent_spawned").len();
+        assert_eq!(
+            total_spawns, 1,
+            "only the original agent was spawned — no recovery possible"
+        );
+
+        // The system should track failed unclaims and retry them, or emit
+        // a user-visible event so the task doesn't silently rot in Beads.
+        let recovery_events: Vec<_> = env
+            .inner
+            .events()
+            .iter()
+            .filter(|e| {
+                e.event.contains("unclaim_failed")
+                    || e.event.contains("task_stuck")
+                    || e.event.contains("task_recovery")
+            })
+            .cloned()
+            .collect();
+        assert!(
+            !recovery_events.is_empty(),
+            "BUG: bd unclaim failed but no recovery event was emitted. \
+             Task bd-stuck is permanently stuck as 'in_progress' in Beads \
+             with no agent working on it and no way to recover automatically. \
+             Fix: track failed unclaims and retry on subsequent ticks, or emit \
+             a task_unclaim_failed event so the frontend can alert the user."
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // USER BUG: "Agent disappeared from the UI but I can still see the
+    // terminal process running and consuming CPU/memory."
+    //
+    // Root cause: kill_pty fails during TTL cleanup (e.g., process already
+    // exited, PID reuse, OS error). The error is silently swallowed by
+    // kill_agent() which uses `let _ = env.kill_pty(agent_id)`. The agent
+    // is removed from the registry and agent_killed is emitted, so the
+    // frontend shows the agent as gone — but the PTY process is still alive.
+    // No error event is emitted, so the user has no way to know about or
+    // clean up the leaked process.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn kill_pty_fails_during_ttl_cleanup_no_user_notification() {
+        struct KillPtyFailsEnv {
+            inner: TestOrchEnv,
+            kill_pty_calls: Arc<StdMutex<Vec<String>>>,
+        }
+        impl OrchEnv for KillPtyFailsEnv {
+            fn emit_event(&self, event: &str, payload: serde_json::Value) -> Result<(), String> {
+                self.inner.emit_event(event, payload)
+            }
+            fn run_bd(&self, p: &Path, args: &[String]) -> Result<String, String> {
+                self.inner.run_bd(p, args)
+            }
+            fn spawn_pty(
+                &self,
+                id: &str,
+                cols: u16,
+                rows: u16,
+                cwd: Option<&Path>,
+            ) -> Result<(), String> {
+                self.inner.spawn_pty(id, cols, rows, cwd)
+            }
+            fn kill_pty(&self, id: &str) -> Result<(), String> {
+                self.kill_pty_calls.lock().unwrap().push(id.to_string());
+                Err("kill_pty: no such process".to_string())
+            }
+        }
+
+        let repo = setup_git_repo();
+        let project_path = repo.path().to_str().unwrap();
+        let (meta_db, _db_dir) = setup_meta_db(project_path);
+        let registry = AgentRegistry::new();
+        let merge_queue = MergeQueue::new();
+        let metrics = OrchestrationMetrics::new();
+        let kill_calls = Arc::new(StdMutex::new(Vec::new()));
+        let env = KillPtyFailsEnv {
+            inner: TestOrchEnv::new(),
+            kill_pty_calls: kill_calls.clone(),
+        };
+
+        // Tick 1: spawn developer
+        env.inner
+            .set_ready_tasks(r#"[{"id":"bd-pty-leak","issue_type":"task","priority":2}]"#);
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        let agent_id = env.inner.events_named("agent_spawned")[0]["agent_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Developer TTL expires
+        registry.test_backdate_spawn(&agent_id, std::time::Duration::from_secs(901));
+        env.inner.set_ready_tasks("[]");
+
+        // Tick 2: TTL kills agent, kill_pty FAILS
+        tick(&env, &meta_db, &registry, &merge_queue, &metrics)
+            .await
+            .unwrap();
+
+        // --- kill_pty was called (and failed) ---
+        let calls = kill_calls.lock().unwrap();
+        assert!(
+            calls.contains(&agent_id),
+            "kill_pty should have been called for the expired agent"
+        );
+
+        // --- Agent IS removed from registry (correct behavior under failure) ---
+        let snap = registry.debug_snapshot().unwrap();
+        assert_eq!(
+            snap.agents.len(),
+            0,
+            "agent should be removed from registry even when kill_pty fails"
+        );
+
+        // --- agent_killed IS emitted (frontend shows agent as gone) ---
+        let killed_events = env.inner.events_named("agent_killed");
+        assert!(
+            killed_events
+                .iter()
+                .any(|e| e["agent_id"].as_str() == Some(agent_id.as_str())),
+            "agent_killed should be emitted even when kill_pty fails"
+        );
+
+        // --- Task IS unclaimed (other cleanup steps succeed despite pty failure) ---
+        let unclaim_calls = env
+            .inner
+            .bd_calls_matching("bd-pty-leak")
+            .iter()
+            .any(|args| {
+                args.contains(&"update".to_string()) && args.contains(&"ready".to_string())
+            });
+        assert!(
+            unclaim_calls,
+            "bd unclaim should still be called when kill_pty fails"
+        );
+
+        // THE BUG: PTY process is leaked with no notification to the user.
+        // The agent_killed event payload should indicate that PTY cleanup failed,
+        // so the frontend can warn the user about an orphaned terminal process.
+        let killed_payload = killed_events
+            .iter()
+            .find(|e| e["agent_id"].as_str() == Some(agent_id.as_str()))
+            .unwrap();
+        let has_pty_warning = killed_payload
+            .get("pty_cleanup_failed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || killed_payload
+                .get("warnings")
+                .and_then(|v| v.as_array())
+                .map_or(false, |arr| {
+                    arr.iter()
+                        .any(|w| w.as_str().map_or(false, |s| s.contains("pty")))
+                });
+        assert!(
+            has_pty_warning,
+            "BUG: kill_pty failed but agent_killed payload has no indication of the failure. \
+             The PTY process is leaked (still running) but the frontend shows the agent as \
+             cleanly killed. The user sees a ghost terminal consuming resources with no way \
+             to know about it. Fix: include pty_cleanup_failed or a warnings array in the \
+             agent_killed payload when kill_pty fails."
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Helper: run git commands concisely in tests
     // -----------------------------------------------------------------------
