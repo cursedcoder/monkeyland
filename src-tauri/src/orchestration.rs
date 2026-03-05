@@ -216,6 +216,8 @@ pub struct MergeContext {
 pub struct AgentKilledPayload {
     pub agent_id: String,
     pub reason: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pty_cleanup_failed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -264,6 +266,11 @@ pub struct MergeQueue {
     /// Tracks retry counts for tasks with active merge agents.
     /// Set when a merge agent is spawned; consumed when the merge agent completes.
     retry_counts: Mutex<HashMap<String, u8>>,
+    /// Task IDs whose merge succeeded but bd close may have failed.
+    /// Prevents duplicate re-spawn if Beads still reports the task as ready.
+    recently_merged: Mutex<HashSet<String>>,
+    /// (task_id, args) pairs where bd unclaim failed. Retried each tick.
+    failed_unclaims: Mutex<Vec<(String, Vec<String>)>>,
 }
 
 impl MergeQueue {
@@ -273,6 +280,8 @@ impl MergeQueue {
             queued_tasks: Mutex::new(HashSet::new()),
             git_lock: TokioMutex::new(()),
             retry_counts: Mutex::new(HashMap::new()),
+            recently_merged: Mutex::new(HashSet::new()),
+            failed_unclaims: Mutex::new(Vec::new()),
         }
     }
 
@@ -322,6 +331,33 @@ impl MergeQueue {
             .unwrap()
             .remove(task_id)
             .unwrap_or(0)
+    }
+
+    /// Mark a task as recently merged so it won't be re-spawned even if
+    /// Beads still reports it as "ready" (e.g. because bd close failed).
+    pub fn mark_merged(&self, task_id: &str) {
+        self.recently_merged
+            .lock()
+            .unwrap()
+            .insert(task_id.to_string());
+    }
+
+    /// Returns true if the task was recently merged (and should be skipped).
+    pub fn was_recently_merged(&self, task_id: &str) -> bool {
+        self.recently_merged.lock().unwrap().contains(task_id)
+    }
+
+    /// Record a failed bd unclaim for retry on subsequent ticks.
+    pub fn push_failed_unclaim(&self, task_id: &str, args: Vec<String>) {
+        self.failed_unclaims
+            .lock()
+            .unwrap()
+            .push((task_id.to_string(), args));
+    }
+
+    /// Drain all pending failed unclaims for retry.
+    pub fn take_failed_unclaims(&self) -> Vec<(String, Vec<String>)> {
+        std::mem::take(&mut *self.failed_unclaims.lock().unwrap())
     }
 }
 
@@ -374,13 +410,17 @@ impl OrchestrationMetrics {
 /// Kill an agent, its PTY, and notify the frontend in one step.
 fn kill_agent(env: &dyn OrchEnv, registry: &AgentRegistry, agent_id: &str, reason: &str) {
     let _ = registry.kill(agent_id);
-    let _ = env.kill_pty(agent_id);
+    let pty_failed = env.kill_pty(agent_id).is_err();
+    if pty_failed {
+        eprintln!("[orch] WARNING: kill_pty failed for {agent_id} — PTY process may be leaked");
+    }
     let _ = env_emit(
         env,
         "agent_killed",
         &AgentKilledPayload {
             agent_id: agent_id.to_string(),
             reason: reason.to_string(),
+            pty_cleanup_failed: pty_failed,
         },
     );
 }
@@ -464,6 +504,13 @@ pub async fn tick(
             break;
         }
         if claimed_task_ids.contains(&task.id) {
+            continue;
+        }
+        if merge_queue.was_recently_merged(&task.id) {
+            eprintln!(
+                "[orch] skipping task {} — recently merged (bd close may have failed)",
+                task.id
+            );
             continue;
         }
         let role = role_for_task(&task.issue_type, task.priority);
@@ -567,6 +614,24 @@ pub async fn tick(
         spawned_this_tick += 1;
     }
 
+    // 2b. Retry any previously failed bd unclaims before proceeding.
+    {
+        let pending = merge_queue.take_failed_unclaims();
+        for (tid, args) in pending {
+            if let Err(e) = env.run_bd(path, &args) {
+                eprintln!("[orch] retry unclaim still failing for {tid}: {e}");
+                merge_queue.push_failed_unclaim(&tid, args);
+            } else {
+                eprintln!("[orch] retry unclaim succeeded for {tid}");
+                let _ = env_emit(
+                    env,
+                    "task_unclaim_recovered",
+                    &serde_json::json!({ "task_id": tid }),
+                );
+            }
+        }
+    }
+
     // 3. Kill expired agents (clean up worktree without merging, release Beads claim)
     let expired = registry.expired_agent_ids()?;
     for (id, task_id, role) in expired {
@@ -589,7 +654,17 @@ pub async fn tick(
                     "--status".to_string(),
                     "ready".to_string(),
                 ];
-                let _ = env.run_bd(path, &unclaim_args);
+                if let Err(e) = env.run_bd(path, &unclaim_args) {
+                    eprintln!(
+                        "[orch] WARNING: bd unclaim failed for {tid}: {e}; will retry next tick"
+                    );
+                    merge_queue.push_failed_unclaim(tid, unclaim_args);
+                    let _ = env_emit(
+                        env,
+                        "task_unclaim_failed",
+                        &serde_json::json!({ "task_id": tid, "error": e }),
+                    );
+                }
             }
         }
         kill_agent(env, registry, &id, "ttl_expired");
@@ -886,6 +961,7 @@ pub async fn tick(
             match merge_result {
                 Ok(Ok(crate::worktree::MergeOutcome::Clean)) => {
                     eprintln!("[orch] merge clean for task {task_id}");
+                    merge_queue.mark_merged(&task_id);
                     let close_args = vec!["close".to_string(), task_id.clone()];
                     if let Err(e) = env.run_bd(path, &close_args) {
                         eprintln!(
@@ -4509,9 +4585,8 @@ mod tests {
         assert_eq!(
             dev_spawns.len(),
             1,
-            "BUG: task bd-dup was re-spawned after merge succeeded but bd close failed. \
-             Changes are already on main but a new developer was created for duplicate work. \
-             Fix: track recently-merged task IDs and skip them in the spawn loop."
+            "recently-merged task should NOT be re-spawned even when bd close failed — \
+             the merge_queue.recently_merged set should prevent duplicate work"
         );
     }
 
@@ -4799,8 +4874,7 @@ mod tests {
             "only the original agent was spawned — no recovery possible"
         );
 
-        // The system should track failed unclaims and retry them, or emit
-        // a user-visible event so the task doesn't silently rot in Beads.
+        // The system should emit a task_unclaim_failed event and retry on subsequent ticks.
         let recovery_events: Vec<_> = env
             .inner
             .events()
@@ -4814,11 +4888,25 @@ mod tests {
             .collect();
         assert!(
             !recovery_events.is_empty(),
-            "BUG: bd unclaim failed but no recovery event was emitted. \
-             Task bd-stuck is permanently stuck as 'in_progress' in Beads \
-             with no agent working on it and no way to recover automatically. \
-             Fix: track failed unclaims and retry on subsequent ticks, or emit \
-             a task_unclaim_failed event so the frontend can alert the user."
+            "task_unclaim_failed event should be emitted when bd unclaim fails, \
+             so the frontend can alert the user and the orchestrator can retry"
+        );
+
+        // Verify the failed unclaim is being retried on subsequent ticks.
+        // The retry will also fail in this test (BdUnclaimFailsEnv always fails),
+        // but the retry attempt should be visible in bd_calls.
+        let retry_unclaim_count = env
+            .inner
+            .bd_calls_matching("bd-stuck")
+            .iter()
+            .filter(|args| {
+                args.contains(&"update".to_string()) && args.contains(&"ready".to_string())
+            })
+            .count();
+        assert!(
+            retry_unclaim_count > 1,
+            "failed unclaims should be retried on subsequent ticks (got {} attempts)",
+            retry_unclaim_count
         );
     }
 
@@ -4827,12 +4915,9 @@ mod tests {
     // terminal process running and consuming CPU/memory."
     //
     // Root cause: kill_pty fails during TTL cleanup (e.g., process already
-    // exited, PID reuse, OS error). The error is silently swallowed by
-    // kill_agent() which uses `let _ = env.kill_pty(agent_id)`. The agent
-    // is removed from the registry and agent_killed is emitted, so the
-    // frontend shows the agent as gone — but the PTY process is still alive.
-    // No error event is emitted, so the user has no way to know about or
-    // clean up the leaked process.
+    // exited, PID reuse, OS error). The agent_killed payload must include
+    // pty_cleanup_failed=true so the frontend can warn the user about the
+    // orphaned process.
     // -----------------------------------------------------------------------
 
     #[tokio::test]
@@ -4933,9 +5018,8 @@ mod tests {
             "bd unclaim should still be called when kill_pty fails"
         );
 
-        // THE BUG: PTY process is leaked with no notification to the user.
-        // The agent_killed event payload should indicate that PTY cleanup failed,
-        // so the frontend can warn the user about an orphaned terminal process.
+        // agent_killed payload must include pty_cleanup_failed=true so the
+        // frontend can warn the user about the orphaned terminal process.
         let killed_payload = killed_events
             .iter()
             .find(|e| e["agent_id"].as_str() == Some(agent_id.as_str()))
@@ -4943,21 +5027,11 @@ mod tests {
         let has_pty_warning = killed_payload
             .get("pty_cleanup_failed")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-            || killed_payload
-                .get("warnings")
-                .and_then(|v| v.as_array())
-                .map_or(false, |arr| {
-                    arr.iter()
-                        .any(|w| w.as_str().map_or(false, |s| s.contains("pty")))
-                });
+            .unwrap_or(false);
         assert!(
             has_pty_warning,
-            "BUG: kill_pty failed but agent_killed payload has no indication of the failure. \
-             The PTY process is leaked (still running) but the frontend shows the agent as \
-             cleanly killed. The user sees a ghost terminal consuming resources with no way \
-             to know about it. Fix: include pty_cleanup_failed or a warnings array in the \
-             agent_killed payload when kill_pty fails."
+            "agent_killed payload should include pty_cleanup_failed=true when kill_pty fails, \
+             so the frontend can warn the user about the orphaned terminal process"
         );
     }
 
